@@ -12,7 +12,7 @@ use xrun_core::{
     vendor::{DryRunPlan, InstanceHandle, VendorAdapter},
 };
 
-use crate::{cli, error::VastError, provision, stub::VastStub};
+use crate::{cli, error::VastError, execute, provision, stub::VastStub, upload};
 
 pub struct VastAdapter {
     #[allow(dead_code)]
@@ -111,6 +111,94 @@ impl VastAdapter {
         })
     }
 
+    async fn upload_impl(
+        &self,
+        h: &InstanceHandle,
+        sources: &[DataSource],
+    ) -> Result<(), VastError> {
+        let instance_id: u64 =
+            h.id.parse()
+                .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
+
+        // Emit start event, then do async upload, then emit ok event — never holding
+        // the RefCell borrow across an await point.
+        {
+            let run_id_opt = self.run_id.borrow().clone();
+            let mut store = self.store.borrow_mut();
+            if let Some(ref rid) = run_id_opt {
+                let _ = store.append_event(
+                    rid,
+                    NewEvent {
+                        ts: Utc::now(),
+                        stage: "upload".to_string(),
+                        status: "start".to_string(),
+                        msg: None,
+                        payload_json: None,
+                    },
+                );
+            }
+        }
+
+        upload::upload_sources(instance_id, h, sources).await?;
+
+        {
+            let run_id_opt = self.run_id.borrow().clone();
+            let mut store = self.store.borrow_mut();
+            if let Some(ref rid) = run_id_opt {
+                let _ = store.append_event(
+                    rid,
+                    NewEvent {
+                        ts: Utc::now(),
+                        stage: "upload".to_string(),
+                        status: "ok".to_string(),
+                        msg: None,
+                        payload_json: None,
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn execute_impl(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VastError> {
+        let instance_id: u64 =
+            h.id.parse()
+                .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
+
+        // Launch setup + background command.  Borrows are dropped before each await.
+        let pid = execute::launch_run(instance_id, run_spec).await?;
+
+        {
+            let run_id_opt = self.run_id.borrow().clone();
+            let mut store = self.store.borrow_mut();
+            if let Some(ref rid) = run_id_opt {
+                let _ = store.append_event(
+                    rid,
+                    NewEvent {
+                        ts: Utc::now(),
+                        stage: "env_ready".to_string(),
+                        status: "ok".to_string(),
+                        msg: None,
+                        payload_json: None,
+                    },
+                );
+                let _ = store.append_event(
+                    rid,
+                    NewEvent {
+                        ts: Utc::now(),
+                        stage: "train_start".to_string(),
+                        status: "ok".to_string(),
+                        msg: None,
+                        payload_json: pid.map(|p| serde_json::json!({ "pid": p }).to_string()),
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn destroy_impl(&self, h: &InstanceHandle) -> Result<(), VastError> {
         let instance_id: u64 =
             h.id.parse()
@@ -179,12 +267,18 @@ impl VendorAdapter for VastAdapter {
         .map_err(vast_to_vendor)
     }
 
-    fn upload(&self, _h: &InstanceHandle, _sources: &[DataSource]) -> Result<(), VendorError> {
-        Err(VendorError::NotImplemented)
+    fn upload(&self, h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.upload_impl(h, sources))
+        })
+        .map_err(vast_to_vendor)
     }
 
-    fn execute(&self, _h: &InstanceHandle, _run_spec: &RunSpec) -> Result<(), VendorError> {
-        Err(VendorError::NotImplemented)
+    fn execute(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VendorError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.execute_impl(h, run_spec))
+        })
+        .map_err(vast_to_vendor)
     }
 
     fn tail(&self, _h: &InstanceHandle, _file: &str, _offset: u64) -> Result<Vec<u8>, VendorError> {
