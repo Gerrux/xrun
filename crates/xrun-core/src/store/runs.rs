@@ -102,7 +102,7 @@ impl FromSql for RunStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Run {
     pub id: RunId,
     pub name: String,

@@ -8,9 +8,9 @@ mod poll_offsets;
 mod runs;
 
 pub use artifacts::NewArtifact;
-pub use events::NewEvent;
+pub use events::{NewEvent, StoredEvent};
 pub use instances::Instance;
-pub use metrics::NewMetric;
+pub use metrics::{NewMetric, StoredMetric};
 pub use runs::{ListFilter, Run, RunId, RunStatus};
 
 use crate::error::StoreError;

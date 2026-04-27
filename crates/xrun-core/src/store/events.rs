@@ -2,12 +2,23 @@
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, TransactionBehavior};
+use serde::Serialize;
 
 use crate::error::StoreError;
 
 use super::Store;
 
 pub struct NewEvent {
+    pub ts: DateTime<Utc>,
+    pub stage: String,
+    pub status: String,
+    pub msg: Option<String>,
+    pub payload_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredEvent {
+    pub id: i64,
     pub ts: DateTime<Utc>,
     pub stage: String,
     pub status: String,
@@ -38,5 +49,25 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn list_events(&self, run_id: &super::RunId) -> Result<Vec<StoredEvent>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rowid, ts, stage, status, msg, payload_json \
+             FROM events WHERE run_id = ?1 ORDER BY ts",
+        )?;
+        let rows: rusqlite::Result<Vec<StoredEvent>> = stmt
+            .query_map([run_id], |row| {
+                Ok(StoredEvent {
+                    id: row.get(0)?,
+                    ts: row.get(1)?,
+                    stage: row.get(2)?,
+                    status: row.get(3)?,
+                    msg: row.get(4)?,
+                    payload_json: row.get(5)?,
+                })
+            })?
+            .collect();
+        Ok(rows?)
     }
 }
