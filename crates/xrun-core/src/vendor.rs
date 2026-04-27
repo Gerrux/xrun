@@ -2,16 +2,18 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::error::VendorError;
 use crate::manifest::{DataSource, Manifest, RunSpec};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InstanceHandle {
     pub id: String,
     pub vendor: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DryRunPlan {
     pub gpu_query: String,
     pub estimated_price_max: f64,
