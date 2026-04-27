@@ -23,6 +23,14 @@ pub enum StoreError {
 }
 
 #[derive(Debug, Error)]
+pub enum JsonlError {
+    #[error("JSON parse error: {0}")]
+    Json(serde_json::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

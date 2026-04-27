@@ -4,11 +4,15 @@
 
 pub mod config;
 pub mod error;
+pub mod events;
 pub mod manifest;
+pub mod metrics;
 pub mod paths;
 pub mod store;
 
 pub use config::{ConfigStore, Credentials, GlobalConfig, InitResult};
-pub use error::{ConfigError, ManifestError, StoreError};
+pub use error::{ConfigError, JsonlError, ManifestError, StoreError};
+pub use events::{Event, EventStatus, JsonlReader, StdStage};
 pub use manifest::Manifest;
+pub use metrics::{Metric, MetricsJsonlReader};
 pub use store::{Run, RunId, RunStatus, Store};
