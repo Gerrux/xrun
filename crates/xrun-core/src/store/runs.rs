@@ -200,6 +200,34 @@ impl Store {
         }
     }
 
+    pub fn update_run_cost(&mut self, id: &RunId, cost_usd: f64) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET cost_usd = ?1 WHERE id = ?2",
+            params![cost_usd, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_run_cost_estimate(
+        &mut self,
+        id: &RunId,
+        estimate: f64,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET cost_usd_estimate = ?1 WHERE id = ?2",
+            params![estimate, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn list_runs(&self, filter: &ListFilter) -> Result<Vec<Run>, StoreError> {
         let sql = format!("SELECT {SELECT_RUN_COLS} FROM runs ORDER BY created_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;

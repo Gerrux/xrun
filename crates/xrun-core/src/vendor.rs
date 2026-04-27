@@ -11,6 +11,9 @@ use crate::manifest::{DataSource, Manifest, RunSpec};
 pub struct InstanceHandle {
     pub id: String,
     pub vendor: String,
+    pub ssh_host: Option<String>,
+    pub ssh_port: Option<u16>,
+    pub ssh_user: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -40,6 +40,8 @@ pub enum VendorError {
     Io(#[from] std::io::Error),
     #[error("manifest error: {0}")]
     Manifest(#[from] ManifestError),
+    #[error("{0}")]
+    Other(String),
 }
 
 #[derive(Debug, Error)]
