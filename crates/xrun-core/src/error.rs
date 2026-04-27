@@ -9,3 +9,15 @@ pub enum ManifestError {
     #[error("Validation error: {0}")]
     Validation(String),
 }
+
+#[derive(Debug, Error)]
+pub enum StoreError {
+    #[error("SQLite error: {0}")]
+    Db(#[from] rusqlite::Error),
+    #[error("schema version {found} is newer than supported {supported}")]
+    SchemaTooNew { found: u32, supported: u32 },
+    #[error("run not found: {0}")]
+    RunNotFound(String),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}

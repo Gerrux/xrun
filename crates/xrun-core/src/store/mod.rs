@@ -1,0 +1,66 @@
+#![deny(unsafe_code)]
+
+mod artifacts;
+mod events;
+mod instances;
+mod metrics;
+mod poll_offsets;
+mod runs;
+
+pub use artifacts::NewArtifact;
+pub use events::NewEvent;
+pub use instances::Instance;
+pub use metrics::NewMetric;
+pub use runs::{ListFilter, Run, RunId, RunStatus};
+
+use crate::error::StoreError;
+use rusqlite::{Connection, TransactionBehavior};
+use std::path::Path;
+
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
+
+pub struct Store {
+    conn: Connection,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        let mut store = Store { conn };
+        store.apply_migrations()?;
+        Ok(store)
+    }
+
+    fn apply_migrations(&mut self) -> Result<(), StoreError> {
+        let count: u32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if count == 0 {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute_batch(MIGRATION_001)?;
+            tx.commit()?;
+        } else {
+            let version: u32 =
+                self.conn
+                    .query_row("SELECT version FROM schema_version", [], |row| row.get(0))?;
+            if version > CURRENT_SCHEMA_VERSION {
+                return Err(StoreError::SchemaTooNew {
+                    found: version,
+                    supported: CURRENT_SCHEMA_VERSION,
+                });
+            }
+        }
+        Ok(())
+    }
+}
