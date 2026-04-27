@@ -4,3 +4,4 @@ target/
 *.db-shm
 .vscode/
 .idea/
+.ralphex/
