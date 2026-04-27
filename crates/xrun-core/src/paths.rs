@@ -18,10 +18,6 @@ pub fn data_dir() -> Result<PathBuf, ConfigError> {
     Ok(project_dirs()?.data_dir().to_path_buf())
 }
 
-pub fn cache_dir() -> Result<PathBuf, ConfigError> {
-    Ok(project_dirs()?.cache_dir().to_path_buf())
-}
-
 pub fn runs_dir() -> Result<PathBuf, ConfigError> {
     Ok(data_dir()?.join("runs"))
 }

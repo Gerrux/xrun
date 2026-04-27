@@ -89,13 +89,17 @@ fn cmd_show(config_dir: &Path) -> Result<()> {
 }
 
 fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
-    let is_secret = key.ends_with(".api_key") || key.ends_with(".token") || key.ends_with(".key");
+    let is_credential = matches!(
+        key,
+        "vast.api_key" | "kaggle.key" | "kaggle.username" | "mlflow.token"
+    );
 
-    if is_secret {
+    if is_credential {
         let mut creds = Credentials::load(config_dir)?;
         match key {
             "vast.api_key" => creds.vast.api_key = Some(value.to_string()),
             "kaggle.key" => creds.kaggle.key = Some(value.to_string()),
+            "kaggle.username" => creds.kaggle.username = Some(value.to_string()),
             "mlflow.token" => creds.mlflow.token = Some(value.to_string()),
             _ => {
                 eprintln!("unknown config key: {key}");

@@ -23,24 +23,18 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
         detail: config_dir.display().to_string(),
     });
 
+    let vastai_ok = binary_available("vastai");
     checks.push(Check {
         name: "vastai_binary",
-        ok: binary_available("vastai"),
-        detail: if binary_available("vastai") {
-            "found in PATH".to_string()
-        } else {
-            "not found in PATH".to_string()
-        },
+        ok: vastai_ok,
+        detail: if vastai_ok { "found in PATH" } else { "not found in PATH" }.to_string(),
     });
 
+    let kaggle_ok = binary_available("kaggle");
     checks.push(Check {
         name: "kaggle_binary",
-        ok: binary_available("kaggle"),
-        detail: if binary_available("kaggle") {
-            "found in PATH".to_string()
-        } else {
-            "not found in PATH".to_string()
-        },
+        ok: kaggle_ok,
+        detail: if kaggle_ok { "found in PATH" } else { "not found in PATH" }.to_string(),
     });
 
     let db_ok = match db_path {
@@ -108,8 +102,13 @@ fn binary_available(name: &str) -> bool {
             return true;
         }
         #[cfg(windows)]
-        if dir.join(format!("{name}.exe")).is_file() {
-            return true;
+        {
+            if dir.join(format!("{name}.exe")).is_file()
+                || dir.join(format!("{name}.cmd")).is_file()
+                || dir.join(format!("{name}.bat")).is_file()
+            {
+                return true;
+            }
         }
     }
     false

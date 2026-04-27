@@ -13,7 +13,7 @@ pub mod vendor;
 
 pub use config::{ConfigStore, Credentials, GlobalConfig, InitResult};
 pub use error::{ConfigError, JsonlError, ManifestError, StoreError, VendorError};
-pub use events::{Event, EventStatus, JsonlReader, StdStage};
+pub use events::{Event, EventStatus, JsonlReader};
 pub use manifest::Manifest;
 pub use metrics::{Metric, MetricsJsonlReader};
 pub use store::{ListFilter, Run, RunId, RunStatus, Store, StoredEvent, StoredMetric};

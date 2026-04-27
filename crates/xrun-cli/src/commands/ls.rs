@@ -26,15 +26,6 @@ pub fn run(args: &LsArgs, db_path: &Path) -> Result<()> {
     let mut runs = store.list_runs(&filter).context("failed to list runs")?;
 
     if !args.all {
-        let active_count = runs
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.status,
-                    RunStatus::Provisioning | RunStatus::Uploading | RunStatus::Running
-                )
-            })
-            .count();
         let mut done_count = 0;
         runs.retain(|r| {
             if matches!(
@@ -49,7 +40,6 @@ pub fn run(args: &LsArgs, db_path: &Path) -> Result<()> {
             }
             false
         });
-        let _ = active_count;
     }
 
     if let Some(tag) = &args.tag {
@@ -103,9 +93,8 @@ fn parse_status(s: &str) -> Result<RunStatus> {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
+    match s.char_indices().nth(max) {
+        None => s,
+        Some((i, _)) => &s[..i],
     }
 }

@@ -65,10 +65,26 @@ fn show_nonexistent_id_exits_one() {
 #[test]
 fn doctor_prints_check_and_status_columns() {
     let tmp = TempDir::new().unwrap();
-    let out = xrun(&tmp).arg("doctor").output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let result = xrun(&tmp).arg("doctor").assert();
+    let output = result.get_output().stdout.clone();
+    let stdout = String::from_utf8_lossy(&output);
     assert!(
         stdout.contains("check") && stdout.contains("status"),
         "doctor output missing table columns; got:\n{stdout}"
     );
+    // Doctor exits 1 when any check fails (vastai/kaggle not in PATH in CI)
+    // We only assert the output format, not the exit code, since it depends on the environment.
+    // The exit-code contract is tested separately.
+}
+
+#[test]
+fn doctor_exits_one_when_checks_fail() {
+    let tmp = TempDir::new().unwrap();
+    // In any environment without vastai+kaggle in PATH, doctor exits 1.
+    // If this test runs on a machine with both binaries, it may pass doctor and exit 0 — skip then.
+    let out = xrun(&tmp).arg("doctor").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if stdout.contains("FAIL") {
+        assert!(!out.status.success(), "doctor should exit 1 when checks fail");
+    }
 }

@@ -44,12 +44,28 @@ impl Credentials {
         std::fs::create_dir_all(config_dir)?;
         let path = config_dir.join("credentials.toml");
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&path, perms)?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            // Write to a temp file with mode 0o600 before renaming, so the
+            // credentials are never world-readable even for a brief moment.
+            let tmp_path = config_dir.join(".credentials.toml.tmp");
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            f.write_all(content.as_bytes())?;
+            f.flush()?;
+            drop(f);
+            std::fs::rename(&tmp_path, &path)?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, content)?;
         }
         Ok(())
     }

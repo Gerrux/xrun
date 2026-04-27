@@ -84,7 +84,7 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
     eprintln!("Created run {run_id}");
 
     match adapter.provision(&manifest) {
-        Ok(_) => unreachable!("provision should not succeed in v0.1"),
+        Ok(_) => anyhow::bail!("provision returned Ok unexpectedly; stub implementation bug"),
         Err(e) => {
             store
                 .update_run_status(&run_id, RunStatus::Failed)
