@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 xrun-core = { path = "../xrun-core" }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+xrun-core = { path = "../xrun-core" }
 pretty_assertions = { workspace = true }

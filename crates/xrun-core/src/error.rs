@@ -31,6 +31,18 @@ pub enum JsonlError {
 }
 
 #[derive(Debug, Error)]
+pub enum VendorError {
+    #[error("not implemented")]
+    NotImplemented,
+    #[error("validation error: {0}")]
+    Validation(String),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("manifest error: {0}")]
+    Manifest(#[from] ManifestError),
+}
+
+#[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

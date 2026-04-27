@@ -9,10 +9,12 @@ pub mod manifest;
 pub mod metrics;
 pub mod paths;
 pub mod store;
+pub mod vendor;
 
 pub use config::{ConfigStore, Credentials, GlobalConfig, InitResult};
-pub use error::{ConfigError, JsonlError, ManifestError, StoreError};
+pub use error::{ConfigError, JsonlError, ManifestError, StoreError, VendorError};
 pub use events::{Event, EventStatus, JsonlReader, StdStage};
 pub use manifest::Manifest;
 pub use metrics::{Metric, MetricsJsonlReader};
 pub use store::{Run, RunId, RunStatus, Store};
+pub use vendor::{DryRunPlan, InstanceHandle, VendorAdapter};
