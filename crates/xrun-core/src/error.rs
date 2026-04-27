@@ -21,3 +21,15 @@ pub enum StoreError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("TOML parse error: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("TOML serialize error: {0}")]
+    Serialize(#[from] toml::ser::Error),
+    #[error("cannot determine project paths: {0}")]
+    NoPaths(String),
+}

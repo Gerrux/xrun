@@ -1502,6 +1502,8 @@ dependencies = [
  "assert_cmd",
  "clap",
  "predicates",
+ "tempfile",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "xrun-core",
