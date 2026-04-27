@@ -34,6 +34,14 @@
 
 ## Status
 
-Pre-alpha — сейчас только план в `docs/`. Кода нет.
+v0.1 foundation: workspace, manifest parser, sqlite, config, CLI scaffolding ready; vast adapter and xrun_hook pending.
 
 Существующие запуски, которые уже идут через старый `train-vast` flow, не переписываем — `xrun` для нового.
+
+## Quickstart
+
+```bash
+cargo build --release
+target/release/xrun config init
+target/release/xrun launch exp/foo.yaml --dry-run
+```
