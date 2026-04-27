@@ -114,11 +114,13 @@ INSERT INTO schema_version VALUES (1);
 
 ## Миграции
 
-`xrun migrate` — последовательное применение `migrations/00X_*.sql`. На старте CLI/TUI делает `SELECT version FROM schema_version`; если меньше актуальной — предлагает запустить миграцию.
+В v0.1 миграция выполняется автоматически при `Store::open`: последовательное применение `migrations/00X_*.sql` через `include_str!`. Повторное открытие существующей БД безопасно — schema_version проверяется, лишние миграции не применяются.
+
+`xrun migrate` как явная команда и `xrun backup` запланированы для будущих версий.
 
 ## Резервная копия
 
-`runs.db` — SQLite WAL. `xrun backup --to <dir>` делает `VACUUM INTO`. Per-run папки можно бэкапить отдельно. MLflow имеет свой backend (sqlite или postgres) — бекапится сам.
+`runs.db` — SQLite WAL. `xrun backup --to <dir>` (запланировано, не реализовано в v0.1) будет делать `VACUUM INTO`. Per-run папки можно бэкапить отдельно. MLflow имеет свой backend (sqlite или postgres) — бекапится сам.
 
 ## Опциональный MLflow
 

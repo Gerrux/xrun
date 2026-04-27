@@ -1,0 +1,22 @@
+name: classifier-eb0-baseline
+vendor: kaggle
+
+kaggle:
+  kernel_slug: gerrux/classifier-eb0-baseline
+  enable_gpu: true
+  enable_internet: false
+
+run:
+  notebook: notebooks/train_eb0.ipynb
+  args:
+    epochs: 10
+    fold: 0
+
+artifacts:
+  patterns:
+    - /output/best.pt
+    - /output/metrics.json
+  pull_on: done
+
+mlflow:
+  experiment: classifier-eb0

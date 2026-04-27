@@ -1,0 +1,63 @@
+name: arborust-v7-c
+description: ResUNet3D v7, channels=2, curated apex_top3 GT
+tags: [arborust, treetop3d, v7]
+
+vendor: vast
+
+vast:
+  image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
+  gpu: { type: "RTX 4090", count: 1, vram_min_gb: 24 }
+  disk_gb: 80
+  price:
+    max_per_hour: 0.55
+    bid: false
+  region: any
+  ssh: true
+  ports: [8888]
+
+data:
+  - src: "/home/gerrux/Desktop/cache_mc_v5_curated_20260421.tar"
+    dst: /workspace/data/cache.tar
+    unpack: { format: tar, into: /workspace/data/cache }
+  - src: "/home/gerrux/garage/arborust/experiments/ml_detector_3d/"
+    dst: /workspace/code
+    mode: rsync
+
+run:
+  workdir: /workspace/code
+  setup: |
+    pip install -e . xrun_hook torch==2.4.1
+  cmd: python train_v5_multichannel.py
+  args:
+    --cache: /workspace/data/cache
+    --output: /workspace/run/output
+    --epochs: 30
+    --batch-size: 8
+    --lr: 0.0001
+    --in-channels: 2
+    --dropout: 0.2
+
+checkpoints:
+  watch: /workspace/run/output/ep*.pt
+  pull:
+    on: [epoch_end]
+    keep_last: 3
+    keep_best:
+      metric: val_f1
+      mode: max
+
+artifacts:
+  patterns:
+    - /workspace/run/output/*.png
+    - /workspace/run/output/metrics.json
+    - /workspace/run/stdout.log
+  pull_on: done
+
+mlflow:
+  experiment: arborust-treetop3d
+  log_args_as_params: true
+
+policy:
+  on_stage_failed: stop_instance
+  on_idle_minutes: 30
+  on_done: stop_instance

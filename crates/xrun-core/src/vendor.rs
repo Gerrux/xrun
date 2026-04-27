@@ -1,0 +1,35 @@
+#![deny(unsafe_code)]
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use crate::error::VendorError;
+use crate::manifest::{DataSource, Manifest, RunSpec};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceHandle {
+    pub id: String,
+    pub vendor: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DryRunPlan {
+    pub gpu_query: String,
+    pub estimated_price_max: f64,
+    pub data_total_bytes: u64,
+    pub data_items: Vec<(PathBuf, String)>,
+    pub cmd_line: String,
+}
+
+pub trait VendorAdapter {
+    fn name(&self) -> &'static str;
+    fn validate(&self, manifest: &Manifest) -> Result<(), VendorError>;
+    fn dry_run_plan(&self, manifest: &Manifest) -> Result<DryRunPlan, VendorError>;
+    fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError>;
+    fn upload(&self, h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError>;
+    fn execute(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VendorError>;
+    fn tail(&self, h: &InstanceHandle, file: &str, offset: u64) -> Result<Vec<u8>, VendorError>;
+    fn pull(&self, h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError>;
+    fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError>;
+}
