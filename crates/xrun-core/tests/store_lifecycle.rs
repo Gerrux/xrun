@@ -9,7 +9,7 @@ fn lifecycle() {
     let mut store = Store::open(&db_path).unwrap();
 
     let run_id = store
-        .create_run("my-run", "abc123hash", "runs/1/manifest.yaml", "vast")
+        .create_run("my-run", "abc123hash", "runs/1/manifest.yaml", "vast", &[])
         .unwrap();
 
     // Three events
@@ -98,7 +98,7 @@ fn record_artifact_and_update_status() {
     let mut store = Store::open(&db_path).unwrap();
 
     let run_id = store
-        .create_run("art-run", "hash2", "runs/2/manifest.yaml", "vast")
+        .create_run("art-run", "hash2", "runs/2/manifest.yaml", "vast", &[])
         .unwrap();
 
     store
@@ -129,7 +129,7 @@ fn reopen_existing_db() {
     let run_id = {
         let mut store = Store::open(&db_path).unwrap();
         store
-            .create_run("persist-run", "hashXYZ", "runs/3/manifest.yaml", "kaggle")
+            .create_run("persist-run", "hashXYZ", "runs/3/manifest.yaml", "kaggle", &[])
             .unwrap()
     };
 

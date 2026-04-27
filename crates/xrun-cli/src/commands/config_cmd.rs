@@ -102,8 +102,7 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
             "kaggle.username" => creds.kaggle.username = Some(value.to_string()),
             "mlflow.token" => creds.mlflow.token = Some(value.to_string()),
             _ => {
-                eprintln!("unknown config key: {key}");
-                std::process::exit(64);
+                bail!("unknown config key: {key}");
             }
         }
         creds.save(config_dir)?;
@@ -131,8 +130,7 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
                 });
             }
             _ => {
-                eprintln!("unknown config key: {key}");
-                std::process::exit(64);
+                bail!("unknown config key: {key}");
             }
         }
         cfg.save(config_dir)?;

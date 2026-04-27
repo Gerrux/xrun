@@ -54,17 +54,14 @@ fn validate_name(name: &str) -> Result<(), ManifestError> {
 fn validate_vendor_sections(manifest: &Manifest) -> Result<(), ManifestError> {
     match manifest.vendor {
         Vendor::Vast => {
-            if manifest.vast.is_none() {
-                return Err(ManifestError::Validation(
-                    "vendor=vast requires a [vast] section".to_string(),
-                ));
-            }
+            let vast = manifest.vast.as_ref().ok_or_else(|| {
+                ManifestError::Validation("vendor=vast requires a [vast] section".to_string())
+            })?;
             if manifest.kaggle.is_some() {
                 return Err(ManifestError::Validation(
                     "vendor=vast must not have a [kaggle] section".to_string(),
                 ));
             }
-            let vast = manifest.vast.as_ref().unwrap();
             if vast.gpu.count < 1 {
                 return Err(ManifestError::Validation(
                     "vast.gpu.count must be >= 1".to_string(),

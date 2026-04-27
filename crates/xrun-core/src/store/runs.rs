@@ -154,16 +154,23 @@ impl Store {
         manifest_hash: &str,
         manifest_path: &str,
         vendor: &str,
+        tags: &[String],
     ) -> Result<RunId, StoreError> {
         let id = RunId::new();
         let now = Utc::now();
+        let notes: Option<String> = if tags.is_empty() {
+            None
+        } else {
+            // Vec<String> serialization is always valid JSON
+            Some(serde_json::to_string(tags).expect("Vec<String> serialization is infallible"))
+        };
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO runs (id, name, manifest_hash, manifest_path, vendor, status, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, name, manifest_hash, manifest_path, vendor, RunStatus::Provisioning, now],
+            "INSERT INTO runs (id, name, manifest_hash, manifest_path, vendor, status, created_at, notes) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, name, manifest_hash, manifest_path, vendor, RunStatus::Provisioning, now, notes],
         )?;
         tx.commit()?;
         Ok(id)

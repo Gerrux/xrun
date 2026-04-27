@@ -48,7 +48,10 @@ impl VendorAdapter for VastStub {
 
     fn dry_run_plan(&self, manifest: &Manifest) -> Result<DryRunPlan, VendorError> {
         self.validate(manifest)?;
-        let vast = manifest.vast.as_ref().unwrap();
+        let vast = manifest
+            .vast
+            .as_ref()
+            .ok_or_else(|| VendorError::Validation("vast section required".to_string()))?;
 
         let mut gpu_query = format!("{} x{}", vast.gpu.gpu_type, vast.gpu.count);
         if let Some(vram) = vast.gpu.vram_min_gb {

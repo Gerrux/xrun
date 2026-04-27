@@ -72,7 +72,13 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
         .with_context(|| format!("failed to open store at {}", db_path.display()))?;
 
     let run_id = store
-        .create_run(name, &hash, &manifest_path_str, vendor_str)
+        .create_run(
+            name,
+            &hash,
+            &manifest_path_str,
+            vendor_str,
+            manifest.tags.as_deref().unwrap_or(&[]),
+        )
         .context("failed to create run record")?;
 
     let run_dir = runs_dir.join(run_id.to_string());

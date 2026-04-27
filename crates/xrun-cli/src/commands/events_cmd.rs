@@ -9,8 +9,7 @@ use crate::cli::EventsArgs;
 
 pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
     if args.follow {
-        eprintln!("error: --follow is not supported in v0.1");
-        std::process::exit(64);
+        anyhow::bail!("--follow is not supported in v0.1");
     }
 
     let id: RunId = args
