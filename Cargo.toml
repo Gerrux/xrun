@@ -38,6 +38,13 @@ sha2 = "0.10"
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "macros", "fs"] }
+
+# Process utilities
+which = "6"
+humantime = "2"
+
 # Tracing / logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
