@@ -86,12 +86,12 @@ fn apply_value(row: usize, value: String) -> SettingsAction {
     match row {
         0 => SettingsAction::SaveTheme(value),
         1 => match value.parse::<u64>() {
-            Ok(v) => SettingsAction::SavePollIntervalActive(v),
-            Err(_) => SettingsAction::Nothing,
+            Ok(v) if v > 0 => SettingsAction::SavePollIntervalActive(v),
+            _ => SettingsAction::Nothing,
         },
         2 => match value.parse::<u64>() {
-            Ok(v) => SettingsAction::SavePollIntervalIdle(v),
-            Err(_) => SettingsAction::Nothing,
+            Ok(v) if v > 0 => SettingsAction::SavePollIntervalIdle(v),
+            _ => SettingsAction::Nothing,
         },
         3 => SettingsAction::SaveDefaultVendor(if value.is_empty() { None } else { Some(value) }),
         _ => SettingsAction::Nothing,

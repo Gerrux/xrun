@@ -714,7 +714,7 @@ impl App {
                 .defaults
                 .vendor
                 .as_ref()
-                .map(|v| format!("{:?}", v).to_lowercase())
+                .map(vendor_name)
                 .unwrap_or_default(),
         };
         self.state.dirty = true;
@@ -882,5 +882,12 @@ impl App {
             _ => {}
         }
         self.state.dirty = true;
+    }
+}
+
+fn vendor_name(v: &xrun_core::manifest::types::Vendor) -> String {
+    match v {
+        xrun_core::manifest::types::Vendor::Vast => "vast".to_string(),
+        xrun_core::manifest::types::Vendor::Kaggle => "kaggle".to_string(),
     }
 }

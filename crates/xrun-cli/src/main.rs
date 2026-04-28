@@ -16,7 +16,13 @@ fn run() -> Result<()> {
     use clap::Parser;
     let cli = Cli::parse();
 
-    init_tracing(cli.verbose, cli.quiet);
+    // Skip stderr tracing when launching the TUI: the alternate screen would
+    // be corrupted by log lines, and any tracing event during the TUI session
+    // (e.g. a config save warning) would render on top of the UI.
+    let tui_mode = is_tui_invocation(&cli.command);
+    if !tui_mode {
+        init_tracing(cli.verbose, cli.quiet);
+    }
 
     let config_dir_override = cli.config_dir.clone();
     let data_dir_override = cli.data_dir.clone();
@@ -133,6 +139,23 @@ fn run() -> Result<()> {
 struct DataCtx {
     db_path: PathBuf,
     runs_dir: PathBuf,
+}
+
+fn is_tui_invocation(command: &Option<Commands>) -> bool {
+    #[cfg(feature = "tui")]
+    {
+        use std::io::IsTerminal;
+        match command {
+            Some(Commands::Tui) => true,
+            None => std::io::stdout().is_terminal(),
+            _ => false,
+        }
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = command;
+        false
+    }
 }
 
 fn init_tracing(verbose: bool, quiet: bool) {
