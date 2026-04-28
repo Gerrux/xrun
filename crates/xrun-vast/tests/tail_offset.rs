@@ -232,6 +232,19 @@ fn keep_last_removes_excess_files() {
         2,
         "keep_last=2 should leave exactly 2 files"
     );
+    // The oldest file (ep000) should be deleted; the two newer ones kept.
+    assert!(
+        !dir.path().join("ep000.pt").exists(),
+        "ep000.pt (oldest) should have been deleted"
+    );
+    assert!(
+        dir.path().join("ep001.pt").exists(),
+        "ep001.pt should have been kept"
+    );
+    assert!(
+        dir.path().join("ep002.pt").exists(),
+        "ep002.pt should have been kept"
+    );
 }
 
 #[test]

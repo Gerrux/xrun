@@ -135,19 +135,24 @@ def epoch(idx: int, extra: "dict | None" = None) -> None:
 
 
 def fail(msg: str, extra: "dict | None" = None) -> None:
-    """Write a failure event and exit with code 1."""
+    """Write a failure event, close all writers, and exit with code 1."""
+    global _events, _metrics
     _write_event("error", "fail", msg=msg, extra=extra)
+    _reset()
     sys.exit(1)
 
 
 def done() -> None:
     """Write the terminal done event and close all writers."""
+    global _events, _metrics
     _write_event("done", "ok")
     _events_w = _get_events()
     _metrics_w = _get_metrics()
     _events_w.close()
     if _metrics_w is not _events_w:
         _metrics_w.close()
+    _events = None
+    _metrics = None
 
 
 # ---------------------------------------------------------------------------

@@ -206,15 +206,16 @@ fn test_poller_run_metrics_written() {
 #[test]
 fn test_poller_lock_prevents_duplicate() {
     let tmp = TempDir::new().unwrap();
-    // Use a unique string key for this test; valid ULID format but deterministic.
-    let run_id = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
+    // Generate a fresh ID each run to avoid cross-test pollution in the global registry.
+    let run_id_obj = RunId::new();
+    let run_id = run_id_obj.to_string();
 
     let pid_file1 = tmp.path().join("run_a").join("poller.pid");
     let pid_file2 = tmp.path().join("run_b").join("poller.pid");
 
-    let _lock1 = PollerLock::try_acquire(run_id, pid_file1).expect("first acquire should succeed");
+    let _lock1 = PollerLock::try_acquire(&run_id, pid_file1).expect("first acquire should succeed");
 
-    let result = PollerLock::try_acquire(run_id, pid_file2);
+    let result = PollerLock::try_acquire(&run_id, pid_file2);
     assert!(
         matches!(result, Err(PollerLockError::AlreadyPolling)),
         "second acquire for same run_id should return AlreadyPolling"

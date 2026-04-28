@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use xrun_core::{
@@ -13,6 +14,16 @@ use xrun_core::{
 };
 
 use crate::{cli, error::VastError, execute, provision, pull, stub::VastStub, tail, upload};
+
+fn get_tokio_rt() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime for VastAdapter")
+    })
+}
 
 pub struct VastAdapter {
     #[allow(dead_code)]
@@ -297,7 +308,10 @@ impl VastAdapter {
 }
 
 fn vast_to_vendor(e: VastError) -> VendorError {
-    VendorError::Other(e.to_string())
+    match e {
+        VastError::FileTruncated { .. } => VendorError::Truncated,
+        _ => VendorError::Other(e.to_string()),
+    }
 }
 
 impl VendorAdapter for VastAdapter {
@@ -318,44 +332,38 @@ impl VendorAdapter for VastAdapter {
     }
 
     fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.provision_impl(manifest))
-        })
-        .map_err(vast_to_vendor)
+        get_tokio_rt()
+            .block_on(self.provision_impl(manifest))
+            .map_err(vast_to_vendor)
     }
 
     fn upload(&self, h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.upload_impl(h, sources))
-        })
-        .map_err(vast_to_vendor)
+        get_tokio_rt()
+            .block_on(self.upload_impl(h, sources))
+            .map_err(vast_to_vendor)
     }
 
     fn execute(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VendorError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.execute_impl(h, run_spec))
-        })
-        .map_err(vast_to_vendor)
+        get_tokio_rt()
+            .block_on(self.execute_impl(h, run_spec))
+            .map_err(vast_to_vendor)
     }
 
     fn tail(&self, h: &InstanceHandle, file: &str, offset: u64) -> Result<Vec<u8>, VendorError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.tail_impl(h, file, offset))
-        })
-        .map_err(vast_to_vendor)
+        get_tokio_rt()
+            .block_on(self.tail_impl(h, file, offset))
+            .map_err(vast_to_vendor)
     }
 
     fn pull(&self, h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.pull_impl(h, remote, into))
-        })
-        .map_err(vast_to_vendor)
+        get_tokio_rt()
+            .block_on(self.pull_impl(h, remote, into))
+            .map_err(vast_to_vendor)
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.destroy_impl(h))
-        })
-        .map_err(vast_to_vendor)
+        get_tokio_rt()
+            .block_on(self.destroy_impl(h))
+            .map_err(vast_to_vendor)
     }
 }

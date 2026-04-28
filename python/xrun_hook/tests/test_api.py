@@ -1,8 +1,6 @@
 """Tests for the xrun_hook public API."""
 
 import json
-import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -109,6 +107,43 @@ def test_done_writes_done_event(isolated_run_dir):
     ev = json.loads(lines[0])
     assert ev["stage"] == "done"
     assert ev["status"] == "ok"
+
+
+def test_done_clears_writers_so_subsequent_calls_reopen(isolated_run_dir):
+    xrun_hook.done()
+    # After done(), writers must be None so a subsequent write opens a new file
+    # rather than writing to a closed file descriptor (which would raise ValueError).
+    xrun_hook.stage("after_done")
+    lines = _read_events(isolated_run_dir)
+    assert len(lines) == 2  # done event + after_done event
+
+
+# ---------------------------------------------------------------------------
+# fail()
+# ---------------------------------------------------------------------------
+
+
+def test_fail_writes_event_and_exits(isolated_run_dir):
+    with pytest.raises(SystemExit) as exc_info:
+        xrun_hook.fail("something went wrong", extra={"step": 42})
+    assert exc_info.value.code == 1
+    lines = _read_events(isolated_run_dir)
+    assert len(lines) == 1
+    ev = json.loads(lines[0])
+    assert ev["stage"] == "error"
+    assert ev["status"] == "fail"
+    assert ev["msg"] == "something went wrong"
+    assert ev["extra"]["step"] == 42
+
+
+def test_fail_closes_writers_before_exit(isolated_run_dir):
+    with pytest.raises(SystemExit):
+        xrun_hook.fail("crash")
+    # After fail(), module-level writers should be None.
+    # Calling metric() should not raise ValueError (it should reopen writers).
+    xrun_hook.metric("loss", 1.0, step=0)
+    rows = _read_metrics(isolated_run_dir)
+    assert len(rows) == 1
 
 
 # ---------------------------------------------------------------------------

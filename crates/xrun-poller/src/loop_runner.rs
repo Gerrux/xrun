@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use thiserror::Error;
 use xrun_core::{
+    error::VendorError,
     store::{NewEvent, NewMetric, RunId, RunStatus, Store},
     vendor::{InstanceHandle, VendorAdapter},
     EventStatus, StoreError,
@@ -237,6 +238,15 @@ impl Poller {
                     }
                 }
                 Ok(_) => {}
+                Err(VendorError::Truncated) => {
+                    tracing::warn!("events file truncated (pre-emption?); resetting offset to 0");
+                    offset_e = 0;
+                    let _ = self.store.update_poll_offset(
+                        &self.run_id,
+                        &self.config.events_file,
+                        0,
+                    );
+                }
                 Err(e) => {
                     tracing::warn!("tail events error: {e}");
                 }
@@ -268,6 +278,15 @@ impl Poller {
                     );
                 }
                 Ok(_) => {}
+                Err(VendorError::Truncated) => {
+                    tracing::warn!("metrics file truncated (pre-emption?); resetting offset to 0");
+                    offset_m = 0;
+                    let _ = self.store.update_poll_offset(
+                        &self.run_id,
+                        &self.config.metrics_file,
+                        0,
+                    );
+                }
                 Err(e) => {
                     tracing::warn!("tail metrics error: {e}");
                 }

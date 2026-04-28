@@ -25,6 +25,10 @@ pub fn copy_endpoints(
     (src, dst)
 }
 
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Returns the shell commands to run on the remote instance for unpacking, if any.
 /// Returns an empty vec if no unpack spec is set.
 pub fn unpack_commands(source: &DataSource) -> Result<Vec<String>, VastError> {
@@ -33,11 +37,14 @@ pub fn unpack_commands(source: &DataSource) -> Result<Vec<String>, VastError> {
         Some(u) => u,
     };
 
-    let mkdir_cmd = format!("mkdir -p {}", unpack.into);
+    let dst = shell_quote(&source.dst);
+    let into = shell_quote(&unpack.into);
+
+    let mkdir_cmd = format!("mkdir -p {}", into);
     let extract_cmd = match unpack.format.as_str() {
-        "tar" => format!("tar xf {} -C {}", source.dst, unpack.into),
-        "tar.gz" | "tgz" => format!("tar xzf {} -C {}", source.dst, unpack.into),
-        "zip" => format!("unzip -o {} -d {}", source.dst, unpack.into),
+        "tar" => format!("tar xf {} -C {}", dst, into),
+        "tar.gz" | "tgz" => format!("tar xzf {} -C {}", dst, into),
+        "zip" => format!("unzip -o {} -d {}", dst, into),
         fmt => {
             return Err(VastError::ParseError(format!(
                 "unsupported unpack format: {}",

@@ -54,7 +54,8 @@
 ## Crates
 
 ```
-xrun-core      — manifest types, sqlite, event/metric model, poller engine
+xrun-core      — manifest types, sqlite, event/metric model, vendor trait
+xrun-poller    — polling loop engine (Poller, CancellationToken, PollerLock); used by xrun-cli
 xrun-vast      — vast.ai адаптер (provision, upload, exec, tail, pull)
 xrun-kaggle    — kaggle адаптер (kernels push/status/output)
 xrun-mlflow    — REST клиент для tracking server

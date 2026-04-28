@@ -123,7 +123,7 @@ pub async fn create_instance(
 
 pub async fn show_instance(id: InstanceId) -> Result<InstanceInfo, VastError> {
     let id_str = id.to_string();
-    let args = ["show", "instance", &id_str];
+    let args = ["show", "instance", "--raw", &id_str];
     let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
     serde_json::from_slice::<InstanceInfo>(&out).map_err(|e| VastError::ParseError(e.to_string()))
 }
@@ -131,7 +131,8 @@ pub async fn show_instance(id: InstanceId) -> Result<InstanceInfo, VastError> {
 pub async fn execute(id: InstanceId, cmd: &str) -> Result<Vec<u8>, VastError> {
     let id_str = id.to_string();
     let args = ["execute", &id_str, cmd];
-    run_vastai_with_retry(&args, &idempotent_policy()).await
+    // Non-idempotent: single attempt only to avoid duplicate remote commands.
+    run_vastai(&args).await
 }
 
 pub async fn copy(src: &CopyEndpoint, dst: &CopyEndpoint) -> Result<(), VastError> {

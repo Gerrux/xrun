@@ -40,6 +40,8 @@ pub enum VendorError {
     Io(#[from] std::io::Error),
     #[error("manifest error: {0}")]
     Manifest(#[from] ManifestError),
+    #[error("remote file was truncated (pre-emption restart?)")]
+    Truncated,
     #[error("{0}")]
     Other(String),
 }
