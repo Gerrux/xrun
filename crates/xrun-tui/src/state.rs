@@ -1,4 +1,4 @@
-use xrun_core::RunId;
+use xrun_core::{Run, RunId};
 
 use crate::theme::Theme;
 
@@ -31,7 +31,27 @@ pub enum Modal {
         message: String,
         action: ConfirmAction,
     },
+    FilterInput {
+        input: String,
+    },
     Help,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum RunSection {
+    #[default]
+    Active,
+    Recent,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunsState {
+    pub active_runs: Vec<Run>,
+    pub recent_runs: Vec<Run>,
+    pub section: RunSection,
+    pub selected: usize,
+    pub filter: Option<String>,
+    pub throbber_frame: u8,
 }
 
 pub struct AppState {
@@ -40,6 +60,7 @@ pub struct AppState {
     pub theme: Theme,
     pub modal: Option<Modal>,
     pub dirty: bool,
+    pub runs: RunsState,
 }
 
 impl AppState {
@@ -50,6 +71,7 @@ impl AppState {
             theme,
             modal: None,
             dirty: true,
+            runs: RunsState::default(),
         }
     }
 
