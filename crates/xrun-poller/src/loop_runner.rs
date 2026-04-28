@@ -240,11 +240,9 @@ impl Poller {
                 Err(VendorError::Truncated) => {
                     tracing::warn!("events file truncated (pre-emption?); resetting offset to 0");
                     offset_e = 0;
-                    let _ = self.store.update_poll_offset(
-                        &self.run_id,
-                        &self.config.events_file,
-                        0,
-                    );
+                    let _ =
+                        self.store
+                            .update_poll_offset(&self.run_id, &self.config.events_file, 0);
                 }
                 Err(e) => {
                     tracing::warn!("tail events error: {e}");
@@ -281,11 +279,9 @@ impl Poller {
                 Err(VendorError::Truncated) => {
                     tracing::warn!("metrics file truncated (pre-emption?); resetting offset to 0");
                     offset_m = 0;
-                    let _ = self.store.update_poll_offset(
-                        &self.run_id,
-                        &self.config.metrics_file,
-                        0,
-                    );
+                    let _ =
+                        self.store
+                            .update_poll_offset(&self.run_id, &self.config.metrics_file, 0);
                 }
                 Err(e) => {
                     tracing::warn!("tail metrics error: {e}");
@@ -297,7 +293,8 @@ impl Poller {
                 if let Some(started_at) = run.started_at {
                     if let Ok(Some(inst)) = self.store.get_instance(&self.handle.id) {
                         if let Some(dph) = inst.price_per_hour {
-                            let hours = (Utc::now() - started_at).num_seconds().max(0) as f64 / 3600.0;
+                            let hours =
+                                (Utc::now() - started_at).num_seconds().max(0) as f64 / 3600.0;
                             let _ = self
                                 .store
                                 .update_run_cost_estimate(&self.run_id, hours * dph);

@@ -100,7 +100,10 @@ fn unpack_tar_gz_uses_xzf_flag() {
     };
 
     let cmds = unpack_commands(&source).expect("should not fail for tar.gz");
-    assert_eq!(cmds[1], "tar xzf '/workspace/data.tar.gz' -C '/workspace/data'");
+    assert_eq!(
+        cmds[1],
+        "tar xzf '/workspace/data.tar.gz' -C '/workspace/data'"
+    );
 }
 
 #[test]
@@ -118,7 +121,10 @@ fn unpack_zip_uses_unzip_command() {
     let cmds = unpack_commands(&source).expect("should not fail for zip");
     assert_eq!(cmds.len(), 2);
     assert_eq!(cmds[0], "mkdir -p '/workspace/data'");
-    assert_eq!(cmds[1], "unzip -o '/workspace/data.zip' -d '/workspace/data'");
+    assert_eq!(
+        cmds[1],
+        "unzip -o '/workspace/data.zip' -d '/workspace/data'"
+    );
 }
 
 #[test]
@@ -134,7 +140,10 @@ fn unpack_tgz_alias_uses_xzf_flag() {
     };
 
     let cmds = unpack_commands(&source).expect("should not fail for tgz");
-    assert_eq!(cmds[1], "tar xzf '/workspace/data.tgz' -C '/workspace/data'");
+    assert_eq!(
+        cmds[1],
+        "tar xzf '/workspace/data.tgz' -C '/workspace/data'"
+    );
 }
 
 #[test]

@@ -32,10 +32,25 @@ pub struct DefaultsConfig {
     pub vendor: Option<Vendor>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TuiConfig {
+    pub theme: String,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: "default".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct GlobalConfig {
     pub mlflow: MlflowConfig,
     pub poller: PollerConfig,
     pub defaults: DefaultsConfig,
+    pub tui: TuiConfig,
 }
