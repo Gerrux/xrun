@@ -54,7 +54,7 @@ pub fn parse_command(cmd: &str, state: &AppState) -> PaletteAction {
     }
     if let Some(id_str) = cmd.strip_prefix("stop ") {
         let id_str = id_str.trim();
-        let run_id = find_run_id(state, id_str);
+        let run_id = find_active_run_id(state, id_str);
         return PaletteAction::ShowStopConfirm(run_id, id_str.to_string());
     }
     if let Some(id_str) = cmd.strip_prefix("pull ") {
@@ -82,6 +82,15 @@ fn find_run_id(state: &AppState, id_str: &str) -> Option<RunId> {
         .active_runs
         .iter()
         .chain(state.runs.recent_runs.iter())
+        .find(|r| r.id.to_string() == id_str || r.name == id_str)
+        .map(|r| r.id.clone())
+}
+
+fn find_active_run_id(state: &AppState, id_str: &str) -> Option<RunId> {
+    state
+        .runs
+        .active_runs
+        .iter()
         .find(|r| r.id.to_string() == id_str || r.name == id_str)
         .map(|r| r.id.clone())
 }

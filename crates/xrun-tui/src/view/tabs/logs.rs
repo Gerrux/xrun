@@ -21,14 +21,16 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             if let Some(ref query) = log.search {
                 if !query.is_empty() {
                     let ql = query.to_lowercase();
-                    if let Some(pos) = line.to_lowercase().find(&ql) {
+                    let line_lower = line.to_lowercase();
+                    if let Some(pos) = line_lower.find(&ql) {
+                        let end = pos + ql.len();
                         return Line::from(vec![
-                            Span::raw(line[..pos].to_string()),
+                            Span::raw(line_lower[..pos].to_string()),
                             Span::styled(
-                                line[pos..pos + query.len()].to_string(),
+                                line_lower[pos..end].to_string(),
                                 Style::default().fg(Color::Black).bg(Color::Yellow),
                             ),
-                            Span::raw(line[pos + query.len()..].to_string()),
+                            Span::raw(line_lower[end..].to_string()),
                         ]);
                     }
                 }

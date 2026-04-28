@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::state::AppState;
 
-const SETTINGS_ROW_COUNT: usize = 4;
+pub(crate) const SETTINGS_ROW_COUNT: usize = 4;
 
 pub enum SettingsAction {
     SaveTheme(String),

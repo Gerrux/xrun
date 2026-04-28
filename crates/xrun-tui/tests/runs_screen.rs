@@ -151,7 +151,7 @@ fn slash_opens_filter_input_modal() {
     assert!(state.modal.is_none());
 
     let action = handle_key(&mut state, key(KeyCode::Char('/')));
-    matches!(action, RunsAction::Nothing);
+    assert!(matches!(action, RunsAction::Nothing));
     assert!(matches!(
         state.modal,
         Some(xrun_tui::state::Modal::FilterInput { .. })

@@ -158,10 +158,10 @@ fn make_poller_sender_bridges_to_tokio_channel() {
             .try_send(DataUpdate::RunCreated(id.clone()))
             .expect("SyncSender try_send");
 
-        // Give the bridge thread a moment.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let update = rx.try_recv().expect("should have received update");
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for bridge")
+            .expect("channel closed");
         assert!(
             matches!(update, DataUpdate::RunCreated(_)),
             "unexpected update: {:?}",

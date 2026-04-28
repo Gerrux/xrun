@@ -5,7 +5,7 @@ use xrun_core::StoredEvent;
 
 use crate::state::AppState;
 
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+use crate::view::SPINNER;
 
 struct StageData {
     name: String,

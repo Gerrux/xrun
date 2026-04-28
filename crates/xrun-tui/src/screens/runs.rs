@@ -11,6 +11,7 @@ pub enum RunsAction {
     ShowStopConfirm(RunId, String),
     ShowPullConfirm(RunId, String),
     Rerun(RunId),
+    Quit,
     Nothing,
 }
 
@@ -84,6 +85,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> RunsAction {
             state.dirty = true;
             RunsAction::Nothing
         }
+        KeyCode::Char('q') | KeyCode::Esc => RunsAction::Quit,
         _ => RunsAction::Nothing,
     }
 }

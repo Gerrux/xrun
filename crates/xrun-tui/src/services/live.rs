@@ -38,7 +38,7 @@ impl LiveService {
         let tx = self.tx;
         let shutdown = self.shutdown;
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("xrun-live-service".to_string())
             .spawn(move || {
                 let Ok(mut store) = Store::open(&db_path) else {
@@ -60,8 +60,9 @@ impl LiveService {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                 }
-            })
-            .ok();
+            }) {
+            tracing::warn!("failed to spawn live-service thread: {}", e);
+        }
     }
 
     /// Returns a `SyncSender` that bridges into the TUI channel.
@@ -70,14 +71,15 @@ impl LiveService {
     pub fn make_poller_sender(tx: &mpsc::Sender<DataUpdate>) -> SyncSender<DataUpdate> {
         let (std_tx, std_rx) = std::sync::mpsc::sync_channel::<DataUpdate>(64);
         let tokio_tx = tx.clone();
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("xrun-poller-bridge".to_string())
             .spawn(move || {
                 while let Ok(update) = std_rx.recv() {
                     let _ = tokio_tx.try_send(update);
                 }
-            })
-            .ok();
+            }) {
+            tracing::warn!("failed to spawn poller-bridge thread: {}", e);
+        }
         std_tx
     }
 

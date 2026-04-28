@@ -4,7 +4,7 @@ use xrun_core::{Run, RunStatus};
 
 use crate::state::{AppState, RunSection};
 
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+use super::SPINNER;
 
 pub(super) fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let chunks = Layout::vertical([

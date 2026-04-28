@@ -18,7 +18,7 @@ use crate::screens::launch::{self as launch_screen, LaunchAction};
 use crate::screens::palette::{self as palette_screen, PaletteAction};
 use crate::screens::run_detail::{self as run_detail_screen, RunDetailAction};
 use crate::screens::runs::{self as runs_screen, RunsAction};
-use crate::screens::settings::{self as settings_screen, SettingsAction};
+use crate::screens::settings::{self as settings_screen, SettingsAction, SETTINGS_ROW_COUNT};
 use crate::services::live::LiveService;
 use crate::state::{
     AppState, ConfirmAction, LaunchManifest, LogPaneState, Modal, RunDetailState, RunSection,
@@ -440,7 +440,7 @@ impl App {
                 }
             }
             Screen::Settings => {
-                self.state.settings.selected_row = 3;
+                self.state.settings.selected_row = SETTINGS_ROW_COUNT - 1;
             }
             Screen::RunDetail(_, _) => {}
         }
@@ -482,6 +482,7 @@ impl App {
             RunsAction::Rerun(id) => {
                 self.handle_rerun(id)?;
             }
+            RunsAction::Quit => return Ok(true),
             RunsAction::Nothing => {}
         }
         Ok(false)
@@ -710,6 +711,11 @@ impl App {
                 let dst = exp_dir.join(format!("{}-rerun-{}.yaml", run.name, ts));
                 std::fs::copy(src, &dst)?;
                 tracing::info!("copied manifest to {}", dst.display());
+            } else {
+                tracing::warn!(
+                    "rerun: manifest '{}' not found, opening launch picker without copy",
+                    run.manifest_path
+                );
             }
             self.state.push_screen(Screen::Launch);
         }
@@ -797,6 +803,16 @@ impl App {
             .take(10)
             .cloned()
             .collect();
+
+        let current_len = match self.state.runs.section {
+            RunSection::Active => self.state.runs.active_runs.len(),
+            RunSection::Recent => self.state.runs.recent_runs.len(),
+        };
+        self.state.runs.selected = if current_len == 0 {
+            0
+        } else {
+            self.state.runs.selected.min(current_len - 1)
+        };
 
         self.state.dirty = true;
         Ok(())
