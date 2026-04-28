@@ -204,7 +204,7 @@ fn render_args_string_value_appended() {
     args.insert("--model".to_string(), serde_json::json!("resnet50"));
 
     let rendered = render_args(&args);
-    assert_eq!(rendered, "--model resnet50");
+    assert_eq!(rendered, "--model 'resnet50'");
 }
 
 // ─── build_launch_command ────────────────────────────────────────────────────

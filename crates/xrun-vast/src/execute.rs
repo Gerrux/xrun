@@ -6,10 +6,14 @@ use xrun_core::manifest::RunSpec;
 
 use crate::{cli::InstanceId, error::VastError};
 
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Render RunSpec.args into a command-line string sorted alphabetically by key.
 /// - bool true  → "--key" (bare flag, no value)
 /// - bool false → omitted
-/// - other      → "--key value"
+/// - other      → "--key value" (string values are shell-quoted)
 pub fn render_args(args: &HashMap<String, serde_json::Value>) -> String {
     let mut sorted: Vec<(&String, &serde_json::Value)> = args.iter().collect();
     sorted.sort_by_key(|(k, _)| k.as_str());
@@ -27,11 +31,11 @@ pub fn render_args(args: &HashMap<String, serde_json::Value>) -> String {
             }
             serde_json::Value::String(s) => {
                 parts.push(key.clone());
-                parts.push(s.clone());
+                parts.push(shell_quote(s));
             }
             other => {
                 parts.push(key.clone());
-                parts.push(other.to_string());
+                parts.push(shell_quote(&other.to_string()));
             }
         }
     }

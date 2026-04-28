@@ -37,6 +37,10 @@ pub fn parse_wc_output(bytes: &[u8]) -> Option<u64> {
     s.trim().parse::<u64>().ok()
 }
 
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Incrementally read bytes from `file` starting at `offset`.
 ///
 /// Returns an empty vec if the file hasn't grown. Returns `FileTruncated` when
@@ -46,7 +50,8 @@ pub async fn tail_file(
     file: &str,
     offset: u64,
 ) -> Result<Vec<u8>, VastError> {
-    let wc_cmd = format!("wc -c < {}", file);
+    let quoted = shell_quote(file);
+    let wc_cmd = format!("wc -c < {}", quoted);
     let wc_out = cli::execute(instance_id, &wc_cmd).await?;
     let size = parse_wc_output(&wc_out)
         .ok_or_else(|| VastError::ParseError(format!("unexpected wc output: {:?}", wc_out)))?;
@@ -59,7 +64,7 @@ pub async fn tail_file(
             now,
         }),
         TailDecision::Read { start_byte } => {
-            let tail_cmd = format!("tail -c +{} {}", start_byte, file);
+            let tail_cmd = format!("tail -c +{} {}", start_byte, quoted);
             cli::execute(instance_id, &tail_cmd).await
         }
     }

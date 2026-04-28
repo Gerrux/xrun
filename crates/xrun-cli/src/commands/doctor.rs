@@ -176,7 +176,8 @@ fn check_vastai_ssh_key() -> (bool, String) {
             let detail = if stderr.contains("unauthorized") || stderr.contains("api_key") {
                 "not authenticated — run `vastai set api-key <KEY>`".to_string()
             } else {
-                format!("vastai show user failed: {}", stderr.trim())
+                let first_line = stderr.lines().next().unwrap_or("unknown error");
+                format!("vastai show user failed: {}", &first_line[..first_line.len().min(120)])
             };
             (false, detail)
         }

@@ -181,6 +181,7 @@ impl Poller {
                 Ok(bytes) if !bytes.is_empty() => {
                     let delta = bytes.len() as u64;
                     let events = parse_events(&bytes);
+                    let mut done = false;
                     let mut failed = false;
 
                     for ev in &events {
@@ -197,15 +198,7 @@ impl Poller {
                         );
 
                         if ev.stage == "done" && ev.status == EventStatus::Ok {
-                            offset_e += delta;
-                            let _ = self.store.update_poll_offset(
-                                &self.run_id,
-                                &self.config.events_file,
-                                offset_e,
-                            );
-                            self.store
-                                .update_run_status(&self.run_id, RunStatus::Done)?;
-                            return Ok(RunStatus::Done);
+                            done = true;
                         }
 
                         if ev.status == EventStatus::Fail {
@@ -223,6 +216,12 @@ impl Poller {
                     if offset_e > last_offset_e {
                         last_progress = Instant::now();
                         last_offset_e = offset_e;
+                    }
+
+                    if done {
+                        self.store
+                            .update_run_status(&self.run_id, RunStatus::Done)?;
+                        return Ok(RunStatus::Done);
                     }
 
                     if failed && !matches!(self.config.on_stage_failed, FailPolicy::Keep) {
@@ -276,6 +275,7 @@ impl Poller {
                         &self.config.metrics_file,
                         offset_m,
                     );
+                    last_progress = Instant::now();
                 }
                 Ok(_) => {}
                 Err(VendorError::Truncated) => {
@@ -297,7 +297,7 @@ impl Poller {
                 if let Some(started_at) = run.started_at {
                     if let Ok(Some(inst)) = self.store.get_instance(&self.handle.id) {
                         if let Some(dph) = inst.price_per_hour {
-                            let hours = (Utc::now() - started_at).num_seconds() as f64 / 3600.0;
+                            let hours = (Utc::now() - started_at).num_seconds().max(0) as f64 / 3600.0;
                             let _ = self
                                 .store
                                 .update_run_cost_estimate(&self.run_id, hours * dph);

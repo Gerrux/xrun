@@ -283,7 +283,7 @@ impl VastAdapter {
                     if let Some(started_at) = run.started_at {
                         if let Ok(Some(inst)) = store.get_instance(&h.id) {
                             if let Some(dph) = inst.price_per_hour {
-                                let hours = (now - started_at).num_seconds() as f64 / 3600.0;
+                                let hours = (now - started_at).num_seconds().max(0) as f64 / 3600.0;
                                 let _ = store.update_run_cost(rid, hours * dph);
                             }
                         }
