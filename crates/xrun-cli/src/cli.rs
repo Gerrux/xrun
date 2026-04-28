@@ -55,6 +55,8 @@ pub enum Commands {
     Doctor(DoctorArgs),
     /// Manage xrun configuration
     Config(ConfigArgs),
+    /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
+    Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)
     #[command(name = "__poll-daemon", hide = true)]
     PollDaemon(PollDaemonArgs),

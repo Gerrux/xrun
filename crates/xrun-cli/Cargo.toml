@@ -12,10 +12,15 @@ path = "src/main.rs"
 name = "xrun_cli"
 path = "src/lib.rs"
 
+[features]
+default = ["tui"]
+tui = ["dep:xrun-tui"]
+
 [dependencies]
 xrun-core = { path = "../xrun-core" }
 xrun-vast = { path = "../xrun-vast" }
 xrun-poller = { path = "../xrun-poller" }
+xrun-tui = { path = "../xrun-tui", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

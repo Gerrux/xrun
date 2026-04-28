@@ -97,7 +97,31 @@ fn run() -> Result<()> {
             let runs_dir = args.runs_dir.clone().unwrap_or(ctx.runs_dir);
             xrun_cli::commands::poll_daemon::run(&args, &ctx.db_path, &runs_dir)?;
         }
+        Some(Commands::Tui) => {
+            #[cfg(feature = "tui")]
+            {
+                let ctx = get_data_ctx()?;
+                let config_dir = get_config()?;
+                let config = xrun_core::GlobalConfig::load(&config_dir).unwrap_or_default();
+                xrun_tui::launch(ctx.db_path, config)?;
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                eprintln!("error: TUI support not compiled in (build with --features tui)");
+                std::process::exit(1);
+            }
+        }
         None => {
+            #[cfg(feature = "tui")]
+            {
+                use std::io::IsTerminal;
+                if std::io::stdout().is_terminal() {
+                    let ctx = get_data_ctx()?;
+                    let config_dir = get_config()?;
+                    let config = xrun_core::GlobalConfig::load(&config_dir).unwrap_or_default();
+                    return xrun_tui::launch(ctx.db_path, config);
+                }
+            }
             use clap::CommandFactory;
             Cli::command().print_help()?;
         }

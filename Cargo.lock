@@ -2174,6 +2174,7 @@ dependencies = [
  "tracing-subscriber",
  "xrun-core",
  "xrun-poller",
+ "xrun-tui",
  "xrun-vast",
 ]
 

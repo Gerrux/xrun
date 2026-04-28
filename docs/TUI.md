@@ -72,10 +72,11 @@ RTX 3090    $0.31     8h 03m    (orphan)          running   <- D=destroy
 - `tui-logger` — встроенный лог-пейн (DEBUG в stderr пайпится сюда).
 - `tui-input` — ввод для filter/command palette.
 - `ratatui::widgets::Chart` — нативный line chart, хватит для метрик.
-- `tachyonfx` (опционально) — анимации перехода между экранами.
 - `color-eyre` — error reporting.
 
-Не используем: `tui-realm` (overhead, наш state простой), сторонние chart-библиотеки (Chart хватит).
+Не используем: `tachyonfx` (overhead без очевидной пользы), `tui-realm` (overhead, наш state простой), сторонние chart-библиотеки (Chart хватит).
+
+Metrics tab (графики метрик) — реализован в v0.3. В v0.2 вкладка Metrics отсутствует в Run detail; доступны Stages, Logs, Manifest.
 
 ## Архитектура TUI
 
