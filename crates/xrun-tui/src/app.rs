@@ -34,6 +34,7 @@ pub struct App {
     data_rx: mpsc::Receiver<DataUpdate>,
     data_tx: mpsc::Sender<DataUpdate>,
     db_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     live_shutdown: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
@@ -49,6 +50,7 @@ impl App {
             data_rx,
             data_tx,
             db_path: None,
+            config_dir: None,
             live_shutdown: None,
         }
     }
@@ -56,6 +58,19 @@ impl App {
     pub fn with_db_path(mut self, db_path: PathBuf) -> Self {
         self.db_path = Some(db_path);
         self
+    }
+
+    pub fn with_config_dir(mut self, config_dir: PathBuf) -> Self {
+        self.config_dir = Some(config_dir);
+        self
+    }
+
+    fn save_config(&self) {
+        if let Some(dir) = &self.config_dir {
+            if let Err(e) = self.config.save(dir) {
+                tracing::warn!("failed to save config: {}", e);
+            }
+        }
     }
 
     pub fn data_sender(&self) -> mpsc::Sender<DataUpdate> {
@@ -390,6 +405,7 @@ impl App {
                 self.config.tui.theme = name.clone();
                 self.state.theme = crate::theme::Theme::from_name(&name);
                 self.state.settings.theme = name;
+                self.save_config();
                 self.state.dirty = true;
             }
             PaletteAction::Nothing => {}
@@ -574,24 +590,36 @@ impl App {
                 self.config.tui.theme = name.clone();
                 self.state.theme = Theme::from_name(&name);
                 self.state.settings.theme = name;
+                self.save_config();
                 self.state.dirty = true;
             }
             SettingsAction::SavePollIntervalActive(v) => {
                 self.config.poller.interval_active_secs = v;
                 self.state.settings.poll_interval_active = v;
+                self.save_config();
                 self.state.dirty = true;
             }
             SettingsAction::SavePollIntervalIdle(v) => {
                 self.config.poller.interval_idle_secs = v;
                 self.state.settings.poll_interval_idle = v;
+                self.save_config();
                 self.state.dirty = true;
             }
             SettingsAction::SaveDefaultVendor(vendor) => {
-                self.config.defaults.vendor = vendor.as_deref().and_then(|s| {
-                    let quoted = format!("\"{}\"", s);
-                    serde_json::from_str(&quoted).ok()
-                });
-                self.state.settings.default_vendor = vendor.unwrap_or_default();
+                let trimmed = vendor.as_deref().map(str::trim).unwrap_or("");
+                let parsed = match trimmed.to_ascii_lowercase().as_str() {
+                    "" => Some(None),
+                    "vast" => Some(Some(xrun_core::manifest::types::Vendor::Vast)),
+                    "kaggle" => Some(Some(xrun_core::manifest::types::Vendor::Kaggle)),
+                    _ => None,
+                };
+                if let Some(v) = parsed {
+                    self.config.defaults.vendor = v;
+                    self.state.settings.default_vendor = trimmed.to_ascii_lowercase();
+                    self.save_config();
+                } else {
+                    tracing::warn!("ignoring unknown vendor '{}'", trimmed);
+                }
                 self.state.dirty = true;
             }
             SettingsAction::Back => {
@@ -708,7 +736,23 @@ impl App {
                 let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
                 let exp_dir = std::env::current_dir()?.join("exp");
                 std::fs::create_dir_all(&exp_dir)?;
-                let dst = exp_dir.join(format!("{}-rerun-{}.yaml", run.name, ts));
+                let safe_name: String = run
+                    .name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let safe_name = if safe_name.is_empty() || safe_name.starts_with('.') {
+                    format!("run_{}", safe_name.trim_start_matches('.'))
+                } else {
+                    safe_name
+                };
+                let dst = exp_dir.join(format!("{}-rerun-{}.yaml", safe_name, ts));
                 std::fs::copy(src, &dst)?;
                 tracing::info!("copied manifest to {}", dst.display());
             } else {

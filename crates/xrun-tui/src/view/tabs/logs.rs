@@ -20,17 +20,20 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         .map(|line| {
             if let Some(ref query) = log.search {
                 if !query.is_empty() {
-                    let ql = query.to_lowercase();
-                    let line_lower = line.to_lowercase();
+                    // ASCII case-insensitive search preserves byte length, so
+                    // byte offsets from the lowercased copy index safely into
+                    // the original line.
+                    let ql = query.to_ascii_lowercase();
+                    let line_lower = line.to_ascii_lowercase();
                     if let Some(pos) = line_lower.find(&ql) {
                         let end = pos + ql.len();
                         return Line::from(vec![
-                            Span::raw(line_lower[..pos].to_string()),
+                            Span::raw(line[..pos].to_string()),
                             Span::styled(
-                                line_lower[pos..end].to_string(),
+                                line[pos..end].to_string(),
                                 Style::default().fg(Color::Black).bg(Color::Yellow),
                             ),
-                            Span::raw(line_lower[end..].to_string()),
+                            Span::raw(line[end..].to_string()),
                         ]);
                     }
                 }
@@ -46,7 +49,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     };
     let title = format!(
         " Logs ({}/{}){}",
-        start + visible.len().min(1).max(visible.len()),
+        start + visible.len(),
         total,
         autoscroll_indicator,
     );

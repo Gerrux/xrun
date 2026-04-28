@@ -60,7 +60,8 @@ impl LiveService {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                 }
-            }) {
+            })
+        {
             tracing::warn!("failed to spawn live-service thread: {}", e);
         }
     }
@@ -77,7 +78,8 @@ impl LiveService {
                 while let Ok(update) = std_rx.recv() {
                     let _ = tokio_tx.try_send(update);
                 }
-            }) {
+            })
+        {
             tracing::warn!("failed to spawn poller-bridge thread: {}", e);
         }
         std_tx
@@ -92,7 +94,11 @@ impl LiveService {
             return;
         };
 
+        let mut current_ids: std::collections::HashSet<RunId> =
+            std::collections::HashSet::with_capacity(runs.len());
+
         for run in &runs {
+            current_ids.insert(run.id.clone());
             let event_count = store.list_events(&run.id).map(|e| e.len()).unwrap_or(0);
 
             if let Some((prev_status, prev_count)) = known.get(&run.id) {
@@ -114,5 +120,7 @@ impl LiveService {
 
             known.insert(run.id.clone(), (run.status.clone(), event_count));
         }
+
+        known.retain(|k, _| current_ids.contains(k));
     }
 }

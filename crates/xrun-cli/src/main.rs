@@ -103,7 +103,7 @@ fn run() -> Result<()> {
                 let ctx = get_data_ctx()?;
                 let config_dir = get_config()?;
                 let config = xrun_core::GlobalConfig::load(&config_dir).unwrap_or_default();
-                xrun_tui::launch(ctx.db_path, config)?;
+                xrun_tui::launch(ctx.db_path, config, config_dir)?;
             }
             #[cfg(not(feature = "tui"))]
             {
@@ -119,7 +119,7 @@ fn run() -> Result<()> {
                     let ctx = get_data_ctx()?;
                     let config_dir = get_config()?;
                     let config = xrun_core::GlobalConfig::load(&config_dir).unwrap_or_default();
-                    return xrun_tui::launch(ctx.db_path, config);
+                    return xrun_tui::launch(ctx.db_path, config, config_dir);
                 }
             }
             use clap::CommandFactory;
