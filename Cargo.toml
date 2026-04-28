@@ -2,6 +2,7 @@
 members = [
     "crates/xrun-core",
     "crates/xrun-vast",
+    "crates/xrun-poller",
     "crates/xrun-cli",
 ]
 resolver = "2"

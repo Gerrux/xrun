@@ -1682,10 +1682,12 @@ dependencies = [
  "predicates",
  "serde_json",
  "tempfile",
+ "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
  "xrun-core",
+ "xrun-poller",
  "xrun-vast",
 ]
 
@@ -1710,6 +1712,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrun-poller"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pretty_assertions",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "xrun-core",
+]
+
+[[package]]
 name = "xrun-vast"
 version = "0.1.0"
 dependencies = [
@@ -1717,6 +1731,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",

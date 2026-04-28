@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use xrun_core::{
     manifest::{Manifest, Vendor},
+    store::RunId,
     RunStatus, Store, VendorAdapter,
 };
 use xrun_vast::VastStub;
@@ -98,4 +99,43 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
             anyhow::bail!("vast adapter not implemented yet: {e}");
         }
     }
+}
+
+/// Spawn `xrun __poll-daemon <run_id>` as a detached background process.
+#[allow(dead_code)]
+///
+/// The spawned process inherits the same data-dir / db-path as the current
+/// process so it can open the same store and read the instance handle.
+pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<()> {
+    let exe = std::env::current_exe().context("failed to determine current executable path")?;
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--db")
+        .arg(db_path)
+        .arg("__poll-daemon")
+        .arg(run_id.to_string())
+        .arg("--runs-dir")
+        .arg(runs_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    // Detach the child from the current process group / terminal.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Create a new process group so the daemon survives terminal close.
+        cmd.process_group(0);
+    }
+
+    cmd.spawn()
+        .with_context(|| format!("failed to spawn poll-daemon for run {run_id}"))?;
+    Ok(())
 }

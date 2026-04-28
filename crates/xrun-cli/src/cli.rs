@@ -55,6 +55,9 @@ pub enum Commands {
     Doctor(DoctorArgs),
     /// Manage xrun configuration
     Config(ConfigArgs),
+    /// Internal: run the poller in daemon mode for a detached run (hidden)
+    #[command(name = "__poll-daemon", hide = true)]
+    PollDaemon(PollDaemonArgs),
 }
 
 #[derive(Args)]
@@ -73,6 +76,18 @@ pub struct LaunchArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+    /// Detach after launch: spawn a background poller daemon and exit immediately
+    #[arg(long)]
+    pub detach: bool,
+}
+
+#[derive(Args)]
+pub struct PollDaemonArgs {
+    /// Run ID to poll
+    pub run_id: String,
+    /// Runs directory (passed by the launcher when spawning the daemon)
+    #[arg(long, hide = true)]
+    pub runs_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]

@@ -95,6 +95,11 @@ fn run() -> Result<()> {
             let config_dir = get_config()?;
             commands::config_cmd::run(&args, &config_dir)?;
         }
+        Some(Commands::PollDaemon(args)) => {
+            let ctx = get_data_ctx()?;
+            let runs_dir = args.runs_dir.clone().unwrap_or(ctx.runs_dir);
+            commands::poll_daemon::run(&args, &ctx.db_path, &runs_dir)?;
+        }
         None => {
             use clap::CommandFactory;
             Cli::command().print_help()?;
