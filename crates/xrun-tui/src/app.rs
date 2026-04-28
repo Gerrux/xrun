@@ -10,9 +10,15 @@ use tokio_util::sync::CancellationToken;
 use xrun_core::{GlobalConfig, ListFilter, RunId, RunStatus, Store};
 
 use crate::event::DataUpdate;
+use crate::screens::instances::{self as instances_screen, InstancesAction};
+use crate::screens::launch::{self as launch_screen, LaunchAction};
 use crate::screens::run_detail::{self as run_detail_screen, RunDetailAction};
 use crate::screens::runs::{self as runs_screen, RunsAction};
-use crate::state::{AppState, ConfirmAction, LogPaneState, Modal, RunDetailState, Screen, Tab};
+use crate::screens::settings::{self as settings_screen, SettingsAction};
+use crate::state::{
+    AppState, ConfirmAction, LaunchManifest, LogPaneState, Modal, RunDetailState, Screen,
+    SettingsState, Tab,
+};
 use crate::theme::Theme;
 use crate::view;
 
@@ -140,17 +146,17 @@ impl App {
                 let action = run_detail_screen::handle_key(&mut self.state, key);
                 self.handle_run_detail_action(action)
             }
-            _ => {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
-                        if self.state.screen_stack.is_empty() {
-                            return Ok(true);
-                        }
-                        self.state.pop_screen();
-                    }
-                    _ => {}
-                }
-                Ok(false)
+            Screen::Launch => {
+                let action = launch_screen::handle_key(&mut self.state, key);
+                self.handle_launch_action(action)
+            }
+            Screen::Instances => {
+                let action = instances_screen::handle_key(&mut self.state, key);
+                self.handle_instances_action(action)
+            }
+            Screen::Settings => {
+                let action = settings_screen::handle_key(&mut self.state, key);
+                self.handle_settings_action(action)
             }
         }
     }
@@ -162,7 +168,16 @@ impl App {
                 self.state.push_screen(Screen::RunDetail(id, Tab::Stages));
             }
             RunsAction::OpenLaunch => {
+                self.load_launch_manifests()?;
                 self.state.push_screen(Screen::Launch);
+            }
+            RunsAction::OpenInstances => {
+                self.load_instances()?;
+                self.state.push_screen(Screen::Instances);
+            }
+            RunsAction::OpenSettings => {
+                self.load_settings();
+                self.state.push_screen(Screen::Settings);
             }
             RunsAction::ShowStopConfirm(id, name) => {
                 self.state.modal = Some(Modal::Confirm {
@@ -232,6 +247,74 @@ impl App {
         Ok(false)
     }
 
+    fn handle_launch_action(&mut self, action: LaunchAction) -> Result<bool> {
+        match action {
+            LaunchAction::Confirm(path) => {
+                self.state.modal = Some(Modal::Confirm {
+                    message: format!("Launch manifest '{}'?", path),
+                    action: ConfirmAction::LaunchRun(path),
+                });
+                self.state.dirty = true;
+            }
+            LaunchAction::Back => {
+                self.state.pop_screen();
+            }
+            LaunchAction::Nothing => {}
+        }
+        Ok(false)
+    }
+
+    fn handle_instances_action(&mut self, action: InstancesAction) -> Result<bool> {
+        match action {
+            InstancesAction::ShowDestroyConfirm(id) => {
+                self.state.modal = Some(Modal::Confirm {
+                    message: format!("Destroy orphan instance '{}'?", id),
+                    action: ConfirmAction::DestroyInstance(id),
+                });
+                self.state.dirty = true;
+            }
+            InstancesAction::Back => {
+                self.state.pop_screen();
+            }
+            InstancesAction::Nothing => {}
+        }
+        Ok(false)
+    }
+
+    fn handle_settings_action(&mut self, action: SettingsAction) -> Result<bool> {
+        match action {
+            SettingsAction::SaveTheme(name) => {
+                self.config.tui.theme = name.clone();
+                self.state.theme = Theme::from_name(&name);
+                self.state.settings.theme = name;
+                self.state.dirty = true;
+            }
+            SettingsAction::SavePollIntervalActive(v) => {
+                self.config.poller.interval_active_secs = v;
+                self.state.settings.poll_interval_active = v;
+                self.state.dirty = true;
+            }
+            SettingsAction::SavePollIntervalIdle(v) => {
+                self.config.poller.interval_idle_secs = v;
+                self.state.settings.poll_interval_idle = v;
+                self.state.dirty = true;
+            }
+            SettingsAction::SaveDefaultVendor(vendor) => {
+                self.config.defaults.vendor = vendor.as_deref().and_then(|s| {
+                    let quoted = format!("\"{}\"", s);
+                    serde_json::from_str(&quoted).ok()
+                });
+                self.state.settings.default_vendor = vendor.unwrap_or_default();
+                self.state.dirty = true;
+            }
+            SettingsAction::Back => {
+                self.state.pop_screen();
+            }
+            SettingsAction::Nothing => {}
+        }
+        Ok(false)
+    }
+
     fn execute_confirm_action(&mut self, action: ConfirmAction) -> Result<()> {
         match action {
             ConfirmAction::StopRun(id) => {
@@ -242,10 +325,84 @@ impl App {
                 tracing::info!("pull requested for run {}", id);
             }
             ConfirmAction::DestroyInstance(instance_id) => {
-                tracing::info!("destroy instance {} requested", instance_id);
+                self.store
+                    .update_instance_destroyed(&instance_id, chrono::Utc::now())?;
+                self.load_instances()?;
+            }
+            ConfirmAction::LaunchRun(path) => {
+                tracing::info!("launch requested for manifest {}", path);
+                self.state.pop_screen();
+                self.reload_runs()?;
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn load_launch_manifests(&mut self) -> Result<()> {
+        let all_runs = self.store.list_runs(&ListFilter::default())?;
+        let run_paths: std::collections::HashSet<String> =
+            all_runs.iter().map(|r| r.manifest_path.clone()).collect();
+
+        let exp_dir = std::env::current_dir()
+            .unwrap_or_default()
+            .join(self.config.defaults.exp_dir.as_deref().unwrap_or("exp"));
+
+        let mut manifests = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&exp_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("yaml")
+                    || path.extension().and_then(|e| e.to_str()) == Some("yml")
+                {
+                    let name = path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    let path_str = path.to_string_lossy().to_string();
+                    let previously_run = run_paths.contains(&path_str);
+                    manifests.push(LaunchManifest {
+                        path,
+                        name,
+                        content,
+                        previously_run,
+                    });
+                }
+            }
+        }
+        manifests.sort_by(|a, b| a.name.cmp(&b.name));
+
+        self.state.launch.manifests = manifests;
+        self.state.launch.selected = 0;
+        self.state.dirty = true;
+        Ok(())
+    }
+
+    pub(crate) fn load_instances(&mut self) -> Result<()> {
+        self.state.instances.instances = self.store.list_instances()?;
+        self.state.instances.selected = 0;
+        self.state.dirty = true;
+        Ok(())
+    }
+
+    pub(crate) fn load_settings(&mut self) {
+        self.state.settings = SettingsState {
+            selected_row: 0,
+            editing: false,
+            edit_input: String::new(),
+            theme: self.config.tui.theme.clone(),
+            poll_interval_active: self.config.poller.interval_active_secs,
+            poll_interval_idle: self.config.poller.interval_idle_secs,
+            default_vendor: self
+                .config
+                .defaults
+                .vendor
+                .as_ref()
+                .map(|v| format!("{:?}", v).to_lowercase())
+                .unwrap_or_default(),
+        };
+        self.state.dirty = true;
     }
 
     fn handle_rerun(&mut self, run_id: xrun_core::RunId) -> Result<()> {

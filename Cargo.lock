@@ -2218,6 +2218,7 @@ dependencies = [
  "crossterm",
  "futures",
  "ratatui 0.29.0",
+ "serde_json",
  "tempfile",
  "thiserror",
  "throbber-widgets-tui",

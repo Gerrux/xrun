@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use xrun_core::{Run, RunId, StoredEvent};
+use xrun_core::{Instance, Run, RunId, StoredEvent};
 
 use crate::theme::Theme;
 
@@ -52,6 +52,7 @@ pub enum ConfirmAction {
     StopRun(RunId),
     PullRun(RunId),
     DestroyInstance(String),
+    LaunchRun(String),
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +84,37 @@ pub struct RunsState {
     pub throbber_frame: u8,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LaunchManifest {
+    pub path: PathBuf,
+    pub name: String,
+    pub content: String,
+    pub previously_run: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LaunchState {
+    pub manifests: Vec<LaunchManifest>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InstancesState {
+    pub instances: Vec<Instance>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SettingsState {
+    pub selected_row: usize,
+    pub editing: bool,
+    pub edit_input: String,
+    pub theme: String,
+    pub poll_interval_active: u64,
+    pub poll_interval_idle: u64,
+    pub default_vendor: String,
+}
+
 pub struct AppState {
     pub screen: Screen,
     pub screen_stack: Vec<Screen>,
@@ -91,6 +123,9 @@ pub struct AppState {
     pub dirty: bool,
     pub runs: RunsState,
     pub run_detail: RunDetailState,
+    pub launch: LaunchState,
+    pub instances: InstancesState,
+    pub settings: SettingsState,
     pub editor_path: Option<PathBuf>,
 }
 
@@ -104,6 +139,9 @@ impl AppState {
             dirty: true,
             runs: RunsState::default(),
             run_detail: RunDetailState::default(),
+            launch: LaunchState::default(),
+            instances: InstancesState::default(),
+            settings: SettingsState::default(),
             editor_path: None,
         }
     }

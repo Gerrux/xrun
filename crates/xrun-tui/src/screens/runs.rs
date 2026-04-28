@@ -6,6 +6,8 @@ use crate::state::{AppState, Modal, RunSection};
 pub enum RunsAction {
     OpenRunDetail(RunId),
     OpenLaunch,
+    OpenInstances,
+    OpenSettings,
     ShowStopConfirm(RunId, String),
     ShowPullConfirm(RunId, String),
     Rerun(RunId),
@@ -61,6 +63,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> RunsAction {
             None => RunsAction::Nothing,
         },
         KeyCode::Char('L') => RunsAction::OpenLaunch,
+        KeyCode::Char('I') => RunsAction::OpenInstances,
+        KeyCode::Char(',') => RunsAction::OpenSettings,
         KeyCode::Char('S') => match selected_active_run(state) {
             Some((id, name)) => RunsAction::ShowStopConfirm(id, name),
             None => RunsAction::Nothing,

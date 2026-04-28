@@ -3,8 +3,11 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::state::{AppState, Modal, Screen};
 
+mod instances;
+mod launch;
 mod run_detail;
 mod runs;
+mod settings;
 mod status_bar;
 pub mod tabs;
 
@@ -23,9 +26,9 @@ fn render_main(f: &mut Frame, area: Rect, state: &AppState) {
     match &state.screen {
         Screen::Runs => runs::render(f, area, state),
         Screen::RunDetail(_, _) => run_detail::render(f, area, state),
-        Screen::Launch => {}
-        Screen::Instances => {}
-        Screen::Settings => {}
+        Screen::Launch => launch::render(f, area, state),
+        Screen::Instances => instances::render(f, area, state),
+        Screen::Settings => settings::render(f, area, state),
     }
 }
 

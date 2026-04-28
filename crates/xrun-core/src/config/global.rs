@@ -30,6 +30,7 @@ impl Default for PollerConfig {
 #[serde(default)]
 pub struct DefaultsConfig {
     pub vendor: Option<Vendor>,
+    pub exp_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

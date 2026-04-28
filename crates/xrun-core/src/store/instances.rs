@@ -96,4 +96,24 @@ impl Store {
             Err(e) => Err(StoreError::Db(e)),
         }
     }
+
+    pub fn list_instances(&self) -> Result<Vec<Instance>, StoreError> {
+        let sql = "SELECT id, vendor, run_id, gpu_type, price_per_hour, \
+                   created_at, destroyed_at, state_json \
+                   FROM instances ORDER BY created_at DESC";
+        let mut stmt = self.conn.prepare(sql)?;
+        let iter = stmt.query_map([], |row| {
+            Ok(Instance {
+                id: row.get(0)?,
+                vendor: row.get(1)?,
+                run_id: row.get(2)?,
+                gpu_type: row.get(3)?,
+                price_per_hour: row.get(4)?,
+                created_at: row.get(5)?,
+                destroyed_at: row.get(6)?,
+                state_json: row.get(7)?,
+            })
+        })?;
+        iter.collect::<Result<Vec<_>, _>>().map_err(StoreError::Db)
+    }
 }
