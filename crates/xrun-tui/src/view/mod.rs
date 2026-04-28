@@ -3,8 +3,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::state::{AppState, Modal, Screen};
 
+mod run_detail;
 mod runs;
 mod status_bar;
+pub mod tabs;
 
 pub fn render(f: &mut Frame, state: &AppState) {
     let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
@@ -20,12 +22,11 @@ pub fn render(f: &mut Frame, state: &AppState) {
 fn render_main(f: &mut Frame, area: Rect, state: &AppState) {
     match &state.screen {
         Screen::Runs => runs::render(f, area, state),
-        Screen::RunDetail(_, _) => {}
+        Screen::RunDetail(_, _) => run_detail::render(f, area, state),
         Screen::Launch => {}
         Screen::Instances => {}
         Screen::Settings => {}
     }
-    let _ = (f, area);
 }
 
 fn render_modal(f: &mut Frame, state: &AppState) {

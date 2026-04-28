@@ -1,4 +1,6 @@
-use xrun_core::{Run, RunId};
+use std::path::PathBuf;
+
+use xrun_core::{Run, RunId, StoredEvent};
 
 use crate::theme::Theme;
 
@@ -7,6 +9,33 @@ pub enum Tab {
     Stages,
     Logs,
     Manifest,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogPaneState {
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    pub autoscroll: bool,
+    pub search: Option<String>,
+}
+
+impl Default for LogPaneState {
+    fn default() -> Self {
+        Self {
+            lines: Vec::new(),
+            scroll: 0,
+            autoscroll: true,
+            search: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunDetailState {
+    pub run: Option<Run>,
+    pub events: Vec<StoredEvent>,
+    pub log: LogPaneState,
+    pub manifest_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +90,8 @@ pub struct AppState {
     pub modal: Option<Modal>,
     pub dirty: bool,
     pub runs: RunsState,
+    pub run_detail: RunDetailState,
+    pub editor_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -72,6 +103,8 @@ impl AppState {
             modal: None,
             dirty: true,
             runs: RunsState::default(),
+            run_detail: RunDetailState::default(),
+            editor_path: None,
         }
     }
 

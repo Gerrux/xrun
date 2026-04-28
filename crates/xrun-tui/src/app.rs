@@ -7,11 +7,12 @@ use ratatui::backend::Backend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use xrun_core::{GlobalConfig, ListFilter, RunStatus, Store};
+use xrun_core::{GlobalConfig, ListFilter, RunId, RunStatus, Store};
 
 use crate::event::DataUpdate;
+use crate::screens::run_detail::{self as run_detail_screen, RunDetailAction};
 use crate::screens::runs::{self as runs_screen, RunsAction};
-use crate::state::{AppState, ConfirmAction, Modal, Screen, Tab};
+use crate::state::{AppState, ConfirmAction, LogPaneState, Modal, RunDetailState, Screen, Tab};
 use crate::theme::Theme;
 use crate::view;
 
@@ -79,6 +80,9 @@ impl App {
                             if self.handle_key(key)? {
                                 return Ok(());
                             }
+                            if let Some(path) = self.state.editor_path.take() {
+                                self.open_editor(terminal, &path)?;
+                            }
                         }
                         Some(Err(e)) => return Err(e.into()),
                         None => return Ok(()),
@@ -132,6 +136,10 @@ impl App {
                 let action = runs_screen::handle_key(&mut self.state, key);
                 self.handle_runs_action(action)
             }
+            Screen::RunDetail(_, _) => {
+                let action = run_detail_screen::handle_key(&mut self.state, key);
+                self.handle_run_detail_action(action)
+            }
             _ => {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
@@ -150,6 +158,7 @@ impl App {
     fn handle_runs_action(&mut self, action: RunsAction) -> Result<bool> {
         match action {
             RunsAction::OpenRunDetail(id) => {
+                self.load_run_detail(&id)?;
                 self.state.push_screen(Screen::RunDetail(id, Tab::Stages));
             }
             RunsAction::OpenLaunch => {
@@ -173,6 +182,52 @@ impl App {
                 self.handle_rerun(id)?;
             }
             RunsAction::Nothing => {}
+        }
+        Ok(false)
+    }
+
+    fn handle_run_detail_action(&mut self, action: RunDetailAction) -> Result<bool> {
+        match action {
+            RunDetailAction::Back => {
+                self.state.pop_screen();
+            }
+            RunDetailAction::SwitchTab(tab) => {
+                if let Screen::RunDetail(id, _) = &self.state.screen {
+                    let id = id.clone();
+                    self.state.screen = Screen::RunDetail(id, tab);
+                    self.state.dirty = true;
+                }
+            }
+            RunDetailAction::OpenEditor(path) => {
+                self.state.editor_path = Some(path);
+            }
+            RunDetailAction::ToggleAutoscroll => {
+                self.state.run_detail.log.autoscroll = !self.state.run_detail.log.autoscroll;
+                self.state.dirty = true;
+            }
+            RunDetailAction::ScrollUp => {
+                self.state.run_detail.log.scroll =
+                    self.state.run_detail.log.scroll.saturating_sub(1);
+                self.state.run_detail.log.autoscroll = false;
+                self.state.dirty = true;
+            }
+            RunDetailAction::ScrollDown => {
+                self.state.run_detail.log.scroll =
+                    self.state.run_detail.log.scroll.saturating_add(1);
+                self.state.run_detail.log.autoscroll = false;
+                self.state.dirty = true;
+            }
+            RunDetailAction::ScrollTop => {
+                self.state.run_detail.log.scroll = 0;
+                self.state.run_detail.log.autoscroll = false;
+                self.state.dirty = true;
+            }
+            RunDetailAction::ScrollBottom => {
+                self.state.run_detail.log.scroll = usize::MAX;
+                self.state.run_detail.log.autoscroll = true;
+                self.state.dirty = true;
+            }
+            RunDetailAction::Nothing => {}
         }
         Ok(false)
     }
@@ -218,6 +273,62 @@ impl App {
         Ok(())
     }
 
+    pub(crate) fn load_run_detail(&mut self, run_id: &RunId) -> Result<()> {
+        let run = self.store.get_run(run_id)?;
+        let events = self.store.list_events(run_id)?;
+
+        let log_lines = xrun_core::paths::runs_dir()
+            .ok()
+            .map(|d| d.join(run_id.to_string()).join("stdout.log"))
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let manifest_text = run
+            .as_ref()
+            .filter(|r| !r.manifest_path.is_empty())
+            .and_then(|r| std::fs::read_to_string(&r.manifest_path).ok())
+            .unwrap_or_default();
+
+        self.state.run_detail = RunDetailState {
+            run,
+            events,
+            log: LogPaneState {
+                lines: log_lines,
+                scroll: usize::MAX,
+                autoscroll: true,
+                search: None,
+            },
+            manifest_text,
+        };
+
+        self.state.dirty = true;
+        Ok(())
+    }
+
+    fn open_editor<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+
+        let _ = std::process::Command::new(&editor).arg(path).status();
+
+        let _ = crossterm::terminal::enable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
+        terminal.clear()?;
+
+        if let Screen::RunDetail(run_id, _) = &self.state.screen {
+            let run_id = run_id.clone();
+            let _ = self.load_run_detail(&run_id);
+        }
+        self.state.dirty = true;
+        Ok(())
+    }
+
     pub(crate) fn reload_runs(&mut self) -> Result<()> {
         let all = self.store.list_runs(&ListFilter::default())?;
 
@@ -253,6 +364,16 @@ impl App {
             DataUpdate::RunCreated(_) | DataUpdate::RunStatusChanged(_) => {
                 if let Err(e) = self.reload_runs() {
                     tracing::error!("failed to reload runs: {}", e);
+                }
+            }
+            DataUpdate::EventsAppended(run_id, _) | DataUpdate::LogsAppended(run_id, _) => {
+                if let Screen::RunDetail(current_id, _) = &self.state.screen {
+                    if *current_id == run_id {
+                        let id = run_id.clone();
+                        if let Err(e) = self.load_run_detail(&id) {
+                            tracing::error!("failed to reload run detail: {}", e);
+                        }
+                    }
                 }
             }
             _ => {}
