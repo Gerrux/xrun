@@ -12,7 +12,7 @@ use xrun_core::{
     vendor::{DryRunPlan, InstanceHandle, VendorAdapter},
 };
 
-use crate::{cli, error::VastError, execute, provision, stub::VastStub, upload};
+use crate::{cli, error::VastError, execute, provision, pull, stub::VastStub, tail, upload};
 
 pub struct VastAdapter {
     #[allow(dead_code)]
@@ -199,6 +199,59 @@ impl VastAdapter {
         Ok(())
     }
 
+    async fn tail_impl(
+        &self,
+        h: &InstanceHandle,
+        file: &str,
+        offset: u64,
+    ) -> Result<Vec<u8>, VastError> {
+        let instance_id: u64 =
+            h.id.parse()
+                .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
+        tail::tail_file(instance_id, file, offset).await
+    }
+
+    async fn pull_impl(
+        &self,
+        h: &InstanceHandle,
+        remote: &str,
+        into: &Path,
+    ) -> Result<(), VastError> {
+        let instance_id: u64 =
+            h.id.parse()
+                .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
+
+        let pulled = pull::pull_files(instance_id, remote, into).await?;
+
+        {
+            let run_id_opt = self.run_id.borrow().clone();
+            let mut store = self.store.borrow_mut();
+            if let Some(ref rid) = run_id_opt {
+                for file in &pulled {
+                    let kind = pull::classify_kind(
+                        file.local_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(""),
+                    );
+                    let _ = store.record_artifact(
+                        rid,
+                        xrun_core::store::NewArtifact {
+                            kind,
+                            remote_path: file.remote_path.clone(),
+                            local_path: file.local_path.to_str().map(str::to_string),
+                            size_bytes: file.size_bytes,
+                            sha256: file.sha256.clone(),
+                            is_best: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn destroy_impl(&self, h: &InstanceHandle) -> Result<(), VastError> {
         let instance_id: u64 =
             h.id.parse()
@@ -281,12 +334,18 @@ impl VendorAdapter for VastAdapter {
         .map_err(vast_to_vendor)
     }
 
-    fn tail(&self, _h: &InstanceHandle, _file: &str, _offset: u64) -> Result<Vec<u8>, VendorError> {
-        Err(VendorError::NotImplemented)
+    fn tail(&self, h: &InstanceHandle, file: &str, offset: u64) -> Result<Vec<u8>, VendorError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.tail_impl(h, file, offset))
+        })
+        .map_err(vast_to_vendor)
     }
 
-    fn pull(&self, _h: &InstanceHandle, _remote: &str, _into: &Path) -> Result<(), VendorError> {
-        Err(VendorError::NotImplemented)
+    fn pull(&self, h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.pull_impl(h, remote, into))
+        })
+        .map_err(vast_to_vendor)
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {

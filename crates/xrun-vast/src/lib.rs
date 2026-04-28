@@ -8,7 +8,9 @@ pub mod error;
 pub mod execute;
 pub mod process;
 pub mod provision;
+pub mod pull;
 pub mod stub;
+pub mod tail;
 pub mod upload;
 
 pub use adapter::VastAdapter;
