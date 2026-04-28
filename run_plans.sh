@@ -24,7 +24,7 @@ run_plan() {
   echo "BRANCH:   $branch"
   echo "========================================"
 
-  ralphex --serve "$plan_file"
+  ralphex --serve --wait 1h30m "$plan_file"
 
   echo ""
   echo "========================================"
