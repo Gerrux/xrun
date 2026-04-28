@@ -34,7 +34,9 @@
 
 ## Status
 
-v0.1 foundation: workspace, manifest parser, sqlite, config, CLI scaffolding ready; vast adapter and xrun_hook pending.
+v0.1 complete: vast adapter live (provision/upload/exec/tail/pull/destroy), event/metric poller works with lock + daemon mode, `xrun_hook` Python package published (editable install + wheel).
+
+`xrun launch exp/foo.yaml` now really provisions a vast.ai GPU, uploads data, runs training, and polls live events/metrics into SQLite. `xrun launch --detach` spawns a background daemon.
 
 Существующие запуски, которые уже идут через старый `train-vast` flow, не переписываем — `xrun` для нового.
 

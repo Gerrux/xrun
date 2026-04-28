@@ -59,6 +59,22 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_instance_state_json(
+        &mut self,
+        id: &str,
+        state_json: &str,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE instances SET state_json = ?1 WHERE id = ?2",
+            params![state_json, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_instance(&self, id: &str) -> Result<Option<Instance>, StoreError> {
         let sql = "SELECT id, vendor, run_id, gpu_type, price_per_hour, \
                    created_at, destroyed_at, state_json \

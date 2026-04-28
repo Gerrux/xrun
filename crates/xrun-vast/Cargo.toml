@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+mock = []
+
 [dependencies]
 xrun-core = { path = "../xrun-core" }
 chrono = { workspace = true }

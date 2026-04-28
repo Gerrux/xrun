@@ -6,8 +6,9 @@ use serde::Serialize;
 
 use crate::error::VendorError;
 use crate::manifest::{DataSource, Manifest, RunSpec};
+use crate::store::RunId;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct InstanceHandle {
     pub id: String,
     pub vendor: String,
@@ -27,6 +28,9 @@ pub struct DryRunPlan {
 
 pub trait VendorAdapter {
     fn name(&self) -> &'static str;
+    /// Associate a run ID so the adapter can link events/instances to the run.
+    /// Default implementation is a no-op; adapters that write their own events override this.
+    fn set_run_id(&self, _run_id: &RunId) {}
     fn validate(&self, manifest: &Manifest) -> Result<(), VendorError>;
     fn dry_run_plan(&self, manifest: &Manifest) -> Result<DryRunPlan, VendorError>;
     fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError>;

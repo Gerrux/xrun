@@ -120,12 +120,26 @@ kaggle kernels push -k ...
 
 См. [SKILL.md](SKILL.md).
 
+### `xrun __poll-daemon <run-id>` (hidden)
+
+Внутренняя команда, запускаемая автоматически при `--detach`. Запускает поллер событий/метрик в фоне для уже запущенного run.
+
+```
+--runs-dir <path>   путь к runs/ каталогу (передаётся лаунчером)
+```
+
+Для отладки зависшего поллера:
+```bash
+xrun __poll-daemon <run-id>   # вручную из терминала, foreground
+```
+
 ## v0.1 status
 
 | Команда | Статус | Заметки |
 |---------|--------|---------|
 | `xrun launch <manifest> --dry-run` | Работает | Парсит манифест, считает хеш, показывает DryRunPlan |
-| `xrun launch <manifest>` | Заглушка (exit 1) | Реальный provision не реализован; vast adapter returns NotImplemented |
+| `xrun launch <manifest>` | Работает | Полная цепочка: provision → upload → exec → poller |
+| `xrun launch <manifest> --detach` | Работает | Спавнит фоновый поллер, сразу выходит |
 | `xrun ls` | Работает | Читает runs из SQLite; `--manifests` возвращает пустой список (v0.2) |
 | `xrun show <id>` | Работает | Карточка run из БД |
 | `xrun logs <id>` | Работает | Читает stdout.log; `--follow` → exit 64 (not supported in v0.1) |
@@ -134,7 +148,7 @@ kaggle kernels push -k ...
 | `xrun pull <id>` | Заглушка | «no active runs to act on» |
 | `xrun stop <id>` | Заглушка | «no active runs to act on» |
 | `xrun rerun <id>` | Заглушка | «no active runs to act on» |
-| `xrun doctor` | Работает | Проверяет config_dir, vastai/kaggle в PATH, DB; exit 1 если есть FAIL |
+| `xrun doctor` | Работает | Проверяет config_dir, vastai/kaggle в PATH, ssh key, rsync, xrun_hook |
 | `xrun config init/show/set` | Работает | Полная реализация |
 | `xrun tui` | Не реализовано | Отложено в отдельный план |
 | `xrun sweep` | Не реализовано | Отложено |

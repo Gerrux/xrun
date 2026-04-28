@@ -39,4 +39,3 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
-

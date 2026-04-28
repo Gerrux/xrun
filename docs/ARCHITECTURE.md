@@ -89,6 +89,18 @@ Kaggle flow тот же, кроме шагов 2 и 4: provision = `kaggle kerne
 
 Подробнее в [STATE.md](STATE.md).
 
+## Poller process model
+
+Поллер — polling-loop, который читает `events.jsonl` / `metrics.jsonl` с инстанса через инкрементальный tail.
+
+**Lock-файл**: `~/.local/share/xrun/runs/<id>/poller.pid` (in-memory registry + файл). Предотвращает двойной поллинг одного run. При попытке запустить второй поллер возвращает `AlreadyPolling`.
+
+**Daemon spawn**: `xrun launch --detach` запускает `xrun __poll-daemon <run-id>` как отдельный процесс через `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` (Windows) или `setsid` (Unix). Родительский процесс печатает run-id и выходит.
+
+**InstanceHandle** сериализуется в `instances.state_json` при provision. Daemon при старте читает его оттуда, реконструирует VastAdapter и запускает поллер.
+
+**Передача handle через БД**: provisioned instance id хранится в `runs.instance_id`, handle JSON — в `instances.state_json`. Daemon открывает две Store connections к одной SQLite (WAL mode).
+
 ## Отказы и восстановление
 
 - Прерванный poller — при следующем `xrun ls` / `xrun tui` стартует заново, читает offset из SQLite.

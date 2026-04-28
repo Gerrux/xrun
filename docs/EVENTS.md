@@ -129,6 +129,24 @@ Live-tail невозможен. Стратегия:
 
 Альтернатива (опционально, v0.4): `xrun_hook` пишет stdout в формате `[xrun-event] {json}`, мы парсим Kaggle-логи через REST. Не для MVP.
 
+## DDP-safe append и rank guard
+
+`xrun_hook` безопасен для запуска в PyTorch DDP (multi-GPU distributed training):
+
+- **Rank guard**: если `RANK` env != `0` и `XRUN_HOOK_ALL_RANKS != "1"` — все вызовы silent no-op. Только rank 0 пишет события.
+- **File lock**: каждый `append` берёт `fcntl.flock(LOCK_EX)` (Unix) / `msvcrt.locking` (Windows) перед записью. Защищает от interleaving при параллельных процессах.
+- **fsync**: опционально через `XRUN_HOOK_FSYNC=1`. По умолчанию только flush.
+
+## Kaggle fallback (stdout marker)
+
+Когда ни один из стандартных путей не доступен для записи, `xrun_hook` пишет в `stdout`:
+
+```
+[xrun-event] {"ts":"...","stage":"epoch","status":"ok","extra":{"epoch":1}}
+```
+
+Poller на Kaggle парсит stdout с этим маркером как часть финального output-полла.
+
 ## Безопасность
 
 - `events.jsonl` НЕ содержит секреты. Hook валидирует, что в `extra` нет ключей, начинающихся на `_secret`.

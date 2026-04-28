@@ -31,8 +31,8 @@ impl VastAdapter {
     }
 
     /// Associate a run with this adapter so events/instances are linked.
-    pub fn set_run_id(&self, run_id: RunId) {
-        *self.run_id.borrow_mut() = Some(run_id);
+    pub fn set_run_id(&self, run_id: &RunId) {
+        *self.run_id.borrow_mut() = Some(run_id.clone());
     }
 
     async fn provision_impl(&self, manifest: &Manifest) -> Result<InstanceHandle, VastError> {
@@ -303,6 +303,10 @@ fn vast_to_vendor(e: VastError) -> VendorError {
 impl VendorAdapter for VastAdapter {
     fn name(&self) -> &'static str {
         "vast"
+    }
+
+    fn set_run_id(&self, run_id: &RunId) {
+        *self.run_id.borrow_mut() = Some(run_id.clone());
     }
 
     fn validate(&self, manifest: &Manifest) -> Result<(), VendorError> {
