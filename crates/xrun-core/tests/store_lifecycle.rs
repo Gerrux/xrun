@@ -1,4 +1,5 @@
 use chrono::Utc;
+use rusqlite::Connection;
 use xrun_core::store::{ListFilter, NewArtifact, NewEvent, NewMetric, RunStatus, Store};
 
 #[test]
@@ -129,7 +130,13 @@ fn reopen_existing_db() {
     let run_id = {
         let mut store = Store::open(&db_path).unwrap();
         store
-            .create_run("persist-run", "hashXYZ", "runs/3/manifest.yaml", "kaggle", &[])
+            .create_run(
+                "persist-run",
+                "hashXYZ",
+                "runs/3/manifest.yaml",
+                "kaggle",
+                &[],
+            )
             .unwrap()
     };
 
@@ -141,6 +148,43 @@ fn reopen_existing_db() {
     assert_eq!(run.name, "persist-run");
     assert_eq!(run.vendor, "kaggle");
     assert_eq!(run.status, RunStatus::Provisioning);
+}
+
+#[test]
+fn migration_002_applies_on_top_of_001_without_data_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("migration_test.db");
+
+    // Create a v1 DB manually: run only migration 001 (without 002).
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("../src/store/migrations/001_initial.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO runs \
+             (id, name, manifest_hash, manifest_path, vendor, status, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+            rusqlite::params![
+                "01HV0000000000000000000001",
+                "legacy-run",
+                "hash-v1",
+                "path/manifest.yaml",
+                "vast",
+                "provisioning"
+            ],
+        )
+        .unwrap();
+    }
+
+    // Open with the current Store (triggers migration from v1 to v2).
+    let store = Store::open(&db_path).unwrap();
+
+    // The run created under v1 schema must survive the migration.
+    let runs = store.list_runs(&ListFilter::default()).unwrap();
+    assert_eq!(runs.len(), 1, "run created before migration must persist");
+    assert_eq!(runs[0].name, "legacy-run");
+    assert_eq!(runs[0].vendor, "vast");
+    assert_eq!(runs[0].status, RunStatus::Provisioning);
 }
 
 #[test]

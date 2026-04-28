@@ -200,6 +200,66 @@ impl Store {
         }
     }
 
+    pub fn update_run_instance_id(
+        &mut self,
+        id: &RunId,
+        instance_id: &str,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET instance_id = ?1 WHERE id = ?2",
+            params![instance_id, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_run_started_at(
+        &mut self,
+        id: &RunId,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET started_at = ?1 WHERE id = ?2",
+            params![started_at, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_run_cost(&mut self, id: &RunId, cost_usd: f64) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET cost_usd = ?1 WHERE id = ?2",
+            params![cost_usd, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_run_cost_estimate(
+        &mut self,
+        id: &RunId,
+        estimate: f64,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET cost_usd_estimate = ?1 WHERE id = ?2",
+            params![estimate, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn list_runs(&self, filter: &ListFilter) -> Result<Vec<Run>, StoreError> {
         let sql = format!("SELECT {SELECT_RUN_COLS} FROM runs ORDER BY created_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;

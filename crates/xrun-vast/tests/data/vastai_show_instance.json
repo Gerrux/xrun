@@ -1,0 +1,9 @@
+{
+  "id": 12345,
+  "actual_status": "running",
+  "ssh_host": "ssh4.vast.ai",
+  "ssh_port": 12345,
+  "ssh_key": "~/.ssh/id_rsa",
+  "gpu_name": "RTX 4090",
+  "dph_total": 0.35
+}
