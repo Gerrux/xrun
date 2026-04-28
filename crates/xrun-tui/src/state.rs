@@ -65,6 +65,11 @@ pub enum Modal {
         input: String,
     },
     Help,
+    CommandPalette {
+        input: String,
+        completions: Vec<String>,
+        selected_completion: usize,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -127,6 +132,7 @@ pub struct AppState {
     pub instances: InstancesState,
     pub settings: SettingsState,
     pub editor_path: Option<PathBuf>,
+    pub g_pressed: bool,
 }
 
 impl AppState {
@@ -143,6 +149,7 @@ impl AppState {
             instances: InstancesState::default(),
             settings: SettingsState::default(),
             editor_path: None,
+            g_pressed: false,
         }
     }
 
