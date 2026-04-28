@@ -6,3 +6,8 @@ target/
 .idea/
 .ralphex/
 .claude/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
