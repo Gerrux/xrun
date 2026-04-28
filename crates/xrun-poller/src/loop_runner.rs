@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,7 @@ use xrun_core::{
     error::VendorError,
     store::{NewEvent, NewMetric, RunId, RunStatus, Store},
     vendor::{InstanceHandle, VendorAdapter},
-    EventStatus, StoreError,
+    DataUpdate, EventStatus, StoreError,
 };
 
 use crate::lock::{PollerLock, PollerLockError};
@@ -123,6 +124,7 @@ pub struct Poller {
     handle: InstanceHandle,
     config: PollerConfig,
     runs_dir: PathBuf,
+    update_tx: Option<SyncSender<DataUpdate>>,
 }
 
 impl Poller {
@@ -140,12 +142,24 @@ impl Poller {
             handle,
             config: PollerConfig::default(),
             runs_dir,
+            update_tx: None,
         }
     }
 
     pub fn with_config(mut self, config: PollerConfig) -> Self {
         self.config = config;
         self
+    }
+
+    pub fn with_update_sender(mut self, tx: SyncSender<DataUpdate>) -> Self {
+        self.update_tx = Some(tx);
+        self
+    }
+
+    fn send_update(&self, update: DataUpdate) {
+        if let Some(tx) = &self.update_tx {
+            let _ = tx.try_send(update);
+        }
     }
 
     pub fn run(mut self, cancel: CancellationToken) -> Result<RunStatus, PollerError> {
@@ -170,6 +184,10 @@ impl Poller {
                 let _ = self.vendor.destroy(&self.handle);
                 self.store
                     .update_run_status(&self.run_id, RunStatus::Cancelled)?;
+                self.send_update(DataUpdate::RunStatusChanged(
+                    self.run_id.clone(),
+                    RunStatus::Cancelled,
+                ));
                 return Ok(RunStatus::Cancelled);
             }
 
@@ -218,9 +236,18 @@ impl Poller {
                         last_offset_e = offset_e;
                     }
 
+                    self.send_update(DataUpdate::EventsAppended(
+                        self.run_id.clone(),
+                        events.len(),
+                    ));
+
                     if done {
                         self.store
                             .update_run_status(&self.run_id, RunStatus::Done)?;
+                        self.send_update(DataUpdate::RunStatusChanged(
+                            self.run_id.clone(),
+                            RunStatus::Done,
+                        ));
                         return Ok(RunStatus::Done);
                     }
 
@@ -233,6 +260,10 @@ impl Poller {
                         let _ = self.vendor.destroy(&self.handle);
                         self.store
                             .update_run_status(&self.run_id, RunStatus::Failed)?;
+                        self.send_update(DataUpdate::RunStatusChanged(
+                            self.run_id.clone(),
+                            RunStatus::Failed,
+                        ));
                         return Ok(RunStatus::Failed);
                     }
                 }
@@ -256,7 +287,9 @@ impl Poller {
             {
                 Ok(bytes) if !bytes.is_empty() => {
                     let delta = bytes.len() as u64;
-                    for m in parse_metrics(&bytes) {
+                    let metrics = parse_metrics(&bytes);
+                    let metrics_count = metrics.len();
+                    for m in metrics {
                         let _ = self.store.append_metric(
                             &self.run_id,
                             NewMetric {
@@ -274,6 +307,10 @@ impl Poller {
                         offset_m,
                     );
                     last_progress = Instant::now();
+                    self.send_update(DataUpdate::MetricsAppended(
+                        self.run_id.clone(),
+                        metrics_count,
+                    ));
                 }
                 Ok(_) => {}
                 Err(VendorError::Truncated) => {
@@ -320,6 +357,10 @@ impl Poller {
                     let _ = self.vendor.destroy(&self.handle);
                     self.store
                         .update_run_status(&self.run_id, RunStatus::Failed)?;
+                    self.send_update(DataUpdate::RunStatusChanged(
+                        self.run_id.clone(),
+                        RunStatus::Failed,
+                    ));
                     return Ok(RunStatus::Failed);
                 }
             }

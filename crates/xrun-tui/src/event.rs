@@ -1,14 +1,5 @@
 use crossterm::event::KeyEvent;
-use xrun_core::RunId;
-
-#[derive(Debug, Clone)]
-pub enum DataUpdate {
-    RunCreated(RunId),
-    RunStatusChanged(RunId),
-    EventsAppended(RunId, usize),
-    MetricsAppended(RunId, usize),
-    LogsAppended(RunId, u64),
-}
+pub use xrun_core::DataUpdate;
 
 #[derive(Debug)]
 pub enum AppEvent {

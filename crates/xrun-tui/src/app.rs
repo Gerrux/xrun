@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
@@ -16,6 +19,7 @@ use crate::screens::palette::{self as palette_screen, PaletteAction};
 use crate::screens::run_detail::{self as run_detail_screen, RunDetailAction};
 use crate::screens::runs::{self as runs_screen, RunsAction};
 use crate::screens::settings::{self as settings_screen, SettingsAction};
+use crate::services::live::LiveService;
 use crate::state::{
     AppState, ConfirmAction, LaunchManifest, LogPaneState, Modal, RunDetailState, RunSection,
     Screen, SettingsState, Tab,
@@ -29,6 +33,8 @@ pub struct App {
     state: AppState,
     data_rx: mpsc::Receiver<DataUpdate>,
     data_tx: mpsc::Sender<DataUpdate>,
+    db_path: Option<PathBuf>,
+    live_shutdown: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl App {
@@ -42,7 +48,14 @@ impl App {
             state,
             data_rx,
             data_tx,
+            db_path: None,
+            live_shutdown: None,
         }
+    }
+
+    pub fn with_db_path(mut self, db_path: PathBuf) -> Self {
+        self.db_path = Some(db_path);
+        self
     }
 
     pub fn data_sender(&self) -> mpsc::Sender<DataUpdate> {
@@ -50,8 +63,18 @@ impl App {
     }
 
     pub async fn run(mut self, cancel: CancellationToken) -> Result<()> {
+        if let Some(db_path) = self.db_path.take() {
+            let live = LiveService::new(db_path, self.data_tx.clone());
+            self.live_shutdown = Some(live.shutdown_flag());
+            live.start();
+        }
+
         let mut terminal = ratatui::init();
         let result = self.event_loop(&mut terminal, cancel).await;
+
+        if let Some(shutdown) = &self.live_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         ratatui::restore();
         result
     }
@@ -781,7 +804,7 @@ impl App {
 
     fn on_data_update(&mut self, update: DataUpdate) {
         match update {
-            DataUpdate::RunCreated(_) | DataUpdate::RunStatusChanged(_) => {
+            DataUpdate::RunCreated(_) | DataUpdate::RunStatusChanged(_, _) => {
                 if let Err(e) = self.reload_runs() {
                     tracing::error!("failed to reload runs: {}", e);
                 }
