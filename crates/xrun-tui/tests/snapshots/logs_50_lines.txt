@@ -21,4 +21,4 @@
 │Line 50                                                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
 tab/shift-tab:switch  Space:autoscroll  Home/End:top/bot  q/Esc:back            
- xrun  •  balance: $—  •  q quit  •  ? help                                     
+ xrun › detail        no vendor configured — pTab:tabs  e:editor  q:back  ?:help

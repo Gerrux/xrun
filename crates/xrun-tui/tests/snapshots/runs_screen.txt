@@ -1,14 +1,12 @@
+┌ vendor ────────────────┐┌ active ──────────────────┐┌ today ─────────────────┐
+│   Configure → press V  ││         2 running        ││      no runs today     │
+│                        ││                          ││                        │
+│                        ││                          ││                        │
+└────────────────────────┘└──────────────────────────┘└────────────────────────┘
 ┌ Active (2) ──────────────────────────────────────────────────────────────────┐
 │   Name                                       Vendor   Uptime    Status       │
 │⠋  active-run-0                               vast     0s        running      │
 │⠋  active-run-1                               vast     0s        running      │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Recent (3) ──────────────────────────────────────────────────────────────────┐
 │Status      Name                                Vendor   Duration   Cost      │
@@ -19,6 +17,8 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-enter:open  L:launch  S:stop  P:pull  R:rerun  /:filter  T:tags                 
- xrun  •  balance: $—  •  q quit  •  ? help                                     
+ xrun › runs          no vendor configured — pL:launch  S:stop  R:rerun  /:filte

@@ -5,6 +5,9 @@ pub(crate) const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 
 use crate::state::{AppState, Modal, Screen};
 
+mod anim;
+mod cards;
+mod empty;
 mod help;
 mod instances;
 mod launch;
@@ -12,8 +15,11 @@ mod palette;
 mod run_detail;
 mod runs;
 mod settings;
+mod splash;
 mod status_bar;
 pub mod tabs;
+mod vendor_edit;
+mod vendors;
 
 pub fn render(f: &mut Frame, state: &AppState) {
     let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
@@ -33,6 +39,7 @@ fn render_main(f: &mut Frame, area: Rect, state: &AppState) {
         Screen::Launch => launch::render(f, area, state),
         Screen::Instances => instances::render(f, area, state),
         Screen::Settings => settings::render(f, area, state),
+        Screen::Vendors => vendors::render(f, area, state),
     }
 }
 
@@ -70,6 +77,17 @@ fn render_modal(f: &mut Frame, state: &AppState) {
             selected_completion,
         } => {
             palette::render(f, state, input, completions, *selected_completion);
+        }
+        Modal::VendorEdit {
+            vendor,
+            fields,
+            focus,
+            flash,
+        } => {
+            vendor_edit::render(f, state, vendor, fields, *focus, flash.as_deref());
+        }
+        Modal::Splash { .. } => {
+            splash::render(f, state);
         }
     }
 }

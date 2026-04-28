@@ -21,4 +21,4 @@
 │                              ││                                              │
 │                              ││                                              │
 └──────────────────────────────┘└──────────────────────────────────────────────┘
- xrun  •  balance: $—  •  q quit  •  ? help                                     
+ xrun › launch        no vendor configured — p   enter:launch  j/k:nav  Esc:back

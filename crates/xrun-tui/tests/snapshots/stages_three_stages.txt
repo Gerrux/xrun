@@ -21,4 +21,4 @@
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 tab/shift-tab:switch  q/Esc:back                                                
- xrun  •  balance: $—  •  q quit  •  ? help                                     
+ xrun › detail        no vendor configured — pTab:tabs  e:editor  q:back  ?:help

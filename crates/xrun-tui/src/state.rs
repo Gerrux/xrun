@@ -1,5 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
+use xrun_core::config::Credentials;
+use xrun_core::vendor::{VendorRemoteInstance, VendorStatus};
 use xrun_core::{Instance, Run, RunId, StoredEvent};
 
 use crate::theme::Theme;
@@ -45,6 +49,7 @@ pub enum Screen {
     Launch,
     Instances,
     Settings,
+    Vendors,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +58,14 @@ pub enum ConfirmAction {
     PullRun(RunId),
     DestroyInstance(String),
     LaunchRun(String),
+    RevokeVendor(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct EditField {
+    pub label: String,
+    pub value: String,
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +82,16 @@ pub enum Modal {
         input: String,
         completions: Vec<String>,
         selected_completion: usize,
+    },
+    VendorEdit {
+        vendor: String,
+        fields: Vec<EditField>,
+        focus: usize,
+        flash: Option<String>,
+    },
+    Splash {
+        started_at: Instant,
+        deadline: Instant,
     },
 }
 
@@ -103,10 +126,26 @@ pub struct LaunchState {
     pub selected: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum InstancesSection {
+    #[default]
+    Local,
+    Remote,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InstancesState {
     pub instances: Vec<Instance>,
+    pub remote: Vec<VendorRemoteInstance>,
     pub selected: usize,
+    pub section: InstancesSection,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VendorsState {
+    pub vendors: Vec<String>,
+    pub selected: usize,
+    pub flash: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -131,8 +170,18 @@ pub struct AppState {
     pub launch: LaunchState,
     pub instances: InstancesState,
     pub settings: SettingsState,
+    pub vendors: VendorsState,
+    pub vendor_statuses: HashMap<String, VendorStatus>,
+    pub credentials: Credentials,
+    pub default_vendor_name: Option<String>,
     pub editor_path: Option<PathBuf>,
     pub g_pressed: bool,
+    /// Global animation frame counter — incremented every render tick (~100ms each).
+    pub anim_frame: u64,
+    /// Previous balance snapshot for count-up tween animation.
+    pub last_seen_balance: Option<f64>,
+    /// `anim_frame` value at which the balance animation started.
+    pub balance_anim_start: Option<u64>,
 }
 
 impl AppState {
@@ -148,8 +197,23 @@ impl AppState {
             launch: LaunchState::default(),
             instances: InstancesState::default(),
             settings: SettingsState::default(),
+            vendors: VendorsState {
+                vendors: vec![
+                    "vast".to_string(),
+                    "kaggle".to_string(),
+                    "mlflow".to_string(),
+                ],
+                selected: 0,
+                flash: None,
+            },
+            vendor_statuses: HashMap::new(),
+            credentials: Credentials::default(),
+            default_vendor_name: None,
             editor_path: None,
             g_pressed: false,
+            anim_frame: 0,
+            last_seen_balance: None,
+            balance_anim_start: None,
         }
     }
 

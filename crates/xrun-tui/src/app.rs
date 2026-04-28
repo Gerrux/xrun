@@ -2,14 +2,18 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use xrun_core::config::Credentials;
+use xrun_core::vendor::VendorAdapter;
 use xrun_core::{GlobalConfig, ListFilter, RunId, RunStatus, Store};
 
 use crate::event::DataUpdate;
@@ -19,10 +23,12 @@ use crate::screens::palette::{self as palette_screen, PaletteAction};
 use crate::screens::run_detail::{self as run_detail_screen, RunDetailAction};
 use crate::screens::runs::{self as runs_screen, RunsAction};
 use crate::screens::settings::{self as settings_screen, SettingsAction, SETTINGS_ROW_COUNT};
+use crate::screens::vendors::{self as vendors_screen, VendorsAction};
 use crate::services::live::LiveService;
+use crate::services::vendor_probe::{ProbeRequest, VendorProbeService};
 use crate::state::{
-    AppState, ConfirmAction, LaunchManifest, LogPaneState, Modal, RunDetailState, RunSection,
-    Screen, SettingsState, Tab,
+    AppState, ConfirmAction, EditField, LaunchManifest, LogPaneState, Modal, RunDetailState,
+    RunSection, Screen, SettingsState, Tab,
 };
 use crate::theme::Theme;
 use crate::view;
@@ -36,12 +42,15 @@ pub struct App {
     db_path: Option<PathBuf>,
     config_dir: Option<PathBuf>,
     live_shutdown: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    probe_tx: Option<std::sync::mpsc::Sender<ProbeRequest>>,
+    probe_shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl App {
     pub fn new(store: Store, config: GlobalConfig) -> Self {
         let theme = Theme::from_name(&config.tui.theme);
-        let state = AppState::new(theme);
+        let mut state = AppState::new(theme);
+        state.default_vendor_name = config.defaults.vendor.as_ref().map(vendor_name);
         let (data_tx, data_rx) = mpsc::channel(256);
         Self {
             store,
@@ -52,6 +61,8 @@ impl App {
             db_path: None,
             config_dir: None,
             live_shutdown: None,
+            probe_tx: None,
+            probe_shutdown: None,
         }
     }
 
@@ -78,11 +89,28 @@ impl App {
     }
 
     pub async fn run(mut self, cancel: CancellationToken) -> Result<()> {
-        if let Some(db_path) = self.db_path.take() {
+        let db_path_for_live = self.db_path.clone();
+        if let Some(db_path) = db_path_for_live {
             let live = LiveService::new(db_path, self.data_tx.clone());
             self.live_shutdown = Some(live.shutdown_flag());
             live.start();
         }
+
+        self.reload_credentials();
+        self.start_vendor_probe();
+
+        // Always show splash; first-run gets 1500ms, returning users 600ms.
+        let splash_ms: u64 = if self.state.credentials.is_empty() {
+            1500
+        } else {
+            600
+        };
+        let now = Instant::now();
+        self.state.modal = Some(Modal::Splash {
+            started_at: now,
+            deadline: now + Duration::from_millis(splash_ms),
+        });
+        self.state.dirty = true;
 
         let mut terminal = ratatui::init();
         let result = self.event_loop(&mut terminal, cancel).await;
@@ -90,8 +118,61 @@ impl App {
         if let Some(shutdown) = &self.live_shutdown {
             shutdown.store(true, Ordering::Relaxed);
         }
+        if let Some(shutdown) = &self.probe_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         ratatui::restore();
         result
+    }
+
+    fn reload_credentials(&mut self) {
+        if let Some(dir) = &self.config_dir {
+            match Credentials::load(dir) {
+                Ok(creds) => self.state.credentials = creds,
+                Err(e) => tracing::warn!("failed to load credentials: {}", e),
+            }
+        }
+    }
+
+    fn start_vendor_probe(&mut self) {
+        let adapters = self.build_adapters();
+        if adapters.is_empty() {
+            return;
+        }
+        let svc = VendorProbeService::new(adapters, self.data_tx.clone());
+        self.probe_shutdown = Some(svc.shutdown_flag());
+        self.probe_tx = Some(svc.command_sender());
+        svc.start();
+    }
+
+    fn build_adapters(&self) -> Vec<(String, Box<dyn VendorAdapter + Send>)> {
+        let mut adapters: Vec<(String, Box<dyn VendorAdapter + Send>)> = Vec::new();
+        if self.state.credentials.vast.api_key.is_some() {
+            if let Some(db_path) = self.db_path_clone() {
+                if let Ok(store) = Store::open(&db_path) {
+                    let adapter =
+                        xrun_vast::VastAdapter::new(self.state.credentials.vast.clone(), store);
+                    adapters.push(("vast".to_string(), Box::new(adapter)));
+                }
+            }
+        }
+        adapters
+    }
+
+    fn db_path_clone(&self) -> Option<PathBuf> {
+        self.db_path
+            .clone()
+            .or_else(|| xrun_core::paths::data_dir().ok().map(|d| d.join("xrun.db")))
+    }
+
+    fn trigger_probe(&self, vendor: Option<&str>) {
+        if let Some(tx) = &self.probe_tx {
+            let req = match vendor {
+                Some(v) => ProbeRequest::Vendor(v.to_string()),
+                None => ProbeRequest::All,
+            };
+            let _ = tx.send(req);
+        }
     }
 
     pub(crate) async fn event_loop<B: Backend>(
@@ -99,8 +180,6 @@ impl App {
         terminal: &mut Terminal<B>,
         cancel: CancellationToken,
     ) -> Result<()> {
-        use std::time::{Duration, Instant};
-
         self.reload_runs()?;
 
         let mut event_stream = EventStream::new();
@@ -108,8 +187,10 @@ impl App {
         let mut last_render = Instant::now();
 
         loop {
+            self.maybe_dismiss_splash();
             if self.state.dirty || last_render.elapsed() >= render_interval {
                 self.state.runs.throbber_frame = self.state.runs.throbber_frame.wrapping_add(1);
+                self.state.anim_frame = self.state.anim_frame.wrapping_add(1);
                 terminal.draw(|f| view::render(f, &self.state))?;
                 self.state.dirty = false;
                 last_render = Instant::now();
@@ -122,6 +203,11 @@ impl App {
                 maybe_event = event_stream.next() => {
                     match maybe_event {
                         Some(Ok(CrosstermEvent::Key(key))) => {
+                            // On Windows crossterm fires events for both Press and Release;
+                            // ignore everything except Press so each keystroke acts once.
+                            if key.kind != KeyEventKind::Press {
+                                continue;
+                            }
                             if self.handle_key(key)? {
                                 return Ok(());
                             }
@@ -177,8 +263,24 @@ impl App {
             return Ok(false);
         }
 
+        if matches!(&self.state.modal, Some(Modal::Splash { .. })) {
+            self.state.g_pressed = false;
+            self.state.modal = None;
+            self.state.dirty = true;
+            // First-run shortcut: any keypress on splash drops the user into
+            // Vendors so they can configure credentials.
+            if self.state.credentials.is_empty() {
+                self.state.push_screen(Screen::Vendors);
+            }
+            return Ok(false);
+        }
+
         if matches!(&self.state.modal, Some(Modal::CommandPalette { .. })) {
             return self.handle_palette_key(key);
+        }
+
+        if matches!(&self.state.modal, Some(Modal::VendorEdit { .. })) {
+            return self.handle_vendor_edit_key(key);
         }
 
         // Global bindings: ? and :
@@ -245,6 +347,10 @@ impl App {
             Screen::Settings => {
                 let action = settings_screen::handle_key(&mut self.state, key);
                 self.handle_settings_action(action)
+            }
+            Screen::Vendors => {
+                let action = vendors_screen::handle_key(&mut self.state, key);
+                self.handle_vendors_action(action)
             }
         }
     }
@@ -330,6 +436,10 @@ impl App {
                 Screen::Settings => {
                     self.load_settings();
                     self.state.push_screen(Screen::Settings);
+                }
+                Screen::Vendors => {
+                    self.state.push_screen(Screen::Vendors);
+                    self.trigger_probe(None);
                 }
                 other => {
                     self.state.push_screen(other);
@@ -427,6 +537,9 @@ impl App {
             Screen::Settings => {
                 self.state.settings.selected_row = 0;
             }
+            Screen::Vendors => {
+                self.state.vendors.selected = 0;
+            }
             Screen::RunDetail(_, _) => {}
         }
         self.state.dirty = true;
@@ -450,13 +563,22 @@ impl App {
                 }
             }
             Screen::Instances => {
-                let len = self.state.instances.instances.len();
+                let len = match self.state.instances.section {
+                    crate::state::InstancesSection::Local => self.state.instances.instances.len(),
+                    crate::state::InstancesSection::Remote => self.state.instances.remote.len(),
+                };
                 if len > 0 {
                     self.state.instances.selected = len - 1;
                 }
             }
             Screen::Settings => {
                 self.state.settings.selected_row = SETTINGS_ROW_COUNT - 1;
+            }
+            Screen::Vendors => {
+                let len = self.state.vendors.vendors.len();
+                if len > 0 {
+                    self.state.vendors.selected = len - 1;
+                }
             }
             Screen::RunDetail(_, _) => {}
         }
@@ -480,6 +602,10 @@ impl App {
             RunsAction::OpenSettings => {
                 self.load_settings();
                 self.state.push_screen(Screen::Settings);
+            }
+            RunsAction::OpenVendors => {
+                self.state.push_screen(Screen::Vendors);
+                self.trigger_probe(None);
             }
             RunsAction::ShowStopConfirm(id, name) => {
                 self.state.modal = Some(Modal::Confirm {
@@ -649,7 +775,288 @@ impl App {
                 self.state.pop_screen();
                 self.reload_runs()?;
             }
+            ConfirmAction::RevokeVendor(name) => {
+                self.revoke_vendor(&name)?;
+            }
         }
+        Ok(())
+    }
+
+    fn handle_vendors_action(&mut self, action: VendorsAction) -> Result<bool> {
+        match action {
+            VendorsAction::Back => {
+                self.state.pop_screen();
+            }
+            VendorsAction::OpenEdit(vendor) => {
+                self.open_vendor_edit(&vendor);
+            }
+            VendorsAction::ImportNative(vendor) => {
+                self.import_native_vendor(&vendor);
+            }
+            VendorsAction::TestConnection(vendor) => {
+                self.trigger_probe(Some(&vendor));
+                self.state.vendors.flash = Some(format!("probing {}...", vendor));
+                self.state.dirty = true;
+            }
+            VendorsAction::ShowRevokeConfirm(vendor) => {
+                self.state.modal = Some(Modal::Confirm {
+                    message: format!("Revoke credentials for '{}'?", vendor),
+                    action: ConfirmAction::RevokeVendor(vendor),
+                });
+                self.state.dirty = true;
+            }
+            VendorsAction::Nothing => {}
+        }
+        Ok(false)
+    }
+
+    fn open_vendor_edit(&mut self, vendor: &str) {
+        let fields = match vendor {
+            "vast" => vec![EditField {
+                label: "api_key".to_string(),
+                value: self
+                    .state
+                    .credentials
+                    .vast
+                    .api_key
+                    .clone()
+                    .unwrap_or_default(),
+                secret: true,
+            }],
+            "kaggle" => vec![
+                EditField {
+                    label: "username".to_string(),
+                    value: self
+                        .state
+                        .credentials
+                        .kaggle
+                        .username
+                        .clone()
+                        .unwrap_or_default(),
+                    secret: false,
+                },
+                EditField {
+                    label: "key".to_string(),
+                    value: self
+                        .state
+                        .credentials
+                        .kaggle
+                        .key
+                        .clone()
+                        .unwrap_or_default(),
+                    secret: true,
+                },
+            ],
+            "mlflow" => vec![
+                EditField {
+                    label: "url".to_string(),
+                    value: self.config.mlflow.url.clone().unwrap_or_default(),
+                    secret: false,
+                },
+                EditField {
+                    label: "token".to_string(),
+                    value: self
+                        .state
+                        .credentials
+                        .mlflow
+                        .token
+                        .clone()
+                        .unwrap_or_default(),
+                    secret: true,
+                },
+            ],
+            _ => return,
+        };
+        self.state.modal = Some(Modal::VendorEdit {
+            vendor: vendor.to_string(),
+            fields,
+            focus: 0,
+            flash: None,
+        });
+        self.state.dirty = true;
+    }
+
+    fn import_native_vendor(&mut self, vendor: &str) {
+        let result: Result<String, String> = match vendor {
+            "vast" => match Credentials::import_vast_native() {
+                Ok(Some(token)) => {
+                    self.state.credentials.vast.api_key = Some(token);
+                    Ok("imported vast api_key from ~/.config/vastai/vast_api_key".to_string())
+                }
+                Ok(None) => Err("native vast key file not found or empty".to_string()),
+                Err(e) => Err(format!("read failed: {}", e)),
+            },
+            "kaggle" => match Credentials::import_kaggle_native() {
+                Ok(Some((u, k))) => {
+                    self.state.credentials.kaggle.username = Some(u);
+                    self.state.credentials.kaggle.key = Some(k);
+                    Ok("imported kaggle.json".to_string())
+                }
+                Ok(None) => Err("kaggle.json not found or missing fields".to_string()),
+                Err(e) => Err(format!("read failed: {}", e)),
+            },
+            other => Err(format!("no native import for vendor '{}'", other)),
+        };
+
+        match result {
+            Ok(msg) => {
+                if let Err(e) = self.persist_credentials() {
+                    self.state.vendors.flash = Some(format!("save failed: {}", e));
+                } else {
+                    self.state.vendors.flash = Some(msg);
+                    self.refresh_vendor_probe();
+                    self.trigger_probe(Some(vendor));
+                }
+            }
+            Err(e) => {
+                self.state.vendors.flash = Some(e);
+            }
+        }
+        self.state.dirty = true;
+    }
+
+    fn revoke_vendor(&mut self, vendor: &str) -> Result<()> {
+        match vendor {
+            "vast" => self.state.credentials.vast.api_key = None,
+            "kaggle" => {
+                self.state.credentials.kaggle.username = None;
+                self.state.credentials.kaggle.key = None;
+            }
+            "mlflow" => self.state.credentials.mlflow.token = None,
+            _ => {}
+        }
+        self.persist_credentials().map_err(anyhow::Error::from)?;
+        self.state.vendor_statuses.remove(vendor);
+        self.state.vendors.flash = Some(format!("revoked {}", vendor));
+        self.refresh_vendor_probe();
+        self.state.dirty = true;
+        Ok(())
+    }
+
+    fn persist_credentials(&self) -> std::io::Result<()> {
+        let Some(dir) = &self.config_dir else {
+            return Ok(());
+        };
+        self.state
+            .credentials
+            .save(dir)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    fn refresh_vendor_probe(&mut self) {
+        if let Some(flag) = &self.probe_shutdown {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.probe_shutdown = None;
+        self.probe_tx = None;
+        self.start_vendor_probe();
+    }
+
+    fn handle_vendor_edit_key(&mut self, key: crossterm::event::KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(Modal::VendorEdit { fields, .. }) = self.state.modal.as_mut() {
+                    // wipe secrets from in-memory modal state on close
+                    for f in fields.iter_mut() {
+                        if f.secret {
+                            f.value.clear();
+                        }
+                    }
+                }
+                self.state.modal = None;
+                self.state.dirty = true;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                if let Some(Modal::VendorEdit { fields, focus, .. }) = self.state.modal.as_mut() {
+                    if !fields.is_empty() {
+                        *focus = (*focus + 1) % fields.len();
+                        self.state.dirty = true;
+                    }
+                }
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                if let Some(Modal::VendorEdit { fields, focus, .. }) = self.state.modal.as_mut() {
+                    if !fields.is_empty() {
+                        *focus = if *focus == 0 {
+                            fields.len() - 1
+                        } else {
+                            *focus - 1
+                        };
+                        self.state.dirty = true;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(Modal::VendorEdit { fields, focus, .. }) = self.state.modal.as_mut() {
+                    if let Some(f) = fields.get_mut(*focus) {
+                        f.value.pop();
+                        self.state.dirty = true;
+                    }
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(Modal::VendorEdit { fields, focus, .. }) = self.state.modal.as_mut() {
+                    if let Some(f) = fields.get_mut(*focus) {
+                        f.value.push(c);
+                        self.state.dirty = true;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                self.commit_vendor_edit()?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn commit_vendor_edit(&mut self) -> Result<()> {
+        let Some(Modal::VendorEdit { vendor, fields, .. }) = self.state.modal.take() else {
+            return Ok(());
+        };
+        match vendor.as_str() {
+            "vast" => {
+                let key = fields
+                    .iter()
+                    .find(|f| f.label == "api_key")
+                    .map(|f| f.value.clone());
+                self.state.credentials.vast.api_key = key.filter(|s| !s.is_empty());
+            }
+            "kaggle" => {
+                let user = fields
+                    .iter()
+                    .find(|f| f.label == "username")
+                    .map(|f| f.value.clone());
+                let key = fields
+                    .iter()
+                    .find(|f| f.label == "key")
+                    .map(|f| f.value.clone());
+                self.state.credentials.kaggle.username = user.filter(|s| !s.is_empty());
+                self.state.credentials.kaggle.key = key.filter(|s| !s.is_empty());
+            }
+            "mlflow" => {
+                let url = fields
+                    .iter()
+                    .find(|f| f.label == "url")
+                    .map(|f| f.value.clone());
+                let token = fields
+                    .iter()
+                    .find(|f| f.label == "token")
+                    .map(|f| f.value.clone());
+                self.config.mlflow.url = url.filter(|s| !s.is_empty());
+                self.state.credentials.mlflow.token = token.filter(|s| !s.is_empty());
+                self.save_config();
+            }
+            _ => {}
+        }
+        if let Err(e) = self.persist_credentials() {
+            self.state.vendors.flash = Some(format!("save failed: {}", e));
+        } else {
+            self.state.vendors.flash = Some(format!("saved {} credentials", vendor));
+            self.refresh_vendor_probe();
+            self.trigger_probe(Some(&vendor));
+        }
+        self.state.dirty = true;
         Ok(())
     }
 
@@ -697,6 +1104,13 @@ impl App {
     pub(crate) fn load_instances(&mut self) -> Result<()> {
         self.state.instances.instances = self.store.list_instances()?;
         self.state.instances.selected = 0;
+        // Pull cached vendor instances (filled by probe service) so the Remote
+        // tab is non-empty on first render after a successful probe.
+        if let Some(insts) = crate::services::vendor_probe::latest::read_instances("vast") {
+            self.state.instances.remote = insts;
+        }
+        // Trigger an immediate refresh so user sees fresh data on Tab.
+        self.trigger_probe(Some("vast"));
         self.state.dirty = true;
         Ok(())
     }
@@ -879,9 +1293,29 @@ impl App {
                     }
                 }
             }
+            DataUpdate::VendorStatusUpdated(name) => {
+                if let Some(s) = crate::services::vendor_probe::latest::read(&name) {
+                    self.state.vendor_statuses.insert(name, s);
+                }
+            }
+            DataUpdate::VendorInstancesUpdated(name) => {
+                if let Some(insts) = crate::services::vendor_probe::latest::read_instances(&name) {
+                    if name == "vast" {
+                        self.state.instances.remote = insts;
+                    }
+                }
+            }
             _ => {}
         }
         self.state.dirty = true;
+    }
+
+    fn maybe_dismiss_splash(&mut self) {
+        let expired = matches!(&self.state.modal, Some(Modal::Splash { deadline, .. }) if Instant::now() >= *deadline);
+        if expired {
+            self.state.modal = None;
+            self.state.dirty = true;
+        }
     }
 }
 
