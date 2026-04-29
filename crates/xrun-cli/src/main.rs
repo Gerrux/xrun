@@ -78,7 +78,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Logs(args)) => {
             let ctx = get_data_ctx()?;
-            xrun_cli::commands::logs::run(&args, &ctx.runs_dir)?;
+            xrun_cli::commands::logs::run(&args, &ctx.db_path, &ctx.runs_dir)?;
         }
         Some(Commands::Events(args)) => {
             let ctx = get_data_ctx()?;
