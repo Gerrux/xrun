@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::commands::{config_cmd::ConfigArgs, cp::CpArgs};
 
 #[derive(Parser)]
-#[command(name = "xrun", version = "0.1.0", about = "ML experiment runner")]
+#[command(name = "xrun", version, about = "ML experiment runner")]
 pub struct Cli {
     /// Enable debug logging
     #[arg(short = 'v', long, global = true)]
