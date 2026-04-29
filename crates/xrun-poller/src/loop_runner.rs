@@ -6,10 +6,11 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use thiserror::Error;
 use xrun_core::{
     budget,
+    config::BudgetConfig,
     error::VendorError,
     store::{NewEvent, NewMetric, RunId, RunStatus, Store},
     vendor::{InstanceHandle, VendorAdapter},
@@ -126,6 +127,10 @@ pub struct Poller {
     config: PollerConfig,
     runs_dir: PathBuf,
     update_tx: Option<SyncSender<DataUpdate>>,
+    budget: BudgetConfig,
+    /// Last UTC date we emitted a daily-budget breach event for. Reset
+    /// implicitly when the date rolls over.
+    daily_alert_date: Option<NaiveDate>,
 }
 
 impl Poller {
@@ -144,11 +149,18 @@ impl Poller {
             config: PollerConfig::default(),
             runs_dir,
             update_tx: None,
+            budget: BudgetConfig::default(),
+            daily_alert_date: None,
         }
     }
 
     pub fn with_config(mut self, config: PollerConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    pub fn with_budget(mut self, budget: BudgetConfig) -> Self {
+        self.budget = budget;
         self
     }
 
@@ -393,6 +405,56 @@ impl Poller {
                                     ));
                                     return Ok(RunStatus::Failed);
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- daily budget soft-alert ---
+            if let Some(daily_cap) = self.budget.daily_budget_usd {
+                let today = budget::today_utc(now_wall);
+                let already_alerted = self.daily_alert_date == Some(today);
+                if !already_alerted {
+                    if let Ok(spent) = budget::daily_spend(&self.store, today, now_wall) {
+                        if spent >= daily_cap {
+                            let payload = serde_json::json!({
+                                "spent_usd": spent,
+                                "limit_usd": daily_cap,
+                                "date": today.to_string(),
+                            })
+                            .to_string();
+                            let _ = self.store.append_event(
+                                &self.run_id,
+                                NewEvent {
+                                    ts: now_wall,
+                                    stage: "budget.daily_exceeded".to_string(),
+                                    status: "fail".to_string(),
+                                    msg: Some(format!(
+                                        "daily spend ${:.2} >= cap ${:.2}",
+                                        spent, daily_cap
+                                    )),
+                                    payload_json: Some(payload),
+                                },
+                            );
+                            self.daily_alert_date = Some(today);
+                            // Hard daily stop is opt-in: it kills *this* run's
+                            // instance (the daemon only sees one run). The
+                            // user can also flip to soft mode by leaving
+                            // `daily_budget_hard = false`.
+                            if self.budget.daily_budget_hard {
+                                let _ = self.store.set_auto_destroyed_reason(
+                                    &self.handle.id,
+                                    "daily_budget_hard",
+                                );
+                                let _ = self.vendor.destroy(&self.handle);
+                                self.store
+                                    .update_run_status(&self.run_id, RunStatus::Failed)?;
+                                self.send_update(DataUpdate::RunStatusChanged(
+                                    self.run_id.clone(),
+                                    RunStatus::Failed,
+                                ));
+                                return Ok(RunStatus::Failed);
                             }
                         }
                     }

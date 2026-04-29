@@ -7,7 +7,7 @@ use xrun_core::{
     config::credentials::VastCredentials,
     store::{RunId, RunStatus},
     vendor::InstanceHandle,
-    Credentials, Store, VendorAdapter,
+    Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_poller::{CancellationToken, Poller};
 use xrun_vast::VastAdapter;
@@ -77,6 +77,7 @@ pub fn run(
     adapter.set_run_id(&run_id);
     let vendor: Box<dyn VendorAdapter> = Box::new(adapter);
 
+    let budget_cfg = GlobalConfig::load(config_dir).unwrap_or_default().budget;
     let cancel = CancellationToken::new();
     let result = Poller::new(
         run_id.clone(),
@@ -85,6 +86,7 @@ pub fn run(
         handle,
         runs_dir.to_path_buf(),
     )
+    .with_budget(budget_cfg)
     .run(cancel);
 
     match result {

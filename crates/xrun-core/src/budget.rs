@@ -107,6 +107,56 @@ pub fn active_hourly_burn(store: &Store) -> Result<f64, StoreError> {
         .sum())
 }
 
+/// Pure-slice variant of `active_hourly_burn`. The TUI keeps the instance list
+/// in memory (no Store at render time), so it computes burn from the slice
+/// directly. Skips destroyed and auto-destroyed entries.
+pub fn active_hourly_burn_slice(instances: &[Instance]) -> f64 {
+    instances
+        .iter()
+        .filter(|i| i.destroyed_at.is_none() && i.auto_destroyed_reason.is_none())
+        .filter_map(|i| i.price_per_hour)
+        .sum()
+}
+
+/// Smallest per-instance "headroom" until a cap fires: `min(max_cost - acc)`.
+/// `None` when no active instance has a cost cap. Negative values are clamped
+/// to 0 so the dashboard never shows -$0.05.
+pub fn cap_left_slice(instances: &[Instance]) -> Option<f64> {
+    instances
+        .iter()
+        .filter(|i| i.destroyed_at.is_none() && i.auto_destroyed_reason.is_none())
+        .filter_map(|i| {
+            let cap = i.max_cost_usd?;
+            Some((cap - i.accumulated_cost).max(0.0))
+        })
+        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.min(v))))
+}
+
+/// Live "today so far" spend computed from in-memory state. Sums:
+///   - `accumulated_cost` for active instances created today (live accrual);
+///   - `cost_usd` (or estimate) for runs that ENDED today (already-billed).
+///
+/// Both signals can come from anywhere — the TUI uses whatever it already has
+/// loaded, the daemon computes from Store.
+pub fn live_spend_today_slice(
+    instances: &[Instance],
+    completed_runs_today_cost: f64,
+    now: DateTime<Utc>,
+) -> f64 {
+    let today = today_utc(now);
+    let live: f64 = instances
+        .iter()
+        .filter(|i| i.destroyed_at.is_none() && i.auto_destroyed_reason.is_none())
+        .filter(|i| {
+            i.created_at
+                .map(|c| c.date_naive() == today)
+                .unwrap_or(false)
+        })
+        .map(|i| accumulate_cost(i, now))
+        .sum();
+    completed_runs_today_cost + live
+}
+
 /// Helper: today (UTC) — the dashboard always reports in UTC to match
 /// `created_at` semantics in the store.
 pub fn today_utc(now: DateTime<Utc>) -> NaiveDate {
