@@ -1,6 +1,8 @@
 #![deny(unsafe_code)]
 
 pub mod config_cmd;
+pub mod confirm;
+pub mod cp;
 pub mod doctor;
 pub mod events_cmd;
 pub mod launch;

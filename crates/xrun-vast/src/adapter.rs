@@ -9,8 +9,8 @@ use xrun_core::{
     config::credentials::VastCredentials,
     error::VendorError,
     manifest::{DataSource, Manifest, RunSpec},
-    store::{NewEvent, RunId, Store},
-    vendor::{DryRunPlan, InstanceHandle, VendorAdapter},
+    store::{InstanceCaps, NewEvent, RunId, Store},
+    vendor::{DryRunPlan, InstanceHandle, VendorAdapter, VendorRemoteInstance, VendorStatus},
 };
 
 use crate::{cli, error::VastError, execute, provision, pull, stub::VastStub, tail, upload};
@@ -26,18 +26,33 @@ fn get_tokio_rt() -> &'static tokio::runtime::Runtime {
 }
 
 pub struct VastAdapter {
-    #[allow(dead_code)]
     credentials: VastCredentials,
     store: RefCell<Store>,
     run_id: RefCell<Option<RunId>>,
+    exclude_countries: Vec<String>,
+    caps: RefCell<InstanceCaps>,
 }
 
 impl VastAdapter {
     pub fn new(credentials: VastCredentials, store: Store) -> Self {
+        Self::with_exclude_countries(credentials, store, Vec::new())
+    }
+
+    pub fn with_exclude_countries(
+        credentials: VastCredentials,
+        store: Store,
+        exclude_countries: Vec<String>,
+    ) -> Self {
+        // Push the api key into the process-wide override so every subsequent
+        // `vastai` invocation receives `--api-key …` and doesn't fall back to
+        // the native ~/.config/vastai/vast_api_key file.
+        crate::process::set_api_key_override(credentials.api_key.clone());
         Self {
             credentials,
             store: RefCell::new(store),
             run_id: RefCell::new(None),
+            exclude_countries,
+            caps: RefCell::new(InstanceCaps::default()),
         }
     }
 
@@ -46,17 +61,95 @@ impl VastAdapter {
         *self.run_id.borrow_mut() = Some(run_id.clone());
     }
 
+    /// Caps applied to instances provisioned by this adapter. Used by the
+    /// poll-daemon to auto-destroy instances that exceed lifetime/cost/idle.
+    pub fn set_caps(&self, caps: InstanceCaps) {
+        *self.caps.borrow_mut() = caps;
+    }
+
+    async fn vendor_status_impl(&self) -> VendorStatus {
+        let now = Utc::now();
+        let Some(key) = self.credentials.api_key.clone() else {
+            return VendorStatus {
+                connected: false,
+                balance: None,
+                currency: None,
+                account: None,
+                last_checked: now,
+                error: Some("api_key not set".to_string()),
+            };
+        };
+
+        crate::process::set_api_key_override(Some(key.clone()));
+        // Hit the REST API directly: the `vastai` Python CLI returns 403 on
+        // auth-required endpoints for some recent server versions even with a
+        // valid key. REST works in both cases.
+        match crate::rest::show_user(&key).await {
+            Ok(info) => VendorStatus {
+                connected: true,
+                balance: info.effective_balance(),
+                currency: Some("USD".to_string()),
+                account: info.account_label(),
+                last_checked: now,
+                error: None,
+            },
+            Err(e) => {
+                let msg = e.to_string();
+                let lower = msg.to_lowercase();
+                let unauthorized = lower.contains("unauthor")
+                    || lower.contains("requires login")
+                    || msg.contains("401")
+                    || msg.contains("403");
+                VendorStatus {
+                    connected: false,
+                    balance: None,
+                    currency: None,
+                    account: None,
+                    last_checked: now,
+                    error: Some(if unauthorized {
+                        "key rejected (revoked or expired). Get a new one at https://cloud.vast.ai/account/?tab=keys"
+                            .to_string()
+                    } else {
+                        msg
+                    }),
+                }
+            }
+        }
+    }
+
+    async fn vendor_instances_impl(&self) -> Result<Vec<VendorRemoteInstance>, VastError> {
+        let Some(key) = self.credentials.api_key.clone() else {
+            return Ok(Vec::new());
+        };
+        let raw = crate::rest::show_instances(&key).await?;
+        Ok(raw.into_iter().map(remote_to_generic).collect())
+    }
+
     async fn provision_impl(&self, manifest: &Manifest) -> Result<InstanceHandle, VastError> {
         let vast = manifest
             .vast
             .as_ref()
             .ok_or_else(|| VastError::ParseError("vast section required".into()))?;
 
+        let api_key = self.credentials.api_key.clone().ok_or_else(|| {
+            VastError::CliFailure {
+                exit_code: 401,
+                stderr: "vast.api_key not set — run `xrun config set vast.api_key <KEY>` \
+                         (or place the token in ~/.config/vastai/vast_api_key)"
+                    .into(),
+            }
+        })?;
+        crate::process::set_api_key_override(Some(api_key.clone()));
+
         let query = provision::offer_query_from_manifest(vast);
-        let offers = cli::search_offers(&query).await?;
+        let body = crate::rest::build_offer_search_body(&query, 5.0);
+        let body_str =
+            serde_json::to_string(&body).unwrap_or_else(|_| "<unprintable>".to_string());
+        let offers = crate::rest::search_offers(&api_key, &query).await?;
+        let offers = provision::filter_excluded_countries(offers, &self.exclude_countries);
 
         let price_cap = vast.price.as_ref().map(|p| p.max_per_hour);
-        let best = provision::rank_and_select(offers, price_cap)?;
+        let best = provision::rank_and_select(offers, price_cap, &body_str)?;
         let offer_id = best.id;
         let offer_dph = best.dph_total;
 
@@ -64,11 +157,12 @@ impl VastAdapter {
         let ssh = vast.ssh.unwrap_or(true);
         let image = vast.image.clone();
 
-        let instance_id = cli::create_instance(offer_id, &image, disk_gb, ssh).await?;
+        let instance_id =
+            crate::rest::create_instance(&api_key, offer_id, &image, disk_gb, ssh).await?;
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
         let info = loop {
-            let info = cli::show_instance(instance_id).await?;
+            let info = crate::rest::show_instance(&api_key, instance_id).await?;
             if info.actual_status.as_deref() == Some("running") {
                 break info;
             }
@@ -89,13 +183,15 @@ impl VastAdapter {
             let run_id_opt = self.run_id.borrow().clone();
             let mut store = self.store.borrow_mut();
 
-            let _ = store.insert_instance(
+            let caps = self.caps.borrow().clone();
+            let _ = store.insert_instance_with_caps(
                 &instance_id.to_string(),
                 "vast",
                 run_id_opt.as_ref(),
                 gpu_name.as_deref(),
                 Some(actual_dph),
                 now,
+                &caps,
             );
 
             if let Some(ref rid) = run_id_opt {
@@ -173,12 +269,16 @@ impl VastAdapter {
     }
 
     async fn execute_impl(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VastError> {
-        let instance_id: u64 =
+        // Sanity-check the id is parseable so we surface a nice error instead
+        // of trying SSH against a bogus handle.
+        let _instance_id: u64 =
             h.id.parse()
                 .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
 
-        // Launch setup + background command.  Borrows are dropped before each await.
-        let pid = execute::launch_run(instance_id, run_spec).await?;
+        // Launch setup + background command over plain SSH (vast.ai's HTTP
+        // execute endpoint rejects compound shell forms — see issue.md
+        // Update 4). Borrows are dropped before each await.
+        let pid = execute::launch_run(h, run_spec).await?;
 
         {
             let run_id_opt = self.run_id.borrow().clone();
@@ -268,7 +368,11 @@ impl VastAdapter {
             h.id.parse()
                 .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
 
-        cli::destroy(instance_id).await?;
+        if let Some(key) = self.credentials.api_key.clone() {
+            crate::rest::destroy_instance(&key, instance_id).await?;
+        } else {
+            cli::destroy(instance_id).await?;
+        }
 
         let now = Utc::now();
 
@@ -331,6 +435,16 @@ impl VendorAdapter for VastAdapter {
         VastStub::new().dry_run_plan(manifest)
     }
 
+    fn vendor_status(&self) -> Result<VendorStatus, VendorError> {
+        Ok(get_tokio_rt().block_on(self.vendor_status_impl()))
+    }
+
+    fn vendor_instances(&self) -> Result<Vec<VendorRemoteInstance>, VendorError> {
+        get_tokio_rt()
+            .block_on(self.vendor_instances_impl())
+            .map_err(vast_to_vendor)
+    }
+
     fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError> {
         get_tokio_rt()
             .block_on(self.provision_impl(manifest))
@@ -365,5 +479,22 @@ impl VendorAdapter for VastAdapter {
         get_tokio_rt()
             .block_on(self.destroy_impl(h))
             .map_err(vast_to_vendor)
+    }
+}
+
+fn remote_to_generic(r: crate::rest::RemoteInstance) -> VendorRemoteInstance {
+    let ssh = match (r.ssh_host.as_deref(), r.ssh_port) {
+        (Some(host), Some(port)) if !host.is_empty() => Some(format!("{}:{}", host, port)),
+        _ => None,
+    };
+    VendorRemoteInstance {
+        id: r.id.to_string(),
+        gpu: r.gpu_name,
+        num_gpus: r.num_gpus,
+        dph_total: r.dph_total,
+        status: r.actual_status.or(r.cur_state),
+        uptime_secs: r.duration.map(|d| d.max(0.0) as u64),
+        ssh,
+        region: r.geolocation,
     }
 }

@@ -2,13 +2,55 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::error::VendorError;
 use crate::manifest::{DataSource, Manifest, RunSpec};
 use crate::store::RunId;
 
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+/// Snapshot of a vendor's account state, surfaced to TUI/CLI.
+/// `connected = false` means the credentials are missing or rejected.
+/// `balance` is in `currency` units when both are set; for vast it's USD.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VendorStatus {
+    pub connected: bool,
+    pub balance: Option<f64>,
+    pub currency: Option<String>,
+    pub account: Option<String>,
+    pub last_checked: DateTime<Utc>,
+    pub error: Option<String>,
+}
+
+/// Vendor-side view of a running/queued machine, surfaced in the Instances
+/// screen alongside the locally-tracked ones. Adapters fill what they can;
+/// missing fields render as "—".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VendorRemoteInstance {
+    pub id: String,
+    pub gpu: Option<String>,
+    pub num_gpus: Option<u32>,
+    pub dph_total: Option<f64>,
+    pub status: Option<String>,
+    pub uptime_secs: Option<u64>,
+    pub ssh: Option<String>,
+    pub region: Option<String>,
+}
+
+impl VendorStatus {
+    pub fn not_configured() -> Self {
+        Self {
+            connected: false,
+            balance: None,
+            currency: None,
+            account: None,
+            last_checked: Utc::now(),
+            error: Some("not configured".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceHandle {
     pub id: String,
     pub vendor: String,
@@ -33,6 +75,16 @@ pub trait VendorAdapter {
     fn set_run_id(&self, _run_id: &RunId) {}
     fn validate(&self, manifest: &Manifest) -> Result<(), VendorError>;
     fn dry_run_plan(&self, manifest: &Manifest) -> Result<DryRunPlan, VendorError>;
+    /// Probe the vendor's account state (balance, account name, reachability).
+    /// Default impl returns `NotImplemented`; adapters override to call their CLI/API.
+    fn vendor_status(&self) -> Result<VendorStatus, VendorError> {
+        Err(VendorError::NotImplemented)
+    }
+    /// List the user's running/queued machines from the vendor's side.
+    /// Default impl returns `NotImplemented`; adapters override.
+    fn vendor_instances(&self) -> Result<Vec<VendorRemoteInstance>, VendorError> {
+        Err(VendorError::NotImplemented)
+    }
     fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError>;
     fn upload(&self, h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError>;
     fn execute(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VendorError>;

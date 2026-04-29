@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use xrun_core::{
     error::VendorError,
     manifest::{validate as core_validate, DataSource, Manifest, RunSpec},
-    vendor::{DryRunPlan, InstanceHandle, VendorAdapter},
+    vendor::{DryRunPlan, InstanceHandle, VendorAdapter, VendorStatus},
 };
 
 pub struct VastStub;
@@ -80,6 +80,17 @@ impl VendorAdapter for VastStub {
             data_total_bytes,
             data_items,
             cmd_line,
+        })
+    }
+
+    fn vendor_status(&self) -> Result<VendorStatus, VendorError> {
+        Ok(VendorStatus {
+            connected: false,
+            balance: None,
+            currency: None,
+            account: None,
+            last_checked: chrono::Utc::now(),
+            error: Some("stub adapter (no live calls)".to_string()),
         })
     }
 

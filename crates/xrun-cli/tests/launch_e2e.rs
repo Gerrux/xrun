@@ -16,6 +16,10 @@ fn make_args(manifest_path: PathBuf) -> LaunchArgs {
         name: None,
         json: false,
         detach: false,
+        max_cost: None,
+        max_hours: None,
+        idle_timeout: None,
+        yes: false,
     }
 }
 

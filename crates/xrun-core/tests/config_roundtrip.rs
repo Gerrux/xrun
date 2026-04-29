@@ -58,6 +58,16 @@ fn config_store_init_idempotent() {
 }
 
 #[test]
+fn credentials_is_empty_detects_unset() {
+    let creds = Credentials::default();
+    assert!(creds.is_empty());
+
+    let mut creds = Credentials::default();
+    creds.vast.api_key = Some("x".to_string());
+    assert!(!creds.is_empty());
+}
+
+#[test]
 fn global_config_loads_with_defaults_when_missing() {
     let dir = tempdir().unwrap();
     let cfg = GlobalConfig::load(dir.path()).unwrap();

@@ -4,7 +4,7 @@ pub mod credentials;
 pub mod global;
 
 pub use credentials::Credentials;
-pub use global::GlobalConfig;
+pub use global::{BudgetConfig, GlobalConfig};
 
 use crate::error::ConfigError;
 use std::path::Path;
@@ -23,8 +23,12 @@ impl GlobalConfig {
     pub fn save(&self, config_dir: &Path) -> Result<(), ConfigError> {
         std::fs::create_dir_all(config_dir)?;
         let path = config_dir.join("config.toml");
+        let tmp_path = config_dir.join(".config.toml.tmp");
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        // Write to a temp file then rename so a crash mid-write cannot
+        // truncate the existing config.
+        std::fs::write(&tmp_path, content)?;
+        std::fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 }

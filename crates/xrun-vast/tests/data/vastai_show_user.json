@@ -1,0 +1,11 @@
+{
+  "id": 12345,
+  "email": "tester@example.com",
+  "username": "tester",
+  "fullname": "Test User",
+  "balance": 0.00,
+  "credit": 12.34,
+  "credit_balance": 12.34,
+  "user_type": "regular",
+  "verified": 1
+}

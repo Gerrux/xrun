@@ -1,0 +1,597 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tokyo Night palette
+   bg=#1a1b26  surface=#24283b  overlay=#2d3149  border=#414868
+   blue=#7aa2f7  cyan=#7dcfff  green=#9ece6a  yellow=#e0af68
+   red=#f7768e  magenta=#bb9af7  text=#c0caf5  muted=#565f89
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
+Screen {
+    background: #1a1b26;
+    color: #c0caf5;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+Header {
+    background: #24283b;
+    color: #7aa2f7;
+    text-style: bold;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+Footer {
+    background: #24283b;
+    color: #565f89;
+}
+
+Footer FooterKey {
+    background: #24283b;
+}
+
+Footer FooterKey > .footer-key--key {
+    color: #7aa2f7;
+    background: #2d3149;
+    text-style: bold;
+}
+
+Footer FooterKey > .footer-key--description {
+    color: #a9b1d6;
+    background: #24283b;
+}
+
+/* ── Screen title bar ────────────────────────────────────────────────────── */
+
+.screen-title {
+    background: #24283b;
+    color: #7aa2f7;
+    text-style: bold;
+    padding: 0 2;
+    height: 1;
+    border-bottom: solid #414868;
+}
+
+/* ── Stats bar (runs, instances) ─────────────────────────────────────────── */
+
+.stats-bar {
+    background: #1e2030;
+    padding: 0 2;
+    height: 1;
+    border-bottom: solid #2d3149;
+    color: #565f89;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+
+.empty-state {
+    height: 1fr;
+    content-align: center middle;
+    color: #414868;
+    text-style: italic;
+}
+
+/* ── Tabs (top-level screen filter) ─────────────────────────────────────── */
+
+Tabs {
+    background: #24283b;
+    border-bottom: solid #414868;
+    height: 3;
+}
+
+Tab {
+    color: #565f89;
+    padding: 0 3;
+}
+
+Tab.-active {
+    color: #7aa2f7;
+    text-style: bold;
+    background: #1a1b26;
+}
+
+Tab:hover {
+    color: #7dcfff;
+    background: #1e2030;
+}
+
+/* ── DataTable ───────────────────────────────────────────────────────────── */
+
+DataTable {
+    background: #1a1b26;
+    color: #c0caf5;
+}
+
+/* Fill remaining space in each screen context */
+#runs-table, #remote-table, #local-table, #stages-table {
+    height: 1fr;
+}
+
+DataTable > .datatable--header {
+    background: #24283b;
+    color: #565f89;
+    text-style: bold;
+}
+
+DataTable > .datatable--header-hover {
+    background: #2d3149;
+    color: #7aa2f7;
+}
+
+DataTable > .datatable--cursor {
+    background: #2d3149;
+    color: #c0caf5;
+}
+
+DataTable > .datatable--hover {
+    background: #1e2030;
+}
+
+DataTable > .datatable--even-row {
+    background: #1e2030;
+}
+
+DataTable > .datatable--odd-row {
+    background: #1a1b26;
+}
+
+DataTable:focus > .datatable--cursor {
+    background: #3d59a1;
+    color: #e0def4;
+}
+
+/* ── TabbedContent ───────────────────────────────────────────────────────── */
+
+TabbedContent {
+    height: 1fr;
+}
+
+TabbedContent Tabs {
+    background: #1e2030;
+    border-bottom: solid #2d3149;
+}
+
+TabbedContent Tab {
+    color: #565f89;
+    padding: 0 2;
+}
+
+TabbedContent Tab.-active {
+    color: #7dcfff;
+    text-style: bold;
+    background: #1a1b26;
+}
+
+TabPane {
+    padding: 0;
+    background: #1a1b26;
+}
+
+/* ── RichLog ─────────────────────────────────────────────────────────────── */
+
+RichLog {
+    background: #1a1b26;
+    color: #c0caf5;
+    padding: 0 1;
+    height: 1fr;
+    scrollbar-color: #414868;
+    scrollbar-background: #1a1b26;
+}
+
+/* ── Rule ────────────────────────────────────────────────────────────────── */
+
+Rule {
+    color: #414868;
+    margin: 0;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+
+Scrollbar {
+    background: #1a1b26;
+}
+
+Scrollbar > .scrollbar--slider {
+    color: #414868;
+}
+
+Scrollbar > .scrollbar--slider:hover {
+    color: #565f89;
+}
+
+/* ── Input ───────────────────────────────────────────────────────────────── */
+
+Input {
+    background: #24283b;
+    color: #c0caf5;
+    border: tall #414868;
+}
+
+Input:focus {
+    border: tall #7aa2f7;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+Button {
+    background: #24283b;
+    color: #c0caf5;
+    border: tall #414868;
+    min-width: 12;
+}
+
+Button:hover {
+    background: #2d3149;
+    color: #7aa2f7;
+    border: tall #7aa2f7;
+}
+
+Button.-primary {
+    background: #3d59a1;
+    color: #c0caf5;
+    border: tall #7aa2f7;
+}
+
+Button.-primary:hover {
+    background: #4a6bb5;
+}
+
+Button.danger {
+    color: #f7768e;
+    border: tall #414868;
+}
+
+Button.danger:hover {
+    background: #2d1b2e;
+    border: tall #f7768e;
+}
+
+Button:disabled {
+    color: #414868;
+    background: #1e2030;
+    border: tall #2d3149;
+}
+
+/* ── ModalScreen ─────────────────────────────────────────────────────────── */
+
+ModalScreen {
+    background: rgba(10, 11, 20, 0.85);
+    align: center middle;
+}
+
+/* ── Confirm dialog ──────────────────────────────────────────────────────── */
+
+.confirm-dialog {
+    background: #24283b;
+    border: solid #7aa2f7;
+    width: 50;
+    height: auto;
+    padding: 2 3;
+    align: center middle;
+}
+
+.confirm-message {
+    color: #c0caf5;
+    text-align: center;
+    padding: 0 0 2 0;
+}
+
+.confirm-buttons {
+    layout: horizontal;
+    height: auto;
+    align: center middle;
+}
+
+.confirm-buttons Button {
+    margin: 0 1;
+}
+
+/* ── RunDetail header ────────────────────────────────────────────────────── */
+
+#detail-header {
+    background: #24283b;
+    border-bottom: solid #414868;
+    padding: 1 2 0 2;
+    height: auto;
+}
+
+#detail-title-row {
+    height: 2;
+    align: left middle;
+}
+
+.detail-name {
+    color: #c0caf5;
+    text-style: bold;
+    width: 1fr;
+    content-align: left middle;
+}
+
+.detail-badge {
+    width: auto;
+    content-align: right middle;
+    padding-right: 1;
+}
+
+#detail-chips {
+    height: 1;
+    align: left middle;
+    padding: 0 0 1 0;
+}
+
+.chip {
+    color: #565f89;
+    width: auto;
+    padding-right: 3;
+}
+
+.detail-rule {
+    margin: 0;
+}
+
+#detail-actions {
+    height: 3;
+    align: left middle;
+    padding: 0 0 0 0;
+}
+
+.action-btn {
+    min-width: 12;
+    margin-right: 1;
+}
+
+/* ── Forms (Settings / Vendors) ──────────────────────────────────────────── */
+
+#vendor-form {
+    padding: 2 4;
+    height: 1fr;
+}
+
+#settings-form {
+    /* Lives inside #settings-scroll — sizes to content so the scroller
+       has overflow to scroll. */
+    padding: 2 4;
+    height: auto;
+}
+
+.form-row {
+    height: 3;
+    align: left middle;
+    margin-bottom: 1;
+}
+
+.form-label {
+    width: 28;
+    color: #565f89;
+    content-align: right middle;
+    padding-right: 2;
+}
+
+.form-input {
+    width: 40;
+}
+
+.form-hint {
+    padding: 0 0 0 30;
+    color: #565f89;
+    height: auto;
+}
+
+.form-footer-hint {
+    padding: 2 0 0 0;
+    color: #565f89;
+    height: auto;
+}
+
+.form-spacer {
+    height: 1;
+}
+
+.form-actions {
+    height: 3;
+    align: left middle;
+    padding-left: 30;
+}
+
+.form-actions Button {
+    margin-right: 1;
+}
+
+.vendor-heading {
+    color: #7dcfff;
+    text-style: bold;
+    padding: 0 0 1 0;
+    height: auto;
+}
+
+/* ── Vendor overview rows ────────────────────────────────────────────────── */
+
+#vendor-overview {
+    padding: 1 2;
+    height: 1fr;
+}
+
+.vendor-row {
+    height: 3;
+    align: left middle;
+    border: solid #2d3149;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.vendor-row-active {
+    border: solid #7aa2f7;
+    background: #1e2030;
+}
+
+.vendor-dot {
+    width: 3;
+    content-align: center middle;
+}
+
+.vendor-name-col {
+    width: 30;
+    content-align: left middle;
+}
+
+.vendor-status-col {
+    width: 20;
+    content-align: left middle;
+}
+
+.vendor-info-col {
+    width: 1fr;
+    content-align: left middle;
+}
+
+.vendor-hint {
+    color: #565f89;
+    padding: 1 1;
+    height: auto;
+}
+
+/* ── LoadingIndicator ────────────────────────────────────────────────────── */
+
+LoadingIndicator {
+    color: #7aa2f7;
+}
+
+/* ── Dashboard ───────────────────────────────────────────────────────────── */
+
+#dash-root {
+    height: 1fr;
+    padding: 0;
+}
+
+#dash-kpi-grid {
+    grid-size: 4 1;
+    grid-gutter: 1 1;
+    height: 5;
+    padding: 1 2 0 2;
+}
+
+.kpi-card {
+    background: #24283b;
+    border: tall #2d3149;
+    padding: 0 2;
+    height: 4;
+    content-align: left middle;
+}
+
+#dash-cols {
+    height: 1fr;
+    padding: 1 2;
+}
+
+#dash-active-col, #dash-recent-col {
+    width: 1fr;
+    margin-right: 1;
+    height: 1fr;
+}
+
+.dash-section {
+    color: #bb9af7;
+    text-style: bold;
+    height: 1;
+    padding: 0 1 0 1;
+    border-bottom: solid #2d3149;
+}
+
+#dash-active, #dash-recent {
+    height: 1fr;
+    border: tall #2d3149;
+}
+
+#dash-actions {
+    height: 3;
+    padding: 0 1;
+    border-top: solid #2d3149;
+    background: #1e2030;
+    align: left middle;
+}
+
+.nav-btn {
+    background: #24283b;
+    color: #c0caf5;
+    border: tall #2d3149;
+    min-width: 14;
+    margin: 0 1 0 0;
+    height: 3;
+}
+
+.nav-btn:hover {
+    background: #2d3149;
+    color: #7aa2f7;
+    border: tall #7aa2f7;
+}
+
+/* ── Doctor screen ───────────────────────────────────────────────────────── */
+
+#doctor-body {
+    height: 1fr;
+    padding: 0 2 1 2;
+}
+
+#doctor-table {
+    height: 1fr;
+    border: tall #2d3149;
+}
+
+.doctor-footer {
+    height: 1;
+    padding: 1 1 0 1;
+    color: #565f89;
+}
+
+/* ── Launch screen ───────────────────────────────────────────────────────── */
+
+#launch-cols {
+    height: 1fr;
+    padding: 1 2 0 2;
+}
+
+#launch-list-col {
+    width: 50%;
+    margin-right: 1;
+    height: 1fr;
+}
+
+#launch-preview-col {
+    width: 1fr;
+    height: 1fr;
+}
+
+#launch-table {
+    height: 1fr;
+    border: tall #2d3149;
+}
+
+#launch-preview {
+    height: 1fr;
+    border: tall #2d3149;
+}
+
+#launch-form {
+    height: auto;
+    padding: 1 2;
+    border-top: solid #2d3149;
+    background: #1e2030;
+}
+
+/* ── Settings (sectioned) ────────────────────────────────────────────────── */
+
+#settings-scroll {
+    height: 1fr;
+}
+
+.form-section {
+    color: #bb9af7;
+    text-style: bold;
+    padding: 1 0 1 0;
+    height: auto;
+    border-bottom: solid #2d3149;
+}
+
+/* ── Splash ──────────────────────────────────────────────────────────────── */
+/* (Splash uses inline DEFAULT_CSS — nothing else needed here.) */

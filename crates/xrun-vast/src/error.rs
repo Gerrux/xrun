@@ -13,8 +13,11 @@ pub enum VastError {
     #[error("failed to parse vastai output: {0}")]
     ParseError(String),
 
-    #[error("no offers available matching query")]
-    NoOffersAvailable,
+    #[error("no offers available matching query — REST POST /bundles/ returned 0 rows.\n\
+             query body: {0}\n\
+             hint: try `vastai search offers '<filter>'` from the CLI to narrow it down; \
+             default filters include verified=true, rentable=true, external=false, rented=false")]
+    NoOffersAvailable(String),
 
     #[error("price cap too low: cheapest ${cheapest:.4}/h, cap ${cap:.4}/h")]
     PriceCapTooLow { cheapest: f64, cap: f64 },

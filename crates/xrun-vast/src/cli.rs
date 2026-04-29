@@ -7,6 +7,23 @@ use serde::Deserialize;
 use crate::error::VastError;
 use crate::process::{run_vastai, run_vastai_with_retry, RetryPolicy};
 
+/// Build a readable parse error for vastai output: includes which sub-command
+/// produced it, the underlying serde error, and a bounded preview of the raw
+/// bytes so the user can see what `vastai` actually returned (often an HTML
+/// error page, an "owner: Extra inputs are not permitted" string, etc.).
+fn parse_err(cmd: &str, raw: &[u8], e: serde_json::Error) -> VastError {
+    let preview_raw = String::from_utf8_lossy(raw);
+    let trimmed = preview_raw.trim();
+    let preview: String = if trimmed.is_empty() {
+        "(empty stdout)".to_string()
+    } else if trimmed.chars().count() > 200 {
+        format!("{}…", trimmed.chars().take(200).collect::<String>())
+    } else {
+        trimmed.to_string()
+    };
+    VastError::ParseError(format!("vastai {} → {} (raw: {})", cmd, e, preview))
+}
+
 pub type InstanceId = u64;
 
 #[derive(Debug, Clone)]
@@ -52,6 +69,36 @@ pub struct Offer {
     pub reliability2: Option<f64>,
     pub disk_space: Option<f64>,
     pub status: Option<String>,
+    #[serde(default)]
+    pub geolocation: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct UserInfo {
+    pub id: Option<u64>,
+    pub email: Option<String>,
+    pub username: Option<String>,
+    pub fullname: Option<String>,
+    pub balance: Option<f64>,
+    pub credit: Option<f64>,
+    pub credit_balance: Option<f64>,
+}
+
+impl UserInfo {
+    /// Pick the most "useful" balance figure. Vast's API has several
+    /// near-synonymous fields depending on account type; prefer
+    /// `credit` (current spendable), then `credit_balance`, then `balance`.
+    pub fn effective_balance(&self) -> Option<f64> {
+        self.credit.or(self.credit_balance).or(self.balance)
+    }
+
+    pub fn account_label(&self) -> Option<String> {
+        self.email
+            .clone()
+            .or_else(|| self.username.clone())
+            .or_else(|| self.fullname.clone())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,11 +132,21 @@ fn idempotent_policy() -> RetryPolicy {
     RetryPolicy::default()
 }
 
+pub async fn show_user() -> Result<UserInfo, VastError> {
+    let args = ["show", "user", "--raw"];
+    let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
+    parse_user_info(&out)
+}
+
+pub fn parse_user_info(raw: &[u8]) -> Result<UserInfo, VastError> {
+    serde_json::from_slice::<UserInfo>(raw).map_err(|e| parse_err("show user", raw, e))
+}
+
 pub async fn search_offers(query: &OfferQuery) -> Result<Vec<Offer>, VastError> {
     let q = query.render();
     let args = ["search", "offers", "--raw", &q];
     let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
-    serde_json::from_slice::<Vec<Offer>>(&out).map_err(|e| VastError::ParseError(e.to_string()))
+    serde_json::from_slice::<Vec<Offer>>(&out).map_err(|e| parse_err("search offers", &out, e))
 }
 
 pub async fn create_instance(
@@ -115,17 +172,25 @@ pub async fn create_instance(
     // Non-idempotent: single attempt only.
     let out = run_vastai(&args).await?;
     let v: serde_json::Value =
-        serde_json::from_slice(&out).map_err(|e| VastError::ParseError(e.to_string()))?;
-    v["new_contract"]
-        .as_u64()
-        .ok_or_else(|| VastError::ParseError("missing new_contract in create response".to_string()))
+        serde_json::from_slice(&out).map_err(|e| parse_err("create instance", &out, e))?;
+    v["new_contract"].as_u64().ok_or_else(|| {
+        let preview = String::from_utf8_lossy(&out).trim().to_string();
+        VastError::ParseError(format!(
+            "vastai create instance → missing new_contract (raw: {})",
+            if preview.is_empty() {
+                "(empty stdout)"
+            } else {
+                &preview
+            }
+        ))
+    })
 }
 
 pub async fn show_instance(id: InstanceId) -> Result<InstanceInfo, VastError> {
     let id_str = id.to_string();
     let args = ["show", "instance", "--raw", &id_str];
     let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
-    serde_json::from_slice::<InstanceInfo>(&out).map_err(|e| VastError::ParseError(e.to_string()))
+    serde_json::from_slice::<InstanceInfo>(&out).map_err(|e| parse_err("show instance", &out, e))
 }
 
 pub async fn execute(id: InstanceId, cmd: &str) -> Result<Vec<u8>, VastError> {

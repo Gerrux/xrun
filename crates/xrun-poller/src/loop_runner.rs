@@ -2,16 +2,18 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use thiserror::Error;
 use xrun_core::{
+    budget,
     error::VendorError,
     store::{NewEvent, NewMetric, RunId, RunStatus, Store},
     vendor::{InstanceHandle, VendorAdapter},
-    EventStatus, StoreError,
+    DataUpdate, EventStatus, StoreError,
 };
 
 use crate::lock::{PollerLock, PollerLockError};
@@ -123,6 +125,7 @@ pub struct Poller {
     handle: InstanceHandle,
     config: PollerConfig,
     runs_dir: PathBuf,
+    update_tx: Option<SyncSender<DataUpdate>>,
 }
 
 impl Poller {
@@ -140,12 +143,24 @@ impl Poller {
             handle,
             config: PollerConfig::default(),
             runs_dir,
+            update_tx: None,
         }
     }
 
     pub fn with_config(mut self, config: PollerConfig) -> Self {
         self.config = config;
         self
+    }
+
+    pub fn with_update_sender(mut self, tx: SyncSender<DataUpdate>) -> Self {
+        self.update_tx = Some(tx);
+        self
+    }
+
+    fn send_update(&self, update: DataUpdate) {
+        if let Some(tx) = &self.update_tx {
+            let _ = tx.try_send(update);
+        }
     }
 
     pub fn run(mut self, cancel: CancellationToken) -> Result<RunStatus, PollerError> {
@@ -166,10 +181,15 @@ impl Poller {
         let mut last_offset_e = offset_e;
 
         loop {
+            let mut progress_this_tick = false;
             if cancel.is_cancelled() {
                 let _ = self.vendor.destroy(&self.handle);
                 self.store
                     .update_run_status(&self.run_id, RunStatus::Cancelled)?;
+                self.send_update(DataUpdate::RunStatusChanged(
+                    self.run_id.clone(),
+                    RunStatus::Cancelled,
+                ));
                 return Ok(RunStatus::Cancelled);
             }
 
@@ -216,11 +236,21 @@ impl Poller {
                     if offset_e > last_offset_e {
                         last_progress = Instant::now();
                         last_offset_e = offset_e;
+                        progress_this_tick = true;
                     }
+
+                    self.send_update(DataUpdate::EventsAppended(
+                        self.run_id.clone(),
+                        events.len(),
+                    ));
 
                     if done {
                         self.store
                             .update_run_status(&self.run_id, RunStatus::Done)?;
+                        self.send_update(DataUpdate::RunStatusChanged(
+                            self.run_id.clone(),
+                            RunStatus::Done,
+                        ));
                         return Ok(RunStatus::Done);
                     }
 
@@ -233,6 +263,10 @@ impl Poller {
                         let _ = self.vendor.destroy(&self.handle);
                         self.store
                             .update_run_status(&self.run_id, RunStatus::Failed)?;
+                        self.send_update(DataUpdate::RunStatusChanged(
+                            self.run_id.clone(),
+                            RunStatus::Failed,
+                        ));
                         return Ok(RunStatus::Failed);
                     }
                 }
@@ -240,11 +274,9 @@ impl Poller {
                 Err(VendorError::Truncated) => {
                     tracing::warn!("events file truncated (pre-emption?); resetting offset to 0");
                     offset_e = 0;
-                    let _ = self.store.update_poll_offset(
-                        &self.run_id,
-                        &self.config.events_file,
-                        0,
-                    );
+                    let _ =
+                        self.store
+                            .update_poll_offset(&self.run_id, &self.config.events_file, 0);
                 }
                 Err(e) => {
                     tracing::warn!("tail events error: {e}");
@@ -258,7 +290,9 @@ impl Poller {
             {
                 Ok(bytes) if !bytes.is_empty() => {
                     let delta = bytes.len() as u64;
-                    for m in parse_metrics(&bytes) {
+                    let metrics = parse_metrics(&bytes);
+                    let metrics_count = metrics.len();
+                    for m in metrics {
                         let _ = self.store.append_metric(
                             &self.run_id,
                             NewMetric {
@@ -276,31 +310,90 @@ impl Poller {
                         offset_m,
                     );
                     last_progress = Instant::now();
+                    progress_this_tick = true;
+                    self.send_update(DataUpdate::MetricsAppended(
+                        self.run_id.clone(),
+                        metrics_count,
+                    ));
                 }
                 Ok(_) => {}
                 Err(VendorError::Truncated) => {
                     tracing::warn!("metrics file truncated (pre-emption?); resetting offset to 0");
                     offset_m = 0;
-                    let _ = self.store.update_poll_offset(
-                        &self.run_id,
-                        &self.config.metrics_file,
-                        0,
-                    );
+                    let _ =
+                        self.store
+                            .update_poll_offset(&self.run_id, &self.config.metrics_file, 0);
                 }
                 Err(e) => {
                     tracing::warn!("tail metrics error: {e}");
                 }
             }
 
-            // --- cost estimate ---
+            // --- cost estimate + budget enforcement ---
+            let now_wall = Utc::now();
             if let Ok(Some(run)) = self.store.get_run(&self.run_id) {
                 if let Some(started_at) = run.started_at {
                     if let Ok(Some(inst)) = self.store.get_instance(&self.handle.id) {
                         if let Some(dph) = inst.price_per_hour {
-                            let hours = (Utc::now() - started_at).num_seconds().max(0) as f64 / 3600.0;
+                            let hours =
+                                (now_wall - started_at).num_seconds().max(0) as f64 / 3600.0;
                             let _ = self
                                 .store
                                 .update_run_cost_estimate(&self.run_id, hours * dph);
+                        }
+
+                        // Refresh accumulated_cost from created_at (Vast bills
+                        // from allocation, which is earlier than started_at).
+                        let acc = budget::accumulate_cost(&inst, now_wall);
+                        let active_ts = if progress_this_tick {
+                            Some(now_wall)
+                        } else {
+                            None
+                        };
+                        let _ = self
+                            .store
+                            .update_instance_usage(&self.handle.id, acc, active_ts);
+
+                        // Re-read with updated fields so cap evaluation uses
+                        // the latest accumulated_cost / last_active_at.
+                        if let Ok(Some(updated)) = self.store.get_instance(&self.handle.id) {
+                            if updated.auto_destroyed_reason.is_none() {
+                                if let Some(reason) = budget::evaluate_caps(&updated, now_wall) {
+                                    // Record reason BEFORE destroying so a
+                                    // daemon restart doesn't double-destroy.
+                                    let _ = self.store.set_auto_destroyed_reason(
+                                        &self.handle.id,
+                                        reason.as_str(),
+                                    );
+                                    let payload = serde_json::json!({
+                                        "reason": reason.as_str(),
+                                        "instance_id": self.handle.id,
+                                        "accumulated_cost": acc,
+                                    })
+                                    .to_string();
+                                    let _ = self.store.append_event(
+                                        &self.run_id,
+                                        NewEvent {
+                                            ts: now_wall,
+                                            stage: "instance.auto_destroyed".to_string(),
+                                            status: "fail".to_string(),
+                                            msg: Some(format!(
+                                                "auto-destroyed by budget guard: {}",
+                                                reason.as_str()
+                                            )),
+                                            payload_json: Some(payload),
+                                        },
+                                    );
+                                    let _ = self.vendor.destroy(&self.handle);
+                                    self.store
+                                        .update_run_status(&self.run_id, RunStatus::Failed)?;
+                                    self.send_update(DataUpdate::RunStatusChanged(
+                                        self.run_id.clone(),
+                                        RunStatus::Failed,
+                                    ));
+                                    return Ok(RunStatus::Failed);
+                                }
+                            }
                         }
                     }
                 }
@@ -323,6 +416,10 @@ impl Poller {
                     let _ = self.vendor.destroy(&self.handle);
                     self.store
                         .update_run_status(&self.run_id, RunStatus::Failed)?;
+                    self.send_update(DataUpdate::RunStatusChanged(
+                        self.run_id.clone(),
+                        RunStatus::Failed,
+                    ));
                     return Ok(RunStatus::Failed);
                 }
             }

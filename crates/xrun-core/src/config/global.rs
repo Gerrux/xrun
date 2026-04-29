@@ -30,6 +30,66 @@ impl Default for PollerConfig {
 #[serde(default)]
 pub struct DefaultsConfig {
     pub vendor: Option<Vendor>,
+    pub exp_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TuiConfig {
+    pub theme: String,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: "default".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// ISO-3166 alpha-2 country codes (case-insensitive) to exclude from offer
+    /// search. Vast.ai returns geolocation strings like `"DE, Frankfurt"` —
+    /// matching is done on the leading 2-char prefix on the client side.
+    pub exclude_countries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BudgetConfig {
+    /// Hard cap on per-instance lifetime. Auto-destroy when exceeded.
+    pub max_lifetime_hours: f64,
+    /// Hard cap on per-instance accumulated cost. Auto-destroy when exceeded.
+    pub max_cost_per_instance_usd: f64,
+    /// Idle window before auto-destroy (no GPU activity). 0 disables idle cap.
+    pub idle_timeout_min: f64,
+    /// Soft alert threshold for total daily spend (None = no alert).
+    pub daily_budget_usd: Option<f64>,
+    /// If true, auto-destroy all active instances on daily budget breach.
+    pub daily_budget_hard: bool,
+    /// Soft alert threshold for monthly spend.
+    pub monthly_budget_usd: Option<f64>,
+    /// Hourly rate above which a y/N confirm is required.
+    pub require_confirm_above_hourly: f64,
+    /// Hourly rate above which a typed-string confirm is required.
+    pub require_typed_confirm_above_hourly: f64,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_lifetime_hours: 8.0,
+            max_cost_per_instance_usd: 10.0,
+            idle_timeout_min: 30.0,
+            daily_budget_usd: None,
+            daily_budget_hard: false,
+            monthly_budget_usd: None,
+            require_confirm_above_hourly: 0.5,
+            require_typed_confirm_above_hourly: 2.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -38,4 +98,7 @@ pub struct GlobalConfig {
     pub mlflow: MlflowConfig,
     pub poller: PollerConfig,
     pub defaults: DefaultsConfig,
+    pub tui: TuiConfig,
+    pub search: SearchConfig,
+    pub budget: BudgetConfig,
 }

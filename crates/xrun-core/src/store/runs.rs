@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{
     params,
     types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
@@ -242,6 +242,26 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Sum of `cost_usd_estimate` for runs created on the given UTC date.
+    /// Falls back to `cost_usd` when estimate is null. Used by budget.
+    pub fn sum_run_cost_for_date(&self, day: NaiveDate) -> Result<f64, StoreError> {
+        let day_start = day.and_hms_opt(0, 0, 0).expect("valid date");
+        let day_end = day
+            .succ_opt()
+            .expect("date has successor")
+            .and_hms_opt(0, 0, 0)
+            .expect("valid date");
+        let start = DateTime::<Utc>::from_naive_utc_and_offset(day_start, Utc);
+        let end = DateTime::<Utc>::from_naive_utc_and_offset(day_end, Utc);
+        let sum: Option<f64> = self.conn.query_row(
+            "SELECT COALESCE(SUM(COALESCE(cost_usd_estimate, cost_usd, 0.0)), 0.0) \
+             FROM runs WHERE created_at >= ?1 AND created_at < ?2",
+            params![start, end],
+            |row| row.get(0),
+        )?;
+        Ok(sum.unwrap_or(0.0))
     }
 
     pub fn update_run_cost_estimate(

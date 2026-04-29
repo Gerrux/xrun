@@ -80,7 +80,9 @@ stdout/stderr.
 ```
 
 ### `xrun tui`
-Открывает Textual UI. По умолчанию `xrun` без аргументов делает то же.
+Открывает интерактивный TUI (ratatui). `xrun` без аргументов делает то же самое, если stdout — TTY; в противном случае выводит help и завершается с кодом 0.
+
+Экраны: Runs (главный), Run detail (Stages/Logs/Manifest), Launch picker, Instances, Settings. Live-обновления через канал поллера. Биндинги: `?` help, `:` command palette, `q`/`Esc` — назад/выход.
 
 ### `xrun doctor`
 Проверки: креды есть, vastai/kaggle CLI работают, MLflow server поднят, диск, сеть.
@@ -150,7 +152,7 @@ xrun __poll-daemon <run-id>   # вручную из терминала, foregrou
 | `xrun rerun <id>` | Заглушка | «no active runs to act on» |
 | `xrun doctor` | Работает | Проверяет config_dir, vastai/kaggle в PATH, ssh key, rsync, xrun_hook |
 | `xrun config init/show/set` | Работает | Полная реализация |
-| `xrun tui` | Не реализовано | Отложено в отдельный план |
+| `xrun tui` | Работает | TUI с live-обновлениями; Metrics tab — v0.3 |
 | `xrun sweep` | Не реализовано | Отложено |
 
 ## Exit codes

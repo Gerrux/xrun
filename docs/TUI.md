@@ -50,7 +50,39 @@ RTX 3090    $0.31     8h 03m    (orphan)          running   <- D=destroy
 
 ### 5. Settings (,)
 
-Просмотр кредов (маскированных), переключение active MLflow server, override poll interval, тема.
+Тема, override poll interval (active/idle), default vendor. Креды редактируются на экране Vendors.
+
+### 6. Vendors (V)
+
+Менеджер вендоров и кредов: статус подключения, баланс, ввод/импорт ключей.
+
+```
+┌─ Vendors ────────────────────────────────────────────────────────────────┐
+│ Vendor   Status              Account              Balance   Last checked │
+│ vast     ✓ connected         tester@example.com   $12.34    32s ago      │
+│ kaggle   ✗ not configured                         —         —            │
+│ mlflow   ⚠ unauthorized                           —         15s ago      │
+└──────────────────────────────────────────────────────────────────────────┘
+┌─ Detail ─────────────────────────────────────────────────────────────────┐
+│    vendor: vast                                                          │
+│ connected: yes                                                           │
+│   account: tester@example.com                                            │
+│   balance: USD 12.34                                                     │
+└──────────────────────────────────────────────────────────────────────────┘
+e/Enter:edit  i:import-native  t:test  r:revoke  Esc/q:back
+```
+
+- **`e` / Enter** — открывает masked-input форму для ввода/правки ключей.
+  Для vast: `api_key`. Для kaggle: `username` + `key`. Для mlflow: `url` + `token`.
+  Все секретные поля рендерятся как `••••`. Tab/Shift+Tab между полями. Enter — сохранить (`credentials.toml` 0600 на Unix) и сразу запросить probe.
+- **`i`** — import существующего native-ключа: `~/.config/vastai/vast_api_key`
+  для vast, `~/.kaggle/kaggle.json` для kaggle. Если файл есть — забирает оттуда и сохраняет в `credentials.toml`.
+- **`t`** — внеочередной probe соединения (`vastai show user --raw` для vast).
+- **`r`** — revoke (стирает ключ в credentials.toml после confirm).
+
+Probe запускается автоматически фоном (раз в 60s) для каждого настроенного вендора, плюс по триггеру после сохранения / `t`.
+
+**First-run splash**: если все credentials пустые, при старте `xrun` короткий ASCII-сплеш с логотипом и подсказкой; любая клавиша сразу открывает экран Vendors.
 
 ## Биндинги (глобальные)
 
@@ -58,7 +90,9 @@ RTX 3090    $0.31     8h 03m    (orphan)          running   <- D=destroy
 |-----|--------|
 | `q` / `Esc` | Закрыть текущий экран / выход |
 | `?` | Help overlay |
-| `:` | Command palette (vim-style: `:launch exp/foo.yaml`) |
+| `:` | Command palette (vim-style: `:launch exp/foo.yaml`, `:goto vendors`) |
+| `V` | Vendors screen |
+| `,` | Settings |
 | `tab` / `shift-tab` | Переключение tab'ов в run detail |
 | `g g` / `G` | Top / bottom |
 | `/` | Filter / search |
@@ -72,10 +106,11 @@ RTX 3090    $0.31     8h 03m    (orphan)          running   <- D=destroy
 - `tui-logger` — встроенный лог-пейн (DEBUG в stderr пайпится сюда).
 - `tui-input` — ввод для filter/command palette.
 - `ratatui::widgets::Chart` — нативный line chart, хватит для метрик.
-- `tachyonfx` (опционально) — анимации перехода между экранами.
 - `color-eyre` — error reporting.
 
-Не используем: `tui-realm` (overhead, наш state простой), сторонние chart-библиотеки (Chart хватит).
+Не используем: `tachyonfx` (overhead без очевидной пользы), `tui-realm` (overhead, наш state простой), сторонние chart-библиотеки (Chart хватит).
+
+Metrics tab (графики метрик) — реализован в v0.3. В v0.2 вкладка Metrics отсутствует в Run detail; доступны Stages, Logs, Manifest.
 
 ## Архитектура TUI
 

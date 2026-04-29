@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use xrun_core::manifest::RunSpec;
+use xrun_core::{manifest::RunSpec, vendor::InstanceHandle};
 
-use crate::{cli::InstanceId, error::VastError};
+use crate::error::VastError;
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -81,20 +81,46 @@ pub fn build_launch_command(run_spec: &RunSpec) -> String {
 
 /// Run the setup command synchronously, then launch the main command in the background.
 /// Returns the PID of the background process, if parseable from stdout.
+///
+/// Routes both commands over plain SSH rather than `vastai execute`, because
+/// the vast.ai HTTP execute endpoint rejects compound shell forms
+/// (`nohup … &`, pipes, here-docs) that we need for backgrounded launches.
 pub(crate) async fn launch_run(
-    instance_id: InstanceId,
+    handle: &InstanceHandle,
     run_spec: &RunSpec,
 ) -> Result<Option<u64>, VastError> {
+    let host = handle.ssh_host.as_deref().ok_or_else(|| {
+        VastError::ParseError(format!(
+            "instance {} has no ssh_host (not running yet?)",
+            handle.id
+        ))
+    })?;
+    let port = handle.ssh_port.ok_or_else(|| {
+        VastError::ParseError(format!("instance {} has no ssh_port", handle.id))
+    })?;
+
+    // Cheap readiness re-check: when there were no data sources, upload was
+    // skipped and this is the first SSH round-trip after provision. Same
+    // 3 s/120 s budget as upload_sources. When sshd is already warm this
+    // returns within ~50 ms.
+    crate::transfer::wait_for_ssh_ready(
+        host,
+        port,
+        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+
     if let Some(setup) = &run_spec.setup {
         let setup_cmd = format!(
             "mkdir -p /workspace/run && export XRUN_RUN_DIR=/workspace/run && ({})",
             setup
         );
-        crate::cli::execute(instance_id, &setup_cmd).await?;
+        crate::transfer::ssh_exec(host, port, &setup_cmd).await?;
     }
 
     let launch_cmd = build_launch_command(run_spec);
-    let out = crate::cli::execute(instance_id, &launch_cmd).await?;
+    let out = crate::transfer::ssh_exec(host, port, &launch_cmd).await?;
     let pid: Option<u64> = String::from_utf8_lossy(&out).trim().parse().ok();
     Ok(pid)
 }

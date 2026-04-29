@@ -3,7 +3,7 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::commands::config_cmd::ConfigArgs;
+use crate::commands::{config_cmd::ConfigArgs, cp::CpArgs};
 
 #[derive(Parser)]
 #[command(name = "xrun", version = "0.1.0", about = "ML experiment runner")]
@@ -51,10 +51,15 @@ pub enum Commands {
     Stop(StopArgs),
     /// Re-run a previous run
     Rerun(RerunArgs),
+    /// Copy files between instances (or local↔instance) via streaming tar
+    #[command(name = "cp")]
+    Cp(CpArgs),
     /// Check system health and configuration
     Doctor(DoctorArgs),
     /// Manage xrun configuration
     Config(ConfigArgs),
+    /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
+    Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)
     #[command(name = "__poll-daemon", hide = true)]
     PollDaemon(PollDaemonArgs),
@@ -79,6 +84,20 @@ pub struct LaunchArgs {
     /// Detach after launch: spawn a background poller daemon and exit immediately
     #[arg(long)]
     pub detach: bool,
+    /// Per-instance hard cap (USD). Auto-destroy when accumulated cost exceeds.
+    /// Falls back to `[budget].max_cost_per_instance_usd` from config (default $10).
+    #[arg(long, value_name = "USD")]
+    pub max_cost: Option<f64>,
+    /// Per-instance hard cap (hours). Auto-destroy after this lifetime.
+    /// Falls back to `[budget].max_lifetime_hours` from config (default 8).
+    #[arg(long, value_name = "HOURS")]
+    pub max_hours: Option<f64>,
+    /// Idle timeout (minutes). 0 disables. Falls back to `[budget].idle_timeout_min` (default 30).
+    #[arg(long, value_name = "MIN")]
+    pub idle_timeout: Option<f64>,
+    /// Skip the billable-action confirm prompt (required when stdin is not a TTY).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args)]

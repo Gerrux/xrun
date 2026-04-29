@@ -1,0 +1,24 @@
+┌ vendor ────────────────┐┌ active ──────────────────┐┌ today ─────────────────┐
+│   Configure → press V  ││           none           ││      no runs today     │
+│                        ││                          ││                        │
+│                        ││                          ││                        │
+└────────────────────────┘└──────────────────────────┘└────────────────────────┘
+                                                                                
+                                        ⦸                                       
+                                                                                
+                                   No runs yet                                  
+                                                                                
+                                press L to launch                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ xrun › runs          no vendor configured — pL:launch  S:stop  R:rerun  /:filte

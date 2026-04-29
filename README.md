@@ -32,7 +32,20 @@
 | [docs/SKILL.md](docs/SKILL.md) | Дизайн Claude skill для xrun |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | v0.1 / v0.2 / v0.3 scope |
 
+## TUI
+
+`xrun` без аргументов (или `xrun tui`) открывает интерактивный TUI на базе ratatui:
+
+```
+xrun                   # opens TUI if stdout is a TTY
+xrun tui               # always opens TUI
+```
+
+Экраны: **Runs** (активные + последние), **Run detail** (Stages/Logs/Manifest), **Launch picker**, **Instances**, **Settings**. Биндинги: `?` help, `:` command palette, `q`/`Esc` back/exit. Live-обновления через поллер без перезагрузки.
+
 ## Status
+
+v0.2 complete: TUI live (ratatui, live updates via poller channel, command palette, all screens), vast adapter wired, event/metric poller with daemon mode. Metrics tab and Artifacts tab pending in v0.3.
 
 v0.1 complete: vast adapter live (provision/upload/exec/tail/pull/destroy), event/metric poller works with lock + daemon mode, `xrun_hook` Python package published (editable install + wheel).
 

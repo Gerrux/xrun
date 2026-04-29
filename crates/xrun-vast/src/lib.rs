@@ -11,8 +11,10 @@ pub mod mock;
 pub mod process;
 pub mod provision;
 pub mod pull;
+pub mod rest;
 pub mod stub;
 pub mod tail;
+pub mod transfer;
 pub mod upload;
 
 pub use adapter::VastAdapter;
