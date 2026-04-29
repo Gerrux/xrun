@@ -154,6 +154,9 @@ pub fn build_offer_search_body(query: &OfferQuery, allocated_storage_gb: f64) ->
     if let Some(region) = &query.region {
         q.insert("geolocation".into(), json!({ "eq": region }));
     }
+    if let Some(up) = query.inet_up_gte {
+        q.insert("inet_up".into(), json!({ "gte": up }));
+    }
 
     q.insert("type".into(), json!("on-demand"));
     q.insert("order".into(), json!([["score", "desc"]]));

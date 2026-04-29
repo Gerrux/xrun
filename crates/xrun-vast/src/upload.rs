@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use xrun_core::{
-    manifest::{DataMode, DataSource},
+    manifest::{DataCompress, DataMode, DataSource},
     vendor::InstanceHandle,
 };
 
@@ -106,7 +106,11 @@ fn ssh_endpoint(h: &InstanceHandle) -> Result<(&str, u16), VastError> {
 /// `dst` becomes the file path. Replaces `vastai cp`, which silently no-ops on
 /// directories and was the cause of the "upload ok but instance is empty"
 /// blocker (issue.md §2).
-async fn tar_upload(h: &InstanceHandle, src: &str, dst: &str) -> Result<(), VastError> {
+async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastError> {
+    let src = source.src.as_str();
+    let dst = source.dst.as_str();
+    let exclude = source.exclude.as_slice();
+    let compress = source.compress.unwrap_or(DataCompress::None);
     let (host, port) = ssh_endpoint(h)?;
 
     let src_path = Path::new(src);
@@ -128,18 +132,39 @@ async fn tar_upload(h: &InstanceHandle, src: &str, dst: &str) -> Result<(), Vast
         host_arg,
     ];
 
+    // Compression: chosen as a flag on the local `tar -c` and a matching flag
+    // on the remote `tar -x`. zstd assumes both ends ship modern GNU tar with
+    // the `--zstd` shorthand — vast's default cuda images do; a stripped-down
+    // image may not. gzip is the safe fallback.
+    let (compress_flag, remote_compress_flag): (Option<&str>, Option<&str>) = match compress {
+        DataCompress::None => (None, None),
+        DataCompress::Gzip => (Some("-z"), Some("-z")),
+        DataCompress::Zstd => (Some("--zstd"), Some("--zstd")),
+    };
+    let mut excl_args: Vec<String> = Vec::with_capacity(exclude.len());
+    for pat in exclude {
+        excl_args.push(format!("--exclude={pat}"));
+    }
+
     let dst_q = shell_quote(dst);
     let (tar_args, remote_cmd): (Vec<String>, String) = if metadata.is_dir() {
-        // tar -cf - -C <src> .
-        // remote: mkdir -p <dst> && tar -xf - -C <dst>
-        let args = vec![
+        // tar [--zstd|-z] -cf - -C <src> [--exclude=...] .
+        // remote: mkdir -p <dst> && tar [...] -xf - -C <dst>
+        let mut args: Vec<String> = Vec::new();
+        if let Some(f) = compress_flag {
+            args.push(f.to_string());
+        }
+        args.extend_from_slice(&[
             "-cf".to_string(),
             "-".to_string(),
             "-C".to_string(),
             src.to_string(),
-            ".".to_string(),
-        ];
-        let cmd = format!("mkdir -p {dst_q} && tar -xf - -C {dst_q}");
+        ]);
+        args.extend(excl_args.iter().cloned());
+        args.push(".".to_string());
+
+        let rcompress = remote_compress_flag.map(|f| format!("{f} ")).unwrap_or_default();
+        let cmd = format!("mkdir -p {dst_q} && tar {rcompress}-xf - -C {dst_q}");
         (args, cmd)
     } else {
         // Single file: archive it under its basename, extract into dirname(dst),
@@ -171,21 +196,22 @@ async fn tar_upload(h: &InstanceHandle, src: &str, dst: &str) -> Result<(), Vast
         let basename_q = shell_quote(&basename);
         let dst_basename_q = shell_quote(&dst_basename);
 
+        let rcompress = remote_compress_flag.map(|f| format!("{f} ")).unwrap_or_default();
         let cmd = if basename == dst_basename {
-            format!("mkdir -p {dst_parent_q} && tar -xf - -C {dst_parent_q}")
+            format!("mkdir -p {dst_parent_q} && tar {rcompress}-xf - -C {dst_parent_q}")
         } else {
             format!(
-                "mkdir -p {dst_parent_q} && tar -xf - -C {dst_parent_q} && \
+                "mkdir -p {dst_parent_q} && tar {rcompress}-xf - -C {dst_parent_q} && \
                  mv {dst_parent_q}/{basename_q} {dst_parent_q}/{dst_basename_q}"
             )
         };
-        let args = vec![
-            "-cf".to_string(),
-            "-".to_string(),
-            "-C".to_string(),
-            parent,
-            basename,
-        ];
+        let mut args: Vec<String> = Vec::new();
+        if let Some(f) = compress_flag {
+            args.push(f.to_string());
+        }
+        args.extend_from_slice(&["-cf".to_string(), "-".to_string(), "-C".to_string(), parent]);
+        args.extend(excl_args.iter().cloned());
+        args.push(basename);
         (args, cmd)
     };
 
@@ -338,7 +364,7 @@ pub(crate) async fn upload_sources(
     for source in sources {
         match source.mode.as_ref() {
             None | Some(DataMode::Copy) => {
-                tar_upload(h, &source.src, &source.dst).await?;
+                tar_upload(h, source).await?;
             }
             Some(DataMode::Rsync) => {
                 which::which("rsync").map_err(|_| VastError::RsyncNotFound)?;

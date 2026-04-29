@@ -66,6 +66,7 @@ fn offer_query_renders_correctly() {
         gpu_ram_gte: Some(24),
         dph_lte: None,
         region: None,
+        inet_up_gte: None,
     };
     assert_eq!(query.render(), "gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24");
 }
@@ -78,6 +79,7 @@ fn offer_query_renders_with_all_fields() {
         gpu_ram_gte: Some(80),
         dph_lte: Some(2.5),
         region: Some("us-east".to_string()),
+        inet_up_gte: None,
     };
     let rendered = query.render();
     assert!(rendered.contains("gpu_name=A100_SXM4"));

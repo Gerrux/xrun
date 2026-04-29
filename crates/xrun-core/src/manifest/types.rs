@@ -33,6 +33,10 @@ pub struct VastSpec {
     pub region: Option<String>,
     pub ssh: Option<bool>,
     pub ports: Option<Vec<u16>>,
+    /// Minimum upload bandwidth (Mbps). Filters out hosts whose advertised
+    /// `inet_up` is below the threshold — critical for big data uploads where
+    /// a slow host turns 30 s into 3 min and the NAT mapping drops mid-tar.
+    pub inet_up_min_mbps: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,6 +55,15 @@ pub enum DataMode {
     Rsync,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DataCompress {
+    #[default]
+    None,
+    Gzip,
+    Zstd,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UnpackSpec {
     pub format: String,
@@ -63,6 +76,15 @@ pub struct DataSource {
     pub dst: String,
     pub mode: Option<DataMode>,
     pub unpack: Option<UnpackSpec>,
+    /// Tar-style exclude patterns applied during upload (e.g. `*.pyc`,
+    /// `**/__pycache__`, `data/raw`). Forwarded to `tar --exclude=...`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// Compress the tar stream before sending. `gzip` works with vanilla tar
+    /// on both ends; `zstd` is faster and gives a 4–6× ratio on text but
+    /// requires the `zstd` binary on the remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress: Option<DataCompress>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

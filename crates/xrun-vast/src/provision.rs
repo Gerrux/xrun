@@ -13,6 +13,7 @@ pub fn offer_query_from_manifest(vast: &VastSpec) -> OfferQuery {
         gpu_ram_gte: vast.gpu.vram_min_gb,
         dph_lte: vast.price.as_ref().map(|p| p.max_per_hour),
         region: vast.region.clone(),
+        inet_up_gte: vast.inet_up_min_mbps,
     }
 }
 
