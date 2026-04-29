@@ -280,6 +280,18 @@ impl Store {
         Ok(())
     }
 
+    /// Runs that are not in a terminal state (i.e. still in progress).
+    pub fn list_active_runs(&self) -> Result<Vec<Run>, StoreError> {
+        let sql = format!(
+            "SELECT {SELECT_RUN_COLS} FROM runs \
+             WHERE status NOT IN ('done', 'failed', 'cancelled') \
+             ORDER BY created_at ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let iter = stmt.query_map([], row_to_run)?;
+        iter.collect::<Result<Vec<_>, _>>().map_err(StoreError::Db)
+    }
+
     pub fn list_runs(&self, filter: &ListFilter) -> Result<Vec<Run>, StoreError> {
         let sql = format!("SELECT {SELECT_RUN_COLS} FROM runs ORDER BY created_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;

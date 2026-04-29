@@ -5,6 +5,7 @@ pub mod confirm;
 pub mod cp;
 pub mod doctor;
 pub mod events_cmd;
+pub mod gc;
 pub mod launch;
 pub mod logs;
 pub mod ls;

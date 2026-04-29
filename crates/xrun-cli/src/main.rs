@@ -94,7 +94,13 @@ fn run() -> Result<()> {
         }
         Some(Commands::Stop(args)) => {
             let ctx = get_data_ctx()?;
-            xrun_cli::commands::stop::run(&args, &ctx.db_path)?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::stop::run(&args, &ctx.db_path, &config_dir)?;
+        }
+        Some(Commands::Gc(args)) => {
+            let ctx = get_data_ctx()?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::gc::run(&args, &ctx.db_path, &config_dir)?;
         }
         Some(Commands::Rerun(args)) => {
             let ctx = get_data_ctx()?;

@@ -49,6 +49,8 @@ pub enum Commands {
     Pull(PullArgs),
     /// Stop a running run
     Stop(StopArgs),
+    /// Reconcile vendor instances with the local DB and clean up orphans
+    Gc(GcArgs),
     /// Re-run a previous run
     Rerun(RerunArgs),
     /// Copy files between instances (or local↔instance) via streaming tar
@@ -198,12 +200,25 @@ pub struct PullArgs {
 pub struct StopArgs {
     /// Run ID (ULID)
     pub id: Option<String>,
+    /// Stop all active runs (and destroy their instances)
+    #[arg(long)]
+    pub all: bool,
     /// Destroy instance immediately without graceful stop
     #[arg(long)]
     pub force: bool,
     /// Keep the vendor instance alive (for debugging)
     #[arg(long)]
     pub keep_instance: bool,
+}
+
+#[derive(Args)]
+pub struct GcArgs {
+    /// Show what would be destroyed without acting
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Also destroy instances that exist on the vendor but are not in our DB
+    #[arg(long)]
+    pub include_unknown: bool,
 }
 
 #[derive(Args)]
