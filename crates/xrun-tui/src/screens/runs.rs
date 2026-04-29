@@ -8,6 +8,7 @@ pub enum RunsAction {
     OpenLaunch,
     OpenInstances,
     OpenSettings,
+    OpenVendors,
     ShowStopConfirm(RunId, String),
     ShowPullConfirm(RunId, String),
     Rerun(RunId),
@@ -66,6 +67,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> RunsAction {
         KeyCode::Char('L') => RunsAction::OpenLaunch,
         KeyCode::Char('I') => RunsAction::OpenInstances,
         KeyCode::Char(',') => RunsAction::OpenSettings,
+        KeyCode::Char('V') => RunsAction::OpenVendors,
         KeyCode::Char('S') => match selected_active_run(state) {
             Some((id, name)) => RunsAction::ShowStopConfirm(id, name),
             None => RunsAction::Nothing,

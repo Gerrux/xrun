@@ -7,19 +7,38 @@ use xrun_core::{
     config::credentials::VastCredentials,
     store::{RunId, RunStatus},
     vendor::InstanceHandle,
-    Store, VendorAdapter,
+    Credentials, Store, VendorAdapter,
 };
 use xrun_poller::{CancellationToken, Poller};
 use xrun_vast::VastAdapter;
 
 use crate::cli::PollDaemonArgs;
 
+fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
+    if let Ok(creds) = Credentials::load(config_dir) {
+        if creds.vast.api_key.is_some() {
+            return creds.vast;
+        }
+    }
+    if let Ok(Some(token)) = Credentials::import_vast_native() {
+        return VastCredentials {
+            api_key: Some(token),
+        };
+    }
+    VastCredentials::default()
+}
+
 /// Run the poller daemon for an existing run.
 ///
 /// Called by `xrun __poll-daemon <run-id>` when a run is launched with `--detach`.
 /// Reconstructs the VendorAdapter and InstanceHandle from the DB, then runs the
 /// polling loop until the run completes, fails, or is cancelled.
-pub fn run(args: &PollDaemonArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
+pub fn run(
+    args: &PollDaemonArgs,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+) -> Result<()> {
     let run_id: RunId = args
         .run_id
         .parse()
@@ -53,7 +72,8 @@ pub fn run(args: &PollDaemonArgs, db_path: &Path, runs_dir: &Path) -> Result<()>
     // Reconstruct the vendor adapter for the poller (only needs tail/destroy).
     let adapter_store = Store::open(db_path)
         .with_context(|| format!("failed to open adapter store at {}", db_path.display()))?;
-    let adapter = VastAdapter::new(VastCredentials::default(), adapter_store);
+    let creds = resolve_vast_credentials(config_dir);
+    let adapter = VastAdapter::new(creds, adapter_store);
     adapter.set_run_id(&run_id);
     let vendor: Box<dyn VendorAdapter> = Box::new(adapter);
 

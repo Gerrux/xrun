@@ -19,7 +19,11 @@ pub enum ConfigCommand {
     /// Initialize config and credentials files with defaults
     Init,
     /// Show current configuration (credentials shown as <set>/<unset>)
-    Show,
+    Show {
+        /// Emit machine-readable JSON instead of TOML.
+        #[arg(long)]
+        json: bool,
+    },
     /// Set a configuration value by dotted key
     Set {
         /// Config key (e.g. mlflow.url, vast.api_key)
@@ -32,7 +36,7 @@ pub enum ConfigCommand {
 pub fn run(args: &ConfigArgs, config_dir: &Path) -> Result<()> {
     match &args.command {
         ConfigCommand::Init => cmd_init(config_dir),
-        ConfigCommand::Show => cmd_show(config_dir),
+        ConfigCommand::Show { json } => cmd_show(config_dir, *json),
         ConfigCommand::Set { key, value } => cmd_set(config_dir, key, value),
     }
 }
@@ -47,9 +51,25 @@ fn cmd_init(config_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_show(config_dir: &Path) -> Result<()> {
+fn cmd_show(config_dir: &Path, json: bool) -> Result<()> {
     let cfg = GlobalConfig::load(config_dir)?;
     let creds = Credentials::load(config_dir)?;
+    if json {
+        let mut value = serde_json::to_value(&cfg)?;
+        if let serde_json::Value::Object(ref mut map) = value {
+            map.insert(
+                "_credentials_set".into(),
+                serde_json::json!({
+                    "vast.api_key": creds.vast.api_key.is_some(),
+                    "kaggle.username": creds.kaggle.username.is_some(),
+                    "kaggle.key": creds.kaggle.key.is_some(),
+                    "mlflow.token": creds.mlflow.token.is_some(),
+                }),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
     println!("# config.toml");
     print!("{}", toml::to_string_pretty(&cfg)?);
     println!("# credentials (showing which keys are set)");
@@ -121,6 +141,13 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
             "poller.interval_idle_secs" => {
                 cfg.poller.interval_idle_secs =
                     value.parse().context("expected a non-negative integer")?;
+            }
+            "search.exclude_countries" => {
+                cfg.search.exclude_countries = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             "defaults.vendor" => {
                 cfg.defaults.vendor = Some(match value {

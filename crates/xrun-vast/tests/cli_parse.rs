@@ -4,13 +4,30 @@ use std::sync::{
 };
 
 use xrun_vast::{
-    cli::{InstanceInfo, Offer, OfferQuery},
+    cli::{parse_user_info, InstanceInfo, Offer, OfferQuery},
     error::VastError,
     process::{retry_op, RetryPolicy},
 };
 
 const SEARCH_FIXTURE: &str = include_str!("data/vastai_search_offers.json");
 const SHOW_FIXTURE: &str = include_str!("data/vastai_show_instance.json");
+const USER_FIXTURE: &[u8] = include_bytes!("data/vastai_show_user.json");
+
+#[test]
+fn show_user_fixture_extracts_balance_and_email() {
+    let info = parse_user_info(USER_FIXTURE).expect("user fixture parses");
+    assert_eq!(info.email.as_deref(), Some("tester@example.com"));
+    assert_eq!(info.account_label().as_deref(), Some("tester@example.com"));
+    let bal = info.effective_balance().expect("balance present");
+    assert!((bal - 12.34).abs() < 1e-9);
+}
+
+#[test]
+fn show_user_tolerates_missing_fields() {
+    let info = parse_user_info(b"{}").expect("empty object parses");
+    assert!(info.effective_balance().is_none());
+    assert!(info.account_label().is_none());
+}
 
 #[test]
 fn search_offers_fixture_deserializes() {

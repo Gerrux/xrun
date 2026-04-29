@@ -50,11 +50,22 @@ fn run() -> Result<()> {
 
     match cli.command {
         Some(Commands::Launch(args)) => {
+            let config_dir = get_config()?;
             if args.dry_run {
-                xrun_cli::commands::launch::run(&args, &PathBuf::new(), &PathBuf::new())?;
+                xrun_cli::commands::launch::run(
+                    &args,
+                    &PathBuf::new(),
+                    &PathBuf::new(),
+                    &config_dir,
+                )?;
             } else {
                 let ctx = get_data_ctx()?;
-                xrun_cli::commands::launch::run(&args, &ctx.db_path, &ctx.runs_dir)?;
+                xrun_cli::commands::launch::run(
+                    &args,
+                    &ctx.db_path,
+                    &ctx.runs_dir,
+                    &config_dir,
+                )?;
             }
         }
         Some(Commands::Ls(args)) => {
@@ -89,6 +100,10 @@ fn run() -> Result<()> {
             let ctx = get_data_ctx()?;
             xrun_cli::commands::rerun::run(&args, &ctx.db_path)?;
         }
+        Some(Commands::Cp(args)) => {
+            let config_dir = get_config()?;
+            xrun_cli::commands::cp::run(&args, &config_dir)?;
+        }
         Some(Commands::Doctor(args)) => {
             let config_dir = get_config()?;
             let db_path_opt = get_data_ctx().ok().map(|c| c.db_path);
@@ -100,8 +115,9 @@ fn run() -> Result<()> {
         }
         Some(Commands::PollDaemon(args)) => {
             let ctx = get_data_ctx()?;
+            let config_dir = get_config()?;
             let runs_dir = args.runs_dir.clone().unwrap_or(ctx.runs_dir);
-            xrun_cli::commands::poll_daemon::run(&args, &ctx.db_path, &runs_dir)?;
+            xrun_cli::commands::poll_daemon::run(&args, &ctx.db_path, &runs_dir, &config_dir)?;
         }
         Some(Commands::Tui) => {
             #[cfg(feature = "tui")]
@@ -118,15 +134,17 @@ fn run() -> Result<()> {
             }
         }
         None => {
-            #[cfg(feature = "tui")]
-            {
-                use std::io::IsTerminal;
-                if std::io::stdout().is_terminal() {
-                    let ctx = get_data_ctx()?;
-                    let config_dir = get_config()?;
-                    let config = xrun_core::GlobalConfig::load(&config_dir).unwrap_or_default();
-                    return xrun_tui::launch(ctx.db_path, config, config_dir);
-                }
+            use std::io::IsTerminal;
+            if std::io::stdout().is_terminal() {
+                let status = std::process::Command::new("xrun-tui")
+                    .status()
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to launch xrun-tui: {e}\n\
+                             Install with: pip install -e python/xrun_tui"
+                        )
+                    })?;
+                std::process::exit(status.code().unwrap_or(1));
             }
             use clap::CommandFactory;
             Cli::command().print_help()?;
@@ -142,19 +160,12 @@ struct DataCtx {
 }
 
 fn is_tui_invocation(command: &Option<Commands>) -> bool {
-    #[cfg(feature = "tui")]
-    {
-        use std::io::IsTerminal;
-        match command {
-            Some(Commands::Tui) => true,
-            None => std::io::stdout().is_terminal(),
-            _ => false,
-        }
-    }
-    #[cfg(not(feature = "tui"))]
-    {
-        let _ = command;
-        false
+    use std::io::IsTerminal;
+    match command {
+        None => std::io::stdout().is_terminal(),
+        #[cfg(feature = "tui")]
+        Some(Commands::Tui) => true,
+        _ => false,
     }
 }
 

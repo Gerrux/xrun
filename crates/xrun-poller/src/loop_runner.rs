@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use thiserror::Error;
 use xrun_core::{
+    budget,
     error::VendorError,
     store::{NewEvent, NewMetric, RunId, RunStatus, Store},
     vendor::{InstanceHandle, VendorAdapter},
@@ -180,6 +181,7 @@ impl Poller {
         let mut last_offset_e = offset_e;
 
         loop {
+            let mut progress_this_tick = false;
             if cancel.is_cancelled() {
                 let _ = self.vendor.destroy(&self.handle);
                 self.store
@@ -234,6 +236,7 @@ impl Poller {
                     if offset_e > last_offset_e {
                         last_progress = Instant::now();
                         last_offset_e = offset_e;
+                        progress_this_tick = true;
                     }
 
                     self.send_update(DataUpdate::EventsAppended(
@@ -307,6 +310,7 @@ impl Poller {
                         offset_m,
                     );
                     last_progress = Instant::now();
+                    progress_this_tick = true;
                     self.send_update(DataUpdate::MetricsAppended(
                         self.run_id.clone(),
                         metrics_count,
@@ -325,16 +329,71 @@ impl Poller {
                 }
             }
 
-            // --- cost estimate ---
+            // --- cost estimate + budget enforcement ---
+            let now_wall = Utc::now();
             if let Ok(Some(run)) = self.store.get_run(&self.run_id) {
                 if let Some(started_at) = run.started_at {
                     if let Ok(Some(inst)) = self.store.get_instance(&self.handle.id) {
                         if let Some(dph) = inst.price_per_hour {
                             let hours =
-                                (Utc::now() - started_at).num_seconds().max(0) as f64 / 3600.0;
+                                (now_wall - started_at).num_seconds().max(0) as f64 / 3600.0;
                             let _ = self
                                 .store
                                 .update_run_cost_estimate(&self.run_id, hours * dph);
+                        }
+
+                        // Refresh accumulated_cost from created_at (Vast bills
+                        // from allocation, which is earlier than started_at).
+                        let acc = budget::accumulate_cost(&inst, now_wall);
+                        let active_ts = if progress_this_tick {
+                            Some(now_wall)
+                        } else {
+                            None
+                        };
+                        let _ = self
+                            .store
+                            .update_instance_usage(&self.handle.id, acc, active_ts);
+
+                        // Re-read with updated fields so cap evaluation uses
+                        // the latest accumulated_cost / last_active_at.
+                        if let Ok(Some(updated)) = self.store.get_instance(&self.handle.id) {
+                            if updated.auto_destroyed_reason.is_none() {
+                                if let Some(reason) = budget::evaluate_caps(&updated, now_wall) {
+                                    // Record reason BEFORE destroying so a
+                                    // daemon restart doesn't double-destroy.
+                                    let _ = self.store.set_auto_destroyed_reason(
+                                        &self.handle.id,
+                                        reason.as_str(),
+                                    );
+                                    let payload = serde_json::json!({
+                                        "reason": reason.as_str(),
+                                        "instance_id": self.handle.id,
+                                        "accumulated_cost": acc,
+                                    })
+                                    .to_string();
+                                    let _ = self.store.append_event(
+                                        &self.run_id,
+                                        NewEvent {
+                                            ts: now_wall,
+                                            stage: "instance.auto_destroyed".to_string(),
+                                            status: "fail".to_string(),
+                                            msg: Some(format!(
+                                                "auto-destroyed by budget guard: {}",
+                                                reason.as_str()
+                                            )),
+                                            payload_json: Some(payload),
+                                        },
+                                    );
+                                    let _ = self.vendor.destroy(&self.handle);
+                                    self.store
+                                        .update_run_status(&self.run_id, RunStatus::Failed)?;
+                                    self.send_update(DataUpdate::RunStatusChanged(
+                                        self.run_id.clone(),
+                                        RunStatus::Failed,
+                                    ));
+                                    return Ok(RunStatus::Failed);
+                                }
+                            }
                         }
                     }
                 }

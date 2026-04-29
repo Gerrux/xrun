@@ -4,7 +4,7 @@ pub mod credentials;
 pub mod global;
 
 pub use credentials::Credentials;
-pub use global::GlobalConfig;
+pub use global::{BudgetConfig, GlobalConfig};
 
 use crate::error::ConfigError;
 use std::path::Path;

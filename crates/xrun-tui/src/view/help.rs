@@ -51,8 +51,9 @@ pub fn render(f: &mut Frame, state: &AppState) {
         Screen::Instances => concat!(
             "Instances\n",
             "\n",
+            "  Tab       toggle Local / Remote (vast.ai)\n",
             "  k / j     navigate up / down\n",
-            "  D         destroy orphan\n",
+            "  D         destroy orphan (local only)\n",
             "  Esc       back\n",
             "  g g / G   top / bottom\n",
         ),
@@ -63,6 +64,16 @@ pub fn render(f: &mut Frame, state: &AppState) {
             "  enter     edit selected\n",
             "  Esc       back / cancel edit\n",
             "  g g / G   top / bottom\n",
+        ),
+        Screen::Vendors => concat!(
+            "Vendors\n",
+            "\n",
+            "  k / j     navigate up / down\n",
+            "  e/enter   edit credentials (masked)\n",
+            "  i         import native key file\n",
+            "  t         test connection\n",
+            "  r         revoke credentials\n",
+            "  Esc / q   back\n",
         ),
     };
 

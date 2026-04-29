@@ -9,7 +9,7 @@ mod runs;
 
 pub use artifacts::NewArtifact;
 pub use events::{NewEvent, StoredEvent};
-pub use instances::Instance;
+pub use instances::{Instance, InstanceCaps};
 pub use metrics::{NewMetric, StoredMetric};
 pub use runs::{ListFilter, Run, RunId, RunStatus};
 
@@ -17,9 +17,10 @@ use crate::error::StoreError;
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
 const MIGRATION_002: &str = include_str!("migrations/002_cost_estimate.sql");
+const MIGRATION_003: &str = include_str!("migrations/003_budget.sql");
 
 pub struct Store {
     conn: Connection,
@@ -51,6 +52,7 @@ impl Store {
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(MIGRATION_001)?;
             tx.execute_batch(MIGRATION_002)?;
+            tx.execute_batch(MIGRATION_003)?;
             tx.commit()?;
         } else {
             let version: u32 =
@@ -67,6 +69,13 @@ impl Store {
                     .conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute_batch(MIGRATION_002)?;
+                tx.commit()?;
+            }
+            if version < 3 {
+                let tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute_batch(MIGRATION_003)?;
                 tx.commit()?;
             }
         }

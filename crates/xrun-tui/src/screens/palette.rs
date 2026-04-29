@@ -22,6 +22,7 @@ const COMMANDS: &[&str] = &[
     "goto runs",
     "goto instances",
     "goto settings",
+    "goto vendors",
     "theme default",
     "theme high_contrast",
     "quit",
@@ -46,6 +47,7 @@ pub fn parse_command(cmd: &str, state: &AppState) -> PaletteAction {
             "runs" => PaletteAction::GotoScreen(Screen::Runs),
             "instances" => PaletteAction::GotoScreen(Screen::Instances),
             "settings" => PaletteAction::GotoScreen(Screen::Settings),
+            "vendors" => PaletteAction::GotoScreen(Screen::Vendors),
             _ => PaletteAction::Nothing,
         };
     }

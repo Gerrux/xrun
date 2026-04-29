@@ -5,28 +5,63 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use xrun_core::{
+    budget,
     config::credentials::VastCredentials,
     manifest::{Manifest, Vendor},
-    store::{RunId, RunStatus},
-    Store, VendorAdapter,
+    store::{InstanceCaps, RunId, RunStatus},
+    Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_poller::{CancellationToken, Poller};
 use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
+use crate::commands::confirm::{confirm_billable_or_exit, ConfirmEstimate};
 
-pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
+/// Resolve `vast.api_key` from xrun's config, falling back to the legacy
+/// `~/.config/vastai/vast_api_key` file. Returns `None` if neither is set —
+/// callers can still proceed for `--dry-run` / `validate` paths that don't
+/// touch the network.
+fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
+    if let Ok(creds) = Credentials::load(config_dir) {
+        if creds.vast.api_key.is_some() {
+            return creds.vast;
+        }
+    }
+    if let Ok(Some(token)) = Credentials::import_vast_native() {
+        return VastCredentials {
+            api_key: Some(token),
+        };
+    }
+    VastCredentials::default()
+}
+
+pub fn run(
+    args: &LaunchArgs,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+) -> Result<()> {
     let content = std::fs::read_to_string(&args.manifest)
         .with_context(|| format!("failed to read manifest: {}", args.manifest.display()))?;
 
     let manifest =
         Manifest::from_yaml_str(&content).with_context(|| "manifest validation failed")?;
 
+    let global = GlobalConfig::load(config_dir).unwrap_or_default();
+    let caps = caps_from_args_and_config(args, &global.budget);
+
     let vendor: Box<dyn VendorAdapter> = match manifest.vendor {
         Vendor::Vast => {
             let adapter_store = Store::open(db_path)
                 .with_context(|| format!("failed to open store at {}", db_path.display()))?;
-            Box::new(VastAdapter::new(VastCredentials::default(), adapter_store))
+            let creds = resolve_vast_credentials(config_dir);
+            let adapter = VastAdapter::with_exclude_countries(
+                creds,
+                adapter_store,
+                global.search.exclude_countries.clone(),
+            );
+            adapter.set_caps(caps.clone());
+            Box::new(adapter)
         }
         Vendor::Kaggle => anyhow::bail!("Kaggle adapter not implemented yet"),
     };
@@ -68,7 +103,45 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
+    // Billable confirm — uses the manifest's price cap as an upper bound on
+    // hourly rate. When the manifest doesn't set a cap we still classify by
+    // hourly=0 (free tier), which is intentional: an absent cap is a separate
+    // problem flagged by `xrun doctor`, not by every launch.
+    let plan = vendor
+        .dry_run_plan(&manifest)
+        .with_context(|| "failed to compute dry-run plan for confirm")?;
+    let estimate = ConfirmEstimate {
+        vendor: match manifest.vendor {
+            Vendor::Vast => "Vast.ai".into(),
+            Vendor::Kaggle => "Kaggle".into(),
+        },
+        gpu: plan.gpu_query.clone(),
+        hourly_usd: plan.estimated_price_max,
+        max_hours: caps
+            .max_lifetime_secs
+            .map(|s| s as f64 / 3600.0),
+        max_cost_usd: caps.max_cost_usd,
+        balance_usd: None,
+    };
+    confirm_billable_or_exit(&estimate, &global.budget, args.yes)?;
+
     do_launch(args, &manifest, db_path, runs_dir, vendor)
+}
+
+/// Resolve effective per-instance caps from CLI overrides + global config.
+/// CLI flags win when set; otherwise inherit from `[budget]`.
+fn caps_from_args_and_config(args: &LaunchArgs, cfg: &xrun_core::BudgetConfig) -> InstanceCaps {
+    let mut caps = budget::caps_from_config(cfg);
+    if let Some(c) = args.max_cost {
+        caps.max_cost_usd = if c > 0.0 { Some(c) } else { None };
+    }
+    if let Some(h) = args.max_hours {
+        caps.max_lifetime_secs = if h > 0.0 { Some((h * 3600.0) as i64) } else { None };
+    }
+    if let Some(m) = args.idle_timeout {
+        caps.idle_timeout_secs = if m > 0.0 { Some((m * 60.0) as i64) } else { None };
+    }
+    caps
 }
 
 /// Launch with a caller-provided vendor adapter (for testing).
@@ -96,7 +169,14 @@ fn do_launch(
 ) -> Result<()> {
     let hash = manifest.canonical_hash();
     let name = args.name.as_deref().unwrap_or(&manifest.name);
-    let manifest_path_str = args.manifest.display().to_string();
+    // Store an absolute path so consumers (TUI, `xrun show`) can read the
+    // manifest regardless of their CWD. `path::absolute` does not resolve
+    // symlinks and avoids the Windows `\\?\` UNC prefix that `canonicalize`
+    // would introduce.
+    let manifest_path_str = std::path::absolute(&args.manifest)
+        .unwrap_or_else(|_| args.manifest.clone())
+        .display()
+        .to_string();
     let vendor_str = match manifest.vendor {
         Vendor::Vast => "vast",
         Vendor::Kaggle => "kaggle",
