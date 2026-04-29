@@ -176,11 +176,7 @@ impl Store {
     /// Mark the instance as auto-destroyed for budget reasons. Written *before*
     /// the destroy API call so that a daemon restart does not double-destroy
     /// (the next tick will see `auto_destroyed_reason IS NOT NULL` and skip).
-    pub fn set_auto_destroyed_reason(
-        &mut self,
-        id: &str,
-        reason: &str,
-    ) -> Result<(), StoreError> {
+    pub fn set_auto_destroyed_reason(&mut self, id: &str, reason: &str) -> Result<(), StoreError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

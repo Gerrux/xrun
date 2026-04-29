@@ -264,6 +264,19 @@ impl Store {
         Ok(sum.unwrap_or(0.0))
     }
 
+    /// Set the MLflow run ID for cross-linking with the MLflow UI.
+    pub fn set_mlflow_run_id(&mut self, id: &RunId, mlflow_run_id: &str) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET mlflow_run_id = ?1 WHERE id = ?2",
+            params![mlflow_run_id, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn update_run_cost_estimate(
         &mut self,
         id: &RunId,

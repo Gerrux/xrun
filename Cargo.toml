@@ -5,6 +5,8 @@ members = [
     "crates/xrun-poller",
     "crates/xrun-cli",
     "crates/xrun-tui",
+    "crates/xrun-mlflow",
+    "crates/xrun-kaggle",
 ]
 resolver = "2"
 
@@ -53,6 +55,12 @@ humantime = "2"
 # Tracing / logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Base64
+base64 = "0.22"
+
+# Chart rendering
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "full_palette"] }
 
 # Dev / test
 assert_cmd = "2"

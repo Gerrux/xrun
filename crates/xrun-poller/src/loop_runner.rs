@@ -18,6 +18,7 @@ use xrun_core::{
 };
 
 use crate::lock::{PollerLock, PollerLockError};
+use crate::mlflow_mirror::{MlflowMirror, MlflowMirrorConfig};
 use crate::parser::{parse_events, parse_metrics};
 
 /// Lightweight cancellation primitive backed by an atomic flag.
@@ -131,6 +132,9 @@ pub struct Poller {
     /// Last UTC date we emitted a daily-budget breach event for. Reset
     /// implicitly when the date rolls over.
     daily_alert_date: Option<NaiveDate>,
+    /// Optional MLflow mirror config. Set if both manifest.mlflow.experiment
+    /// and GlobalConfig.mlflow.url are present.
+    mlflow_config: Option<MlflowMirrorConfig>,
 }
 
 impl Poller {
@@ -151,7 +155,13 @@ impl Poller {
             update_tx: None,
             budget: BudgetConfig::default(),
             daily_alert_date: None,
+            mlflow_config: None,
         }
+    }
+
+    pub fn with_mlflow(mut self, config: MlflowMirrorConfig) -> Self {
+        self.mlflow_config = Some(config);
+        self
     }
 
     pub fn with_config(mut self, config: PollerConfig) -> Self {
@@ -180,6 +190,14 @@ impl Poller {
         let pid_file = self.runs_dir.join(&run_id_str).join("poller.pid");
         let _lock = PollerLock::try_acquire(&run_id_str, pid_file)?;
 
+        // Initialize MLflow mirror if configured. MlflowMirror handles its
+        // own async runtime internally via block_in_place / fallback runtime.
+        let mut mlflow: Option<MlflowMirror> = self.mlflow_config.take().map(|cfg| {
+            let mut mirror = MlflowMirror::new(cfg);
+            mirror.start(&self.run_id, &mut self.store, None);
+            mirror
+        });
+
         let mut offset_e = self
             .store
             .get_poll_offset(&self.run_id, &self.config.events_file)
@@ -202,6 +220,9 @@ impl Poller {
                     self.run_id.clone(),
                     RunStatus::Cancelled,
                 ));
+                if let Some(ref mirror) = mlflow {
+                    mirror.finish(&RunStatus::Cancelled);
+                }
                 return Ok(RunStatus::Cancelled);
             }
 
@@ -263,6 +284,9 @@ impl Poller {
                             self.run_id.clone(),
                             RunStatus::Done,
                         ));
+                        if let Some(ref mirror) = mlflow {
+                            mirror.finish(&RunStatus::Done);
+                        }
                         return Ok(RunStatus::Done);
                     }
 
@@ -279,6 +303,9 @@ impl Poller {
                             self.run_id.clone(),
                             RunStatus::Failed,
                         ));
+                        if let Some(ref mirror) = mlflow {
+                            mirror.finish(&RunStatus::Failed);
+                        }
                         return Ok(RunStatus::Failed);
                     }
                 }
@@ -304,16 +331,29 @@ impl Poller {
                     let delta = bytes.len() as u64;
                     let metrics = parse_metrics(&bytes);
                     let metrics_count = metrics.len();
-                    for m in metrics {
+                    let mut new_metrics: Vec<NewMetric> = Vec::with_capacity(metrics.len());
+                    for m in &metrics {
+                        new_metrics.push(NewMetric {
+                            step: m.step,
+                            key: m.key.clone(),
+                            value: m.value,
+                            ts: m.ts,
+                        });
+                    }
+                    for nm in &new_metrics {
                         let _ = self.store.append_metric(
                             &self.run_id,
                             NewMetric {
-                                step: m.step,
-                                key: m.key.clone(),
-                                value: m.value,
-                                ts: m.ts,
+                                step: nm.step,
+                                key: nm.key.clone(),
+                                value: nm.value,
+                                ts: nm.ts,
                             },
                         );
+                    }
+                    // Mirror to MLflow (silent degrade on error)
+                    if let Some(ref mut mirror) = mlflow {
+                        mirror.log_metrics(&new_metrics);
                     }
                     offset_m += delta;
                     let _ = self.store.update_poll_offset(

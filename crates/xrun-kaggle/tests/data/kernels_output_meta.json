@@ -1,0 +1,18 @@
+{
+  "totalCount": 2,
+  "nextPageToken": null,
+  "files": [
+    {
+      "name": "events.jsonl",
+      "size": 1024,
+      "creationDate": "2024-01-01T12:00:42.000Z",
+      "url": null
+    },
+    {
+      "name": "metrics.jsonl",
+      "size": 512,
+      "creationDate": "2024-01-01T12:00:42.000Z",
+      "url": null
+    }
+  ]
+}

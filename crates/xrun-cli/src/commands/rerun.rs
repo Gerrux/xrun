@@ -5,7 +5,7 @@
 //! applies any --patch overrides, writes the new manifest to a temp file, and
 //! delegates to the standard launch path.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use xrun_core::{manifest::Manifest, RunId, Store};
@@ -39,8 +39,8 @@ pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
     }
     let yaml = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: Manifest = Manifest::from_yaml_str(&yaml)
-        .with_context(|| "stored manifest no longer parses")?;
+    let manifest: Manifest =
+        Manifest::from_yaml_str(&yaml).with_context(|| "stored manifest no longer parses")?;
 
     let patched = patch::apply(&manifest, &args.patch)?;
 
@@ -49,8 +49,8 @@ pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
     // resolve to the wrong dir.
     let tmp_dir = std::env::temp_dir();
     let tmp_path = tmp_dir.join(format!("xrun-rerun-{}.yaml", run.id));
-    let patched_yaml = serde_yaml::to_string(&patched)
-        .context("failed to serialize patched manifest")?;
+    let patched_yaml =
+        serde_yaml::to_string(&patched).context("failed to serialize patched manifest")?;
     std::fs::write(&tmp_path, patched_yaml)
         .with_context(|| format!("failed to write {}", tmp_path.display()))?;
 
@@ -58,9 +58,9 @@ pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
     launch::run(&launch_args, db_path, runs_dir, config_dir)
 }
 
-fn launch_args_from_rerun(manifest_path: &PathBuf, original_name: &str) -> LaunchArgs {
+fn launch_args_from_rerun(manifest_path: &Path, original_name: &str) -> LaunchArgs {
     LaunchArgs {
-        manifest: manifest_path.clone(),
+        manifest: manifest_path.to_path_buf(),
         dry_run: false,
         allow_duplicate: true, // the patched manifest may hash identically when args parse to the same JSON
         name: Some(format!("rerun-{original_name}")),

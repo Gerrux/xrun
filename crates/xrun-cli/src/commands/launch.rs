@@ -12,7 +12,8 @@ use xrun_core::{
     vendor::InstanceHandle,
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
-use xrun_poller::{CancellationToken, Poller};
+use xrun_kaggle::KaggleAdapter;
+use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
 use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
@@ -37,12 +38,7 @@ fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
     VastCredentials::default()
 }
 
-pub fn run(
-    args: &LaunchArgs,
-    db_path: &Path,
-    runs_dir: &Path,
-    config_dir: &Path,
-) -> Result<()> {
+pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
     let content = std::fs::read_to_string(&args.manifest)
         .with_context(|| format!("failed to read manifest: {}", args.manifest.display()))?;
 
@@ -70,7 +66,10 @@ pub fn run(
             adapter.set_caps(caps.clone());
             Box::new(adapter)
         }
-        Vendor::Kaggle => anyhow::bail!("Kaggle adapter not implemented yet"),
+        Vendor::Kaggle => {
+            let data_dir = db_path.parent().unwrap_or(db_path);
+            Box::new(KaggleAdapter::new().with_store_path(data_dir.to_path_buf()))
+        }
     };
 
     vendor
@@ -124,15 +123,21 @@ pub fn run(
         },
         gpu: plan.gpu_query.clone(),
         hourly_usd: plan.estimated_price_max,
-        max_hours: caps
-            .max_lifetime_secs
-            .map(|s| s as f64 / 3600.0),
+        max_hours: caps.max_lifetime_secs.map(|s| s as f64 / 3600.0),
         max_cost_usd: caps.max_cost_usd,
         balance_usd: None,
     };
     confirm_billable_or_exit(&estimate, &global.budget, args.yes)?;
 
-    do_launch_with_budget(args, &manifest, db_path, runs_dir, vendor, global.budget)
+    do_launch_with_budget(
+        args,
+        &manifest,
+        db_path,
+        runs_dir,
+        vendor,
+        global.budget,
+        global.mlflow.url.clone(),
+    )
 }
 
 /// Resolve effective per-instance caps from CLI overrides + global config.
@@ -143,10 +148,18 @@ fn caps_from_args_and_config(args: &LaunchArgs, cfg: &xrun_core::BudgetConfig) -
         caps.max_cost_usd = if c > 0.0 { Some(c) } else { None };
     }
     if let Some(h) = args.max_hours {
-        caps.max_lifetime_secs = if h > 0.0 { Some((h * 3600.0) as i64) } else { None };
+        caps.max_lifetime_secs = if h > 0.0 {
+            Some((h * 3600.0) as i64)
+        } else {
+            None
+        };
     }
     if let Some(m) = args.idle_timeout {
-        caps.idle_timeout_secs = if m > 0.0 { Some((m * 60.0) as i64) } else { None };
+        caps.idle_timeout_secs = if m > 0.0 {
+            Some((m * 60.0) as i64)
+        } else {
+            None
+        };
     }
     caps
 }
@@ -181,6 +194,7 @@ fn do_launch(
         runs_dir,
         vendor,
         xrun_core::BudgetConfig::default(),
+        None, // no mlflow url in test path
     )
 }
 
@@ -192,6 +206,7 @@ fn do_launch_with_budget(
     runs_dir: &Path,
     vendor: Box<dyn VendorAdapter>,
     budget_cfg: xrun_core::BudgetConfig,
+    mlflow_url: Option<String>,
 ) -> Result<()> {
     let hash = manifest.canonical_hash();
     let name = args.name.as_deref().unwrap_or(&manifest.name);
@@ -243,10 +258,15 @@ fn do_launch_with_budget(
     // instance row (one instance can serve many sequential runs).
     let (handle, reused_instance) = if let Some(reuse) = args.reuse_instance.as_deref() {
         let h = resolve_reuse_handle(&store, reuse)?;
-        eprintln!("Reusing instance {} ({}@{}:{})", h.id,
+        eprintln!(
+            "Reusing instance {} ({}@{}:{})",
+            h.id,
             h.ssh_user,
             h.ssh_host.as_deref().unwrap_or("?"),
-            h.ssh_port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()));
+            h.ssh_port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".into())
+        );
         (h, true)
     } else {
         let h = match vendor.provision(manifest) {
@@ -298,7 +318,10 @@ fn do_launch_with_budget(
         store
             .update_run_status(&run_id, RunStatus::Done)
             .context("failed to mark upload-only run done")?;
-        eprintln!("Run {run_id} upload complete (instance {} kept alive)", handle.id);
+        eprintln!(
+            "Run {run_id} upload complete (instance {} kept alive)",
+            handle.id
+        );
         if args.json {
             println!(
                 "{}",
@@ -335,15 +358,24 @@ fn do_launch_with_budget(
 
     // Foreground poller: blocks until done/failed/cancelled
     let cancel = CancellationToken::new();
-    let result = Poller::new(
+    let poller = Poller::new(
         run_id.clone(),
         store,
         vendor,
         handle,
         runs_dir.to_path_buf(),
     )
-    .with_budget(budget_cfg)
-    .run(cancel);
+    .with_budget(budget_cfg);
+
+    // Wire MLflow mirroring when manifest declares an experiment and the
+    // global config has an MLflow URL. Silent if either is absent.
+    let poller = if let Some(cfg) = mlflow_mirror_config(manifest, mlflow_url.as_deref(), name) {
+        poller.with_mlflow(cfg)
+    } else {
+        poller
+    };
+
+    let result = poller.run(cancel);
 
     match result {
         Ok(RunStatus::Done) => {
@@ -377,9 +409,7 @@ fn resolve_reuse_handle(store: &Store, id: &str) -> Result<InstanceHandle> {
         .get_instance(&instance_id)?
         .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found in DB"))?;
     if inst.destroyed_at.is_some() {
-        anyhow::bail!(
-            "instance {instance_id} is marked destroyed in the DB; cannot reuse"
-        );
+        anyhow::bail!("instance {instance_id} is marked destroyed in the DB; cannot reuse");
     }
     let state_json = inst.state_json.ok_or_else(|| {
         anyhow::anyhow!("instance {instance_id} has no stored handle (mock or pre-rest run?)")
@@ -419,4 +449,37 @@ pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<(
     cmd.spawn()
         .with_context(|| format!("failed to spawn poll-daemon for run {run_id}"))?;
     Ok(())
+}
+
+/// Build a `MlflowMirrorConfig` from the manifest's `mlflow` section and the
+/// global MLflow URL. Returns `None` when either is absent — poller then runs
+/// without MLflow mirroring (silent degrade).
+fn mlflow_mirror_config(
+    manifest: &Manifest,
+    mlflow_url: Option<&str>,
+    run_name: &str,
+) -> Option<MlflowMirrorConfig> {
+    let url = mlflow_url?;
+    let experiment = manifest
+        .mlflow
+        .as_ref()
+        .and_then(|m| m.experiment.clone())?;
+
+    Some(MlflowMirrorConfig {
+        url: url.to_string(),
+        experiment,
+        auth: None, // token-based auth can be added via `xrun config set mlflow.token`
+        log_args_as_params: manifest
+            .mlflow
+            .as_ref()
+            .and_then(|m| m.log_args_as_params)
+            .unwrap_or(true),
+        run_name: Some(run_name.to_string()),
+        vendor: match manifest.vendor {
+            Vendor::Vast => "vast",
+            Vendor::Kaggle => "kaggle",
+        }
+        .to_string(),
+        instance_id: None,
+    })
 }

@@ -77,13 +77,13 @@ fn make_offer_geo(id: u64, geo: Option<&str>) -> Offer {
 #[test]
 fn filter_drops_excluded_iso_alpha2_anywhere_in_geo() {
     let offers = vec![
-        make_offer_geo(1, Some("DE, Frankfurt")),       // -> DE
-        make_offer_geo(2, Some("US-CA, Santa Clara")),  // -> US (CA)
-        make_offer_geo(3, Some("cn, Shanghai")),        // -> CN
-        make_offer_geo(4, Some("PL, Warsaw")),          // -> PL
-        make_offer_geo(5, Some("Germany, DE")),         // -> DE (country-name first)
-        make_offer_geo(6, Some("Germany")),             // no code → kept
-        make_offer_geo(7, None),                        // no geo → kept
+        make_offer_geo(1, Some("DE, Frankfurt")),      // -> DE
+        make_offer_geo(2, Some("US-CA, Santa Clara")), // -> US (CA)
+        make_offer_geo(3, Some("cn, Shanghai")),       // -> CN
+        make_offer_geo(4, Some("PL, Warsaw")),         // -> PL
+        make_offer_geo(5, Some("Germany, DE")),        // -> DE (country-name first)
+        make_offer_geo(6, Some("Germany")),            // no code → kept
+        make_offer_geo(7, None),                       // no geo → kept
     ];
     let kept = filter_excluded_countries(offers, &["cn".into(), "  DE  ".into()]);
     let ids: Vec<u64> = kept.iter().map(|o| o.id).collect();

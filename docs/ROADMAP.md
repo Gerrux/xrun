@@ -153,24 +153,33 @@ billable-confirm перед launch, видимость трат.
 
 ---
 
-## v0.3 — MLflow + Kaggle + чарты
+## v0.3 — MLflow + Kaggle + чарты ✅ done
 
 **Цель**: метрики красиво и шарябельно, второй вендор.
 
 ### Scope
 
-- [ ] Crate `xrun-mlflow` (REST клиент).
-- [ ] Зеркалирование метрик в MLflow при поллинге.
-- [ ] `xrun metrics --png` через MLflow figure API + локальный fallback (plotters).
-- [ ] TUI Run detail → Metrics tab с ratatui Chart + multi-series toggle, `s` save PNG, `o` open MLflow.
-- [ ] Crate `xrun-kaggle`:
-  - [ ] `kaggle kernels push/status/output`.
-  - [ ] Адаптация манифеста (нет live tail, post-completion ingest).
-- [ ] `xrun launch` с `vendor: kaggle` работает end-to-end.
+- [x] Crate `xrun-mlflow` (REST клиент, auth, batch metrics, retry, wiremock tests).
+- [x] Зеркалирование метрик в MLflow при поллинге (`mlflow_mirror.rs`, degrade-silent).
+- [x] `xrun metrics --png` через `plotters` BitMapBackend 1200×600, Tokyo Night palette.
+- [x] `xrun metrics --mlflow-url` печатает ссылку на MLflow run.
+- [x] Crate `xrun-kaggle`:
+  - [x] `kaggle kernels push/status/output` subprocess wrapper.
+  - [x] `KaggleAdapter` имплементирует `VendorAdapter`.
+  - [x] Post-completion ingest из `events.jsonl`/`metrics.jsonl`.
+  - [x] Embedded `xrun_hook` wheel + `_xrun_kaggle_entry.py` wrapper.
+- [x] `xrun launch` с `vendor: kaggle` работает end-to-end.
+- [x] Poll-daemon MLflow wiring для detached runs.
+- [x] `manifest.policy.on_idle_minutes` wired to budget caps.
+- [x] New vast manifest fields: `inet_down_min_mbps`, `cuda_min`, `reliability_min`, `direct_port_count_min`, `regions`.
+- [x] Per-source upload timeout (`policy.upload_timeout_secs`).
+- [x] Stdout auto-capture metrics (`parse_stdout_metrics`).
+- [x] `xrun balance` command for vast.ai balance.
+- [x] `docs/MANIFEST.md` — vast fields, Kaggle section, exclude semantics.
 
 ### Acceptance
 
-1. После завершения ранa MLflow UI показывает все метрики и артефакты, ссылка из TUI открывается.
+1. После завершения рана MLflow UI показывает все метрики, ссылка `xrun metrics <id> --mlflow-url` открывается.
 2. PNG-экспорт даёт картинку, которую можно сразу скинуть в чат.
 3. Тренировка через Kaggle kernel логируется в ту же БД, отображается в `xrun ls` рядом с vast.
 
@@ -178,12 +187,13 @@ billable-confirm перед launch, видимость трат.
 
 ## v0.4+ (backlog)
 
-- `xrun sweep` (декартово произведение по grid).
+- `xrun sweep <manifest> --grid lr=1e-3,1e-4 batch=4,8` — декартово произведение; генерит N материализованных манифестов.
 - `xrun diff <run-a> <run-b>` — манифесты + метрики side-by-side.
 - Anomaly detection в poller (loss взлетел → notification).
 - Cost forecasting (по средней стоимости похожих ранов).
 - Native vast.ai REST вместо CLI subprocess (стабильнее на ошибках).
 - Web UI рядом с TUI (тот же state, для шаринга по сети).
+- Kaggle live-tail workaround через `[xrun-event]` stdout-маркер (best-effort).
 - Скилл-плагин в формате Claude Code marketplace.
 
 ## Что НЕ в roadmap

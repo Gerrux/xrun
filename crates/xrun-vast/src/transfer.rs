@@ -28,10 +28,14 @@ pub async fn resolve_ssh(instance_id: u64, api_key: &str) -> Result<SshConn, Vas
         .find(|i| i.id == instance_id)
         .ok_or_else(|| VastError::ParseError(format!("instance {instance_id} not found")))?;
     let host = inst.ssh_host.ok_or_else(|| {
-        VastError::ParseError(format!("instance {instance_id} has no ssh_host (not running?)"))
+        VastError::ParseError(format!(
+            "instance {instance_id} has no ssh_host (not running?)"
+        ))
     })?;
     let port = inst.ssh_port.ok_or_else(|| {
-        VastError::ParseError(format!("instance {instance_id} has no ssh_port (not running?)"))
+        VastError::ParseError(format!(
+            "instance {instance_id} has no ssh_port (not running?)"
+        ))
     })?;
     if host.is_empty() {
         return Err(VastError::ParseError(format!(
@@ -184,7 +188,11 @@ fn ssh_cmd(conn: &SshConn) -> std::process::Command {
 /// `ssh dst "tar xf - -C DST"` — no local disk I/O beyond the pipe buffer.
 ///
 /// `verbose`: pass `-v` to tar so filenames are printed to stderr.
-pub fn transfer(src: &TransferEndpoint, dst: &TransferEndpoint, verbose: bool) -> Result<(), VastError> {
+pub fn transfer(
+    src: &TransferEndpoint,
+    dst: &TransferEndpoint,
+    verbose: bool,
+) -> Result<(), VastError> {
     let tar_c_flag = if verbose { "-cvf" } else { "-cf" };
     let tar_x_flag = if verbose { "-xvf" } else { "-xf" };
 

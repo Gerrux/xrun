@@ -1,0 +1,24 @@
+[package]
+name = "xrun-kaggle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+mock = []
+embed-wheel = []
+
+[dependencies]
+xrun-core = { path = "../xrun-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+xrun-core = { path = "../xrun-core" }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

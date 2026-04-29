@@ -195,6 +195,12 @@ pub struct MetricsArgs {
     /// Comma-separated metric keys to show
     #[arg(long)]
     pub key: Option<String>,
+    /// Render metrics as a PNG chart and save to this path
+    #[arg(long, value_name = "PATH")]
+    pub png: Option<PathBuf>,
+    /// Print the MLflow run URL and exit (requires mlflow.url in config)
+    #[arg(long)]
+    pub mlflow_url: bool,
     /// Print ASCII chart (not implemented in v0.1)
     #[arg(long)]
     pub ascii: bool,

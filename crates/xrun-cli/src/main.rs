@@ -60,12 +60,7 @@ fn run() -> Result<()> {
                 )?;
             } else {
                 let ctx = get_data_ctx()?;
-                xrun_cli::commands::launch::run(
-                    &args,
-                    &ctx.db_path,
-                    &ctx.runs_dir,
-                    &config_dir,
-                )?;
+                xrun_cli::commands::launch::run(&args, &ctx.db_path, &ctx.runs_dir, &config_dir)?;
             }
         }
         Some(Commands::Ls(args)) => {
@@ -86,7 +81,8 @@ fn run() -> Result<()> {
         }
         Some(Commands::Metrics(args)) => {
             let ctx = get_data_ctx()?;
-            xrun_cli::commands::metrics_cmd::run(&args, &ctx.db_path)?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::metrics_cmd::run(&args, &ctx.db_path, &config_dir)?;
         }
         Some(Commands::Pull(args)) => {
             let ctx = get_data_ctx()?;

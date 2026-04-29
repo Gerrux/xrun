@@ -90,11 +90,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
     print!("{}", toml::to_string_pretty(&cfg)?);
     println!("# credentials");
     print_cred("vast.api_key", creds.vast.api_key.as_deref(), secrets);
-    print_cred(
-        "kaggle.username",
-        creds.kaggle.username.as_deref(),
-        secrets,
-    );
+    print_cred("kaggle.username", creds.kaggle.username.as_deref(), secrets);
     print_cred("kaggle.key", creds.kaggle.key.as_deref(), secrets);
     print_cred("mlflow.token", creds.mlflow.token.as_deref(), secrets);
     Ok(())

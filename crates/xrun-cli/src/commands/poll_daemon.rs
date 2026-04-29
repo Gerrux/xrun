@@ -5,14 +5,45 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use xrun_core::{
     config::credentials::VastCredentials,
+    manifest::{Manifest, Vendor},
     store::{RunId, RunStatus},
     vendor::InstanceHandle,
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
-use xrun_poller::{CancellationToken, Poller};
+use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
 use xrun_vast::VastAdapter;
 
 use crate::cli::PollDaemonArgs;
+
+fn load_mlflow_config(
+    manifest_path: &Path,
+    mlflow_url: Option<&str>,
+) -> Option<MlflowMirrorConfig> {
+    let url = mlflow_url?;
+    let content = std::fs::read_to_string(manifest_path).ok()?;
+    let manifest: Manifest = serde_yaml::from_str(&content).ok()?;
+    let experiment = manifest
+        .mlflow
+        .as_ref()
+        .and_then(|m| m.experiment.clone())?;
+    Some(MlflowMirrorConfig {
+        url: url.to_string(),
+        experiment,
+        auth: None,
+        log_args_as_params: manifest
+            .mlflow
+            .as_ref()
+            .and_then(|m| m.log_args_as_params)
+            .unwrap_or(true),
+        run_name: Some(manifest.name.clone()),
+        vendor: match manifest.vendor {
+            Vendor::Vast => "vast",
+            Vendor::Kaggle => "kaggle",
+        }
+        .to_string(),
+        instance_id: None,
+    })
+}
 
 fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
     if let Ok(creds) = Credentials::load(config_dir) {
@@ -77,17 +108,25 @@ pub fn run(
     adapter.set_run_id(&run_id);
     let vendor: Box<dyn VendorAdapter> = Box::new(adapter);
 
-    let budget_cfg = GlobalConfig::load(config_dir).unwrap_or_default().budget;
+    let global = GlobalConfig::load(config_dir).unwrap_or_default();
+    let budget_cfg = global.budget.clone();
     let cancel = CancellationToken::new();
-    let result = Poller::new(
+    let mut poller = Poller::new(
         run_id.clone(),
         store,
         vendor,
         handle,
         runs_dir.to_path_buf(),
     )
-    .with_budget(budget_cfg)
-    .run(cancel);
+    .with_budget(budget_cfg);
+
+    // Wire MLflow mirror from saved manifest (if available and mlflow is configured).
+    let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");
+    if let Some(cfg) = load_mlflow_config(&manifest_path, global.mlflow.url.as_deref()) {
+        poller = poller.with_mlflow(cfg);
+    }
+
+    let result = poller.run(cancel);
 
     match result {
         Ok(RunStatus::Done) => {

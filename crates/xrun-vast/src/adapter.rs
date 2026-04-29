@@ -131,20 +131,21 @@ impl VastAdapter {
             .as_ref()
             .ok_or_else(|| VastError::ParseError("vast section required".into()))?;
 
-        let api_key = self.credentials.api_key.clone().ok_or_else(|| {
-            VastError::CliFailure {
+        let api_key = self
+            .credentials
+            .api_key
+            .clone()
+            .ok_or_else(|| VastError::CliFailure {
                 exit_code: 401,
                 stderr: "vast.api_key not set — run `xrun config set vast.api_key <KEY>` \
                          (or place the token in ~/.config/vastai/vast_api_key)"
                     .into(),
-            }
-        })?;
+            })?;
         crate::process::set_api_key_override(Some(api_key.clone()));
 
         let query = provision::offer_query_from_manifest(vast);
         let body = crate::rest::build_offer_search_body(&query, 5.0);
-        let body_str =
-            serde_json::to_string(&body).unwrap_or_else(|_| "<unprintable>".to_string());
+        let body_str = serde_json::to_string(&body).unwrap_or_else(|_| "<unprintable>".to_string());
         let offers = crate::rest::search_offers(&api_key, &query).await?;
         let offers = provision::filter_excluded_countries(offers, &self.exclude_countries);
 
@@ -169,8 +170,7 @@ impl VastAdapter {
                 tracing::warn!(
                     "provision failed after create_instance({instance_id}); auto-destroying: {e}"
                 );
-                if let Err(destroy_err) =
-                    crate::rest::destroy_instance(&api_key, instance_id).await
+                if let Err(destroy_err) = crate::rest::destroy_instance(&api_key, instance_id).await
                 {
                     tracing::error!(
                         "auto-destroy of {instance_id} failed (instance is leaking and will \

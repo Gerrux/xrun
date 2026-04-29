@@ -15,8 +15,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use xrun_core::{
-    config::credentials::VastCredentials, vendor::InstanceHandle, Credentials, Store,
-    VendorAdapter,
+    config::credentials::VastCredentials, vendor::InstanceHandle, Credentials, Store, VendorAdapter,
 };
 use xrun_vast::VastAdapter;
 
@@ -44,7 +43,10 @@ pub fn run(args: &GcArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
         .iter()
         .filter(|i| !remote_ids.contains(&i.id))
         .collect();
-    let vendor_orphans: Vec<_> = remote.iter().filter(|r| !local_ids.contains(&r.id)).collect();
+    let vendor_orphans: Vec<_> = remote
+        .iter()
+        .filter(|r| !local_ids.contains(&r.id))
+        .collect();
 
     println!(
         "active in DB: {}   live on vendor: {}",
@@ -95,7 +97,10 @@ pub fn run(args: &GcArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
             let handle = InstanceHandle {
                 id: r.id.clone(),
                 vendor: "vast".to_string(),
-                ssh_host: r.ssh.as_ref().and_then(|s| s.split(':').next().map(str::to_string)),
+                ssh_host: r
+                    .ssh
+                    .as_ref()
+                    .and_then(|s| s.split(':').next().map(str::to_string)),
                 ssh_port: r
                     .ssh
                     .as_ref()
