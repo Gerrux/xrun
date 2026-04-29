@@ -1,21 +1,22 @@
 #![deny(unsafe_code)]
 
 use std::path::Path;
+use std::process::Command;
 
 use anyhow::{Context, Result};
-use xrun_core::RunId;
+use xrun_core::{vendor::InstanceHandle, RunId, Store};
 
 use crate::cli::LogsArgs;
 
-pub fn run(args: &LogsArgs, runs_dir: &Path) -> Result<()> {
-    if args.follow {
-        anyhow::bail!("--follow is not supported in v0.1");
-    }
-
+pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
     let id: RunId = args
         .id
         .parse()
         .with_context(|| format!("invalid run ID: {}", args.id))?;
+
+    if args.follow {
+        return follow_remote(&id, db_path, args.grep.as_deref());
+    }
 
     let log_path = runs_dir.join(id.to_string()).join("stdout.log");
 
@@ -38,4 +39,82 @@ pub fn run(args: &LogsArgs, runs_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `xrun logs -f <id>` streams the live stdout from the running instance over
+/// ssh. Doesn't go through the poller — the poller already snapshots the tail
+/// every few seconds, but for an active debug session a 0-latency stream is
+/// what you actually want.
+fn follow_remote(id: &RunId, db_path: &Path, grep: Option<&str>) -> Result<()> {
+    let store = Store::open(db_path)
+        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let run = store
+        .get_run(id)?
+        .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
+    let instance_id = run
+        .instance_id
+        .ok_or_else(|| anyhow::anyhow!("run {id} has no instance yet"))?;
+    let inst = store
+        .get_instance(&instance_id)?
+        .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?;
+    let state_json = inst
+        .state_json
+        .ok_or_else(|| anyhow::anyhow!("instance {instance_id} has no stored handle"))?;
+    let handle: InstanceHandle =
+        serde_json::from_str(&state_json).context("failed to deserialize instance handle")?;
+
+    let host = handle
+        .ssh_host
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("instance has no ssh_host"))?;
+    let port = handle
+        .ssh_port
+        .ok_or_else(|| anyhow::anyhow!("instance has no ssh_port"))?;
+    let user = if handle.ssh_user.is_empty() {
+        "root"
+    } else {
+        handle.ssh_user.as_str()
+    };
+
+    // tail -F (capital F) keeps following across log rotations and waits for
+    // the file to exist if the run hasn't started writing yet. Pipe through
+    // grep --line-buffered so a filter pattern doesn't bottleneck on the
+    // local pipe.
+    let remote_cmd = match grep {
+        Some(p) => format!(
+            "tail -n 200 -F /workspace/run/stdout.log 2>/dev/null | grep --line-buffered -- {}",
+            shell_escape(p)
+        ),
+        None => "tail -n 200 -F /workspace/run/stdout.log 2>/dev/null".to_string(),
+    };
+
+    let status = Command::new("ssh")
+        .arg("-p")
+        .arg(port.to_string())
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("ServerAliveInterval=30")
+        .arg(format!("{user}@{host}"))
+        .arg(remote_cmd)
+        .status()
+        .with_context(|| "failed to spawn ssh")?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Single-quote-escape a string for safe inclusion inside a remote shell
+/// `grep -- '<pattern>'` argument. Any embedded single quotes are split out.
+fn shell_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }

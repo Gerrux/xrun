@@ -33,6 +33,7 @@ pub struct OfferQuery {
     pub gpu_ram_gte: Option<u32>,
     pub dph_lte: Option<f64>,
     pub region: Option<String>,
+    pub inet_up_gte: Option<f64>,
 }
 
 impl OfferQuery {
@@ -52,6 +53,9 @@ impl OfferQuery {
         }
         if let Some(region) = &self.region {
             parts.push(format!("datacenter_region={}", region));
+        }
+        if let Some(up) = self.inet_up_gte {
+            parts.push(format!("inet_up>={:.1}", up));
         }
         parts.join(" ")
     }

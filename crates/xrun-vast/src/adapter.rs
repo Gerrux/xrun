@@ -160,16 +160,25 @@ impl VastAdapter {
         let instance_id =
             crate::rest::create_instance(&api_key, offer_id, &image, disk_gb, ssh).await?;
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
-        let info = loop {
-            let info = crate::rest::show_instance(&api_key, instance_id).await?;
-            if info.actual_status.as_deref() == Some("running") {
-                break info;
+        // The instance is now billable. Any failure between here and a successful
+        // return must auto-destroy it, otherwise we leak a paid GPU. `show_instance`
+        // can return transient HTTP errors that previously left orphaned instances.
+        let info = match wait_for_running(&api_key, instance_id).await {
+            Ok(info) => info,
+            Err(e) => {
+                tracing::warn!(
+                    "provision failed after create_instance({instance_id}); auto-destroying: {e}"
+                );
+                if let Err(destroy_err) =
+                    crate::rest::destroy_instance(&api_key, instance_id).await
+                {
+                    tracing::error!(
+                        "auto-destroy of {instance_id} failed (instance is leaking and will \
+                         keep accruing cost!): {destroy_err}"
+                    );
+                }
+                return Err(e);
             }
-            if tokio::time::Instant::now() > deadline {
-                return Err(VastError::InstanceLossOnProvision);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         };
 
         let ssh_host = info.ssh_host.clone();
@@ -408,6 +417,26 @@ impl VastAdapter {
         }
 
         Ok(())
+    }
+}
+
+/// Poll `show_instance` until the instance reaches `running` or we hit the
+/// 10-minute deadline. Extracted from `provision_impl` so the caller can wrap
+/// it in an auto-destroy on error — see the call site comment for context.
+async fn wait_for_running(
+    api_key: &str,
+    instance_id: u64,
+) -> Result<crate::rest::RemoteInstance, VastError> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
+    loop {
+        let info = crate::rest::show_instance(api_key, instance_id).await?;
+        if info.actual_status.as_deref() == Some("running") {
+            return Ok(info);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(VastError::InstanceLossOnProvision);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 

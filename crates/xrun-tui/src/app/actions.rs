@@ -1,5 +1,5 @@
 use anyhow::Result;
-use xrun_core::RunStatus;
+use xrun_core::{Manifest, RunStatus};
 
 use crate::screens::instances::InstancesAction;
 use crate::screens::launch::LaunchAction;
@@ -106,8 +106,28 @@ impl App {
     pub(super) fn handle_launch_action(&mut self, action: LaunchAction) -> Result<bool> {
         match action {
             LaunchAction::Confirm(path) => {
+                let estimate = read_manifest_estimate(&path);
+                let message = match estimate {
+                    Some((vendor, hourly, max_hours, max_cost)) => {
+                        let projected = match (max_hours, max_cost) {
+                            (Some(h), Some(c)) => Some((h * hourly).min(c)),
+                            (Some(h), None) => Some(h * hourly),
+                            (None, Some(c)) => Some(c),
+                            (None, None) => None,
+                        };
+                        let proj_str = match projected {
+                            Some(p) => format!(" \u{2192} max ${:.2}", p),
+                            None => " \u{2192} no cap".to_string(),
+                        };
+                        format!(
+                            "Launch '{}'?\n{} \u{00b7} ${:.4}/hr{}",
+                            path, vendor, hourly, proj_str
+                        )
+                    }
+                    None => format!("Launch manifest '{}'?", path),
+                };
                 self.state.modal = Some(Modal::Confirm {
-                    message: format!("Launch manifest '{}'?", path),
+                    message,
                     action: ConfirmAction::LaunchRun(path),
                 });
                 self.state.dirty = true;
@@ -208,4 +228,17 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Best-effort budget summary from a manifest path: (vendor, $/hr, max_hours,
+/// max_cost). Returns `None` if the manifest is unreadable or not a vast spec —
+/// the caller falls back to a plain confirm message.
+fn read_manifest_estimate(
+    path: &str,
+) -> Option<(String, f64, Option<f64>, Option<f64>)> {
+    let yaml = std::fs::read_to_string(path).ok()?;
+    let manifest = Manifest::from_yaml_str(&yaml).ok()?;
+    let vast = manifest.vast.as_ref()?;
+    let hourly = vast.price.as_ref().map(|p| p.max_per_hour).unwrap_or(0.0);
+    Some(("Vast.ai".to_string(), hourly, None, None))
 }

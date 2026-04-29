@@ -1,6 +1,7 @@
 use chrono::Utc;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
+use xrun_core::budget;
 
 use crate::state::{AppState, Screen};
 use crate::view::SPINNER;
@@ -82,12 +83,25 @@ fn build_balance_line(state: &AppState) -> Line<'static> {
                             .num_seconds()
                             .max(0),
                     );
-                    Line::from(vec![
+                    let burn = budget::active_hourly_burn_slice(&state.instances.instances);
+                    let runway_warning = if burn > 0.0 && b / burn < 1.0 {
+                        Some(Span::styled(
+                            format!("  \u{26a0} <{:.0}m runway", (b / burn) * 60.0),
+                            state.theme.failed,
+                        ))
+                    } else {
+                        None
+                    };
+                    let mut spans = vec![
                         icon,
                         vendor,
                         Span::styled(format!("{}{:.2}", cur, b), state.theme.accent),
                         Span::styled(format!("  ({age})"), state.theme.dim_text),
-                    ])
+                    ];
+                    if let Some(w) = runway_warning {
+                        spans.push(w);
+                    }
+                    Line::from(spans)
                 }
                 None => Line::from(vec![
                     icon,

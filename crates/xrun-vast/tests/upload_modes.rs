@@ -18,6 +18,8 @@ fn copy_mode_builds_correct_endpoints() {
         dst: "/workspace/dataset.tar".to_string(),
         mode: None,
         unpack: None,
+        exclude: Vec::new(),
+        compress: None,
     };
 
     let (src, dst) = copy_endpoints(instance_id, &source);
@@ -44,6 +46,8 @@ fn explicit_copy_mode_same_as_default() {
         dst: "/remote/file.bin".to_string(),
         mode: Some(DataMode::Copy),
         unpack: None,
+        exclude: Vec::new(),
+        compress: None,
     };
 
     let (src, dst) = copy_endpoints(instance_id, &source);
@@ -79,6 +83,8 @@ fn unpack_tar_generates_mkdir_and_extract() {
             format: "tar".to_string(),
             into: "/workspace/data".to_string(),
         }),
+        exclude: Vec::new(),
+        compress: None,
     };
 
     let cmds = unpack_commands(&source).expect("should not fail for tar");
@@ -97,6 +103,8 @@ fn unpack_tar_gz_uses_xzf_flag() {
             format: "tar.gz".to_string(),
             into: "/workspace/data".to_string(),
         }),
+        exclude: Vec::new(),
+        compress: None,
     };
 
     let cmds = unpack_commands(&source).expect("should not fail for tar.gz");
@@ -116,6 +124,8 @@ fn unpack_zip_uses_unzip_command() {
             format: "zip".to_string(),
             into: "/workspace/data".to_string(),
         }),
+        exclude: Vec::new(),
+        compress: None,
     };
 
     let cmds = unpack_commands(&source).expect("should not fail for zip");
@@ -137,6 +147,8 @@ fn unpack_tgz_alias_uses_xzf_flag() {
             format: "tgz".to_string(),
             into: "/workspace/data".to_string(),
         }),
+        exclude: Vec::new(),
+        compress: None,
     };
 
     let cmds = unpack_commands(&source).expect("should not fail for tgz");
@@ -153,6 +165,8 @@ fn unpack_none_returns_empty_vec() {
         dst: "/b".to_string(),
         mode: None,
         unpack: None,
+        exclude: Vec::new(),
+        compress: None,
     };
     let cmds = unpack_commands(&source).expect("no unpack");
     assert!(cmds.is_empty());

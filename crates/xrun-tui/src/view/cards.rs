@@ -1,7 +1,7 @@
 use chrono::Utc;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use xrun_core::RunStatus;
+use xrun_core::{budget, RunStatus};
 
 use crate::state::AppState;
 use crate::view::SPINNER;
@@ -118,8 +118,16 @@ fn render_active_card(f: &mut Frame, area: Rect, state: &AppState) {
         .filter(|r| r.status == RunStatus::Running)
         .count();
 
+    let burn = budget::active_hourly_burn_slice(&state.instances.instances);
+    let cap_left = budget::cap_left_slice(&state.instances.instances);
+
     let main_line = if total == 0 {
-        Line::from(Span::styled("none", state.theme.dim_text))
+        Line::from(Span::styled("idle", state.theme.dim_text))
+    } else if burn > 0.0 {
+        Line::from(vec![
+            Span::styled(format!("${:.2}/hr", burn), state.theme.accent),
+            Span::styled(format!(" \u{00b7} {} run", total), state.theme.dim_text),
+        ])
     } else {
         Line::from(Span::styled(
             format!("{} running", total),
@@ -137,14 +145,21 @@ fn render_active_card(f: &mut Frame, area: Rect, state: &AppState) {
     if provisioning > 0 {
         detail_parts.push(format!("{} prov", provisioning));
     }
+    if let Some(left) = cap_left {
+        detail_parts.push(format!("cap-left ${:.2}", left));
+    }
 
     let detail_line = if detail_parts.is_empty() {
         Line::from("")
     } else {
-        Line::from(Span::styled(
-            detail_parts.join(" \u{00b7} "),
-            state.theme.dim_text,
-        ))
+        // Highlight cap-left when below $1 — visual signal that auto-destroy
+        // is imminent.
+        let style = if cap_left.is_some_and(|l| l < 1.0) {
+            state.theme.failed
+        } else {
+            state.theme.dim_text
+        };
+        Line::from(Span::styled(detail_parts.join(" \u{00b7} "), style))
     };
 
     f.render_widget(
@@ -172,7 +187,11 @@ fn render_today_card(f: &mut Frame, area: Rect, state: &AppState) {
         .filter(|r| r.ended_at.map(|e| e >= today_start).unwrap_or(false))
         .collect();
 
-    let lines = if today_runs.is_empty() {
+    let completed_cost: f64 = today_runs.iter().filter_map(|r| r.cost_usd).sum();
+    let live_total =
+        budget::live_spend_today_slice(&state.instances.instances, completed_cost, now);
+
+    let lines = if today_runs.is_empty() && live_total == 0.0 {
         vec![Line::from(Span::styled(
             "no runs today",
             state.theme.dim_text,
@@ -186,18 +205,25 @@ fn render_today_card(f: &mut Frame, area: Rect, state: &AppState) {
             .iter()
             .filter(|r| r.status == RunStatus::Failed)
             .count();
-        let cost: f64 = today_runs.iter().filter_map(|r| r.cost_usd).sum();
 
-        let mut summary = format!("{} done", done);
-        if failed > 0 {
-            summary.push_str(&format!(" \u{00b7} {} failed", failed));
+        let mut summary_parts: Vec<String> = Vec::new();
+        if done + failed > 0 {
+            summary_parts.push(format!("{} done", done));
+            if failed > 0 {
+                summary_parts.push(format!("{} failed", failed));
+            }
+        } else {
+            summary_parts.push("active".to_string());
         }
 
         vec![
-            Line::from(Span::styled(summary, state.theme.normal)),
             Line::from(Span::styled(
-                format!("${:.2} spent", cost),
-                state.theme.dim_text,
+                summary_parts.join(" \u{00b7} "),
+                state.theme.normal,
+            )),
+            Line::from(Span::styled(
+                format!("${:.2} spent", live_total),
+                state.theme.accent,
             )),
         ]
     };

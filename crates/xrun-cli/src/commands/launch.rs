@@ -9,6 +9,7 @@ use xrun_core::{
     config::credentials::VastCredentials,
     manifest::{Manifest, Vendor},
     store::{InstanceCaps, RunId, RunStatus},
+    vendor::InstanceHandle,
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_poller::{CancellationToken, Poller};
@@ -16,6 +17,7 @@ use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
 use crate::commands::confirm::{confirm_billable_or_exit, ConfirmEstimate};
+use crate::commands::patch;
 
 /// Resolve `vast.api_key` from xrun's config, falling back to the legacy
 /// `~/.config/vastai/vast_api_key` file. Returns `None` if neither is set —
@@ -46,6 +48,11 @@ pub fn run(
 
     let manifest =
         Manifest::from_yaml_str(&content).with_context(|| "manifest validation failed")?;
+    let manifest = patch::apply(&manifest, &args.overrides)?;
+
+    if args.trace {
+        std::env::set_var("XRUN_TRACE", "1");
+    }
 
     let global = GlobalConfig::load(config_dir).unwrap_or_default();
     let caps = caps_from_args_and_config(args, &global.budget);
@@ -125,7 +132,7 @@ pub fn run(
     };
     confirm_billable_or_exit(&estimate, &global.budget, args.yes)?;
 
-    do_launch(args, &manifest, db_path, runs_dir, vendor)
+    do_launch_with_budget(args, &manifest, db_path, runs_dir, vendor, global.budget)
 }
 
 /// Resolve effective per-instance caps from CLI overrides + global config.
@@ -167,6 +174,25 @@ fn do_launch(
     runs_dir: &Path,
     vendor: Box<dyn VendorAdapter>,
 ) -> Result<()> {
+    do_launch_with_budget(
+        args,
+        manifest,
+        db_path,
+        runs_dir,
+        vendor,
+        xrun_core::BudgetConfig::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn do_launch_with_budget(
+    args: &LaunchArgs,
+    manifest: &Manifest,
+    db_path: &Path,
+    runs_dir: &Path,
+    vendor: Box<dyn VendorAdapter>,
+    budget_cfg: xrun_core::BudgetConfig,
+) -> Result<()> {
     let hash = manifest.canonical_hash();
     let name = args.name.as_deref().unwrap_or(&manifest.name);
     // Store an absolute path so consumers (TUI, `xrun show`) can read the
@@ -198,23 +224,43 @@ fn do_launch(
     let run_dir = runs_dir.join(run_id.to_string());
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("failed to create run dir: {}", run_dir.display()))?;
-    std::fs::copy(&args.manifest, run_dir.join("manifest.yaml"))
-        .context("failed to copy manifest")?;
+    // Write the (possibly patched) in-memory manifest so reruns and post-mortem
+    // tooling see the values that actually ran, not the on-disk source. When
+    // there were no overrides this round-trip is a no-op modulo whitespace.
+    let yaml = serde_yaml::to_string(manifest)
+        .unwrap_or_else(|_| std::fs::read_to_string(&args.manifest).unwrap_or_default());
+    std::fs::write(run_dir.join("manifest.yaml"), yaml)
+        .context("failed to write manifest copy in run dir")?;
 
     eprintln!("Created run {run_id}");
 
     vendor.set_run_id(&run_id);
 
-    // Provision
-    let handle = match vendor.provision(manifest) {
-        Ok(h) => h,
-        Err(e) => {
-            let _ = store.update_run_status(&run_id, RunStatus::Failed);
-            anyhow::bail!("provision failed: {e}");
-        }
+    // Provision OR reuse a live instance. Reuse skips offer search +
+    // create_instance entirely — the instance is already paid for, we just
+    // need to reach it. The handle is reconstructed from `state_json`
+    // persisted by the prior launch. New run is linked to the existing
+    // instance row (one instance can serve many sequential runs).
+    let (handle, reused_instance) = if let Some(reuse) = args.reuse_instance.as_deref() {
+        let h = resolve_reuse_handle(&store, reuse)?;
+        eprintln!("Reusing instance {} ({}@{}:{})", h.id,
+            h.ssh_user,
+            h.ssh_host.as_deref().unwrap_or("?"),
+            h.ssh_port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()));
+        (h, true)
+    } else {
+        let h = match vendor.provision(manifest) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = store.update_run_status(&run_id, RunStatus::Failed);
+                anyhow::bail!("provision failed: {e}");
+            }
+        };
+        (h, false)
     };
 
-    // Ensure the instance row exists (VastAdapter inserts it; mock does not).
+    // Ensure the instance row exists (VastAdapter inserts it on provision;
+    // mock and reuse paths do not).
     let _ = store.insert_instance(
         &handle.id,
         &handle.vendor,
@@ -235,14 +281,40 @@ fn do_launch(
     // Upload data sources
     let sources = manifest.data.as_deref().unwrap_or(&[]).to_vec();
     if let Err(e) = vendor.upload(&handle, &sources) {
-        let _ = vendor.destroy(&handle);
+        // For reused instances we don't destroy on failure — the user told us
+        // to keep it alive. They can `xrun stop` explicitly when done.
+        if !reused_instance {
+            let _ = vendor.destroy(&handle);
+        }
         let _ = store.update_run_status(&run_id, RunStatus::Failed);
         anyhow::bail!("upload failed: {e}");
     }
 
+    // --upload-only: provision + upload, then mark done and bail. The
+    // instance keeps running so the user can `xrun launch --reuse-instance`
+    // again or `xrun shell` in. Skip both execute and the destroy-on-error
+    // path because we *want* the instance alive.
+    if args.upload_only {
+        store
+            .update_run_status(&run_id, RunStatus::Done)
+            .context("failed to mark upload-only run done")?;
+        eprintln!("Run {run_id} upload complete (instance {} kept alive)", handle.id);
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({"run_id": run_id.to_string(), "instance_id": handle.id})
+            );
+        } else {
+            println!("{run_id}");
+        }
+        return Ok(());
+    }
+
     // Execute training command
     if let Err(e) = vendor.execute(&handle, &manifest.run) {
-        let _ = vendor.destroy(&handle);
+        if !reused_instance {
+            let _ = vendor.destroy(&handle);
+        }
         let _ = store.update_run_status(&run_id, RunStatus::Failed);
         anyhow::bail!("execute failed: {e}");
     }
@@ -270,6 +342,7 @@ fn do_launch(
         handle,
         runs_dir.to_path_buf(),
     )
+    .with_budget(budget_cfg)
     .run(cancel);
 
     match result {
@@ -282,6 +355,36 @@ fn do_launch(
         Ok(s) => anyhow::bail!("run {run_id} ended with status: {}", s.as_str()),
         Err(e) => anyhow::bail!("poller error for run {run_id}: {e}"),
     }
+}
+
+/// Resolve `--reuse-instance` to an `InstanceHandle`. Accepts either a vast
+/// instance ID (numeric) or an xrun run ID (ULID); both resolve to the
+/// `state_json` of the instance row in our store.
+fn resolve_reuse_handle(store: &Store, id: &str) -> Result<InstanceHandle> {
+    let instance_id = if id.chars().all(|c| c.is_ascii_digit()) {
+        id.to_string()
+    } else {
+        let rid: RunId = id
+            .parse()
+            .with_context(|| format!("invalid --reuse-instance value: {id}"))?;
+        let run = store
+            .get_run(&rid)?
+            .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
+        run.instance_id
+            .ok_or_else(|| anyhow::anyhow!("run {id} has no instance_id"))?
+    };
+    let inst = store
+        .get_instance(&instance_id)?
+        .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found in DB"))?;
+    if inst.destroyed_at.is_some() {
+        anyhow::bail!(
+            "instance {instance_id} is marked destroyed in the DB; cannot reuse"
+        );
+    }
+    let state_json = inst.state_json.ok_or_else(|| {
+        anyhow::anyhow!("instance {instance_id} has no stored handle (mock or pre-rest run?)")
+    })?;
+    serde_json::from_str(&state_json).context("failed to deserialize stored instance handle")
 }
 
 /// Spawn `xrun __poll-daemon <run_id>` as a detached background process.

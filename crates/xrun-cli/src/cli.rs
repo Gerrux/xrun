@@ -49,6 +49,10 @@ pub enum Commands {
     Pull(PullArgs),
     /// Stop a running run
     Stop(StopArgs),
+    /// Reconcile vendor instances with the local DB and clean up orphans
+    Gc(GcArgs),
+    /// Open an interactive SSH session on the run's instance
+    Shell(ShellArgs),
     /// Re-run a previous run
     Rerun(RerunArgs),
     /// Copy files between instances (or local↔instance) via streaming tar
@@ -98,6 +102,26 @@ pub struct LaunchArgs {
     /// Skip the billable-action confirm prompt (required when stdin is not a TTY).
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Reuse an existing live vast instance instead of provisioning a new one.
+    /// Skips offer search + create_instance. Pass either a vast instance ID
+    /// (numeric) or an xrun run ID (ULID) — the latter resolves to its
+    /// instance and inherits the SSH handle.
+    #[arg(long, value_name = "ID")]
+    pub reuse_instance: Option<String>,
+    /// Provision + upload, then stop without executing the run.cmd. Useful for
+    /// staging data on a long-lived instance that you'll resume later.
+    #[arg(long)]
+    pub upload_only: bool,
+    /// Override a manifest run-arg without editing YAML, e.g.
+    /// `--override run.args.--lr=5e-4`. Repeatable. Same syntax as
+    /// `xrun rerun --patch`.
+    #[arg(long = "override", value_name = "PATH=VALUE")]
+    pub overrides: Vec<String>,
+    /// Print every external command we shell out to (vastai, ssh, tar, ...)
+    /// before running it. Use when something fails opaquely and you need to
+    /// see the exact invocation.
+    #[arg(long)]
+    pub trace: bool,
 }
 
 #[derive(Args)]
@@ -198,12 +222,34 @@ pub struct PullArgs {
 pub struct StopArgs {
     /// Run ID (ULID)
     pub id: Option<String>,
+    /// Stop all active runs (and destroy their instances)
+    #[arg(long)]
+    pub all: bool,
     /// Destroy instance immediately without graceful stop
     #[arg(long)]
     pub force: bool,
     /// Keep the vendor instance alive (for debugging)
     #[arg(long)]
     pub keep_instance: bool,
+}
+
+#[derive(Args)]
+pub struct ShellArgs {
+    /// Run ID (ULID) or vast instance ID. Defaults to the single active run.
+    pub id: Option<String>,
+    /// Run a single command and exit, instead of an interactive shell.
+    #[arg(long, short = 'c')]
+    pub cmd: Option<String>,
+}
+
+#[derive(Args)]
+pub struct GcArgs {
+    /// Show what would be destroyed without acting
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Also destroy instances that exist on the vendor but are not in our DB
+    #[arg(long)]
+    pub include_unknown: bool,
 }
 
 #[derive(Args)]
@@ -220,4 +266,8 @@ pub struct DoctorArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+    /// Validate one or more manifest files (parse + schema check, no network).
+    /// Failures here are fatal exit 1 even with --json.
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifests: Vec<PathBuf>,
 }

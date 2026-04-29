@@ -78,7 +78,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Logs(args)) => {
             let ctx = get_data_ctx()?;
-            xrun_cli::commands::logs::run(&args, &ctx.runs_dir)?;
+            xrun_cli::commands::logs::run(&args, &ctx.db_path, &ctx.runs_dir)?;
         }
         Some(Commands::Events(args)) => {
             let ctx = get_data_ctx()?;
@@ -94,11 +94,22 @@ fn run() -> Result<()> {
         }
         Some(Commands::Stop(args)) => {
             let ctx = get_data_ctx()?;
-            xrun_cli::commands::stop::run(&args, &ctx.db_path)?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::stop::run(&args, &ctx.db_path, &config_dir)?;
+        }
+        Some(Commands::Gc(args)) => {
+            let ctx = get_data_ctx()?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::gc::run(&args, &ctx.db_path, &config_dir)?;
+        }
+        Some(Commands::Shell(args)) => {
+            let ctx = get_data_ctx()?;
+            xrun_cli::commands::shell::run(&args, &ctx.db_path)?;
         }
         Some(Commands::Rerun(args)) => {
             let ctx = get_data_ctx()?;
-            xrun_cli::commands::rerun::run(&args, &ctx.db_path)?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::rerun::run(&args, &ctx.db_path, &ctx.runs_dir, &config_dir)?;
         }
         Some(Commands::Cp(args)) => {
             let config_dir = get_config()?;
