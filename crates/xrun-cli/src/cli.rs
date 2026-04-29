@@ -51,6 +51,8 @@ pub enum Commands {
     Stop(StopArgs),
     /// Reconcile vendor instances with the local DB and clean up orphans
     Gc(GcArgs),
+    /// Open an interactive SSH session on the run's instance
+    Shell(ShellArgs),
     /// Re-run a previous run
     Rerun(RerunArgs),
     /// Copy files between instances (or local↔instance) via streaming tar
@@ -100,6 +102,16 @@ pub struct LaunchArgs {
     /// Skip the billable-action confirm prompt (required when stdin is not a TTY).
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Reuse an existing live vast instance instead of provisioning a new one.
+    /// Skips offer search + create_instance. Pass either a vast instance ID
+    /// (numeric) or an xrun run ID (ULID) — the latter resolves to its
+    /// instance and inherits the SSH handle.
+    #[arg(long, value_name = "ID")]
+    pub reuse_instance: Option<String>,
+    /// Provision + upload, then stop without executing the run.cmd. Useful for
+    /// staging data on a long-lived instance that you'll resume later.
+    #[arg(long)]
+    pub upload_only: bool,
 }
 
 #[derive(Args)]
@@ -209,6 +221,15 @@ pub struct StopArgs {
     /// Keep the vendor instance alive (for debugging)
     #[arg(long)]
     pub keep_instance: bool,
+}
+
+#[derive(Args)]
+pub struct ShellArgs {
+    /// Run ID (ULID) or vast instance ID. Defaults to the single active run.
+    pub id: Option<String>,
+    /// Run a single command and exit, instead of an interactive shell.
+    #[arg(long, short = 'c')]
+    pub cmd: Option<String>,
 }
 
 #[derive(Args)]

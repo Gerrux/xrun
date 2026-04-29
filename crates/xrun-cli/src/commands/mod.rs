@@ -13,5 +13,6 @@ pub mod metrics_cmd;
 pub mod poll_daemon;
 pub mod pull;
 pub mod rerun;
+pub mod shell;
 pub mod show;
 pub mod stop;
