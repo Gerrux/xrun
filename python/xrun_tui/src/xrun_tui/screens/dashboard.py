@@ -7,13 +7,50 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Static
+from textual.widgets import Button, DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 
 from xrun_tui.utils import cost, duration, rel_time, status_dot, status_label
 
 if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
+
+
+class _TitleBar(Horizontal):
+    """Custom title bar: [⊞ Menu] xrun — dashboard  (clock via StatusBar)."""
+
+    DEFAULT_CSS = """
+    _TitleBar {
+        dock: top;
+        height: 1;
+        background: $panel;
+        padding: 0 1;
+        align: left middle;
+    }
+    _TitleBar Button {
+        height: 1;
+        min-width: 8;
+        background: transparent;
+        border: none;
+        padding: 0 1;
+        color: $accent;
+    }
+    _TitleBar Button:hover { background: $foreground 10%; }
+    _TitleBar #tb-title {
+        width: 1fr;
+        content-align: center middle;
+        color: $foreground;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("⊞ Menu", id="tb-menu")
+        yield Static("xrun  —  dashboard", id="tb-title")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "tb-menu":
+            event.stop()
+            self.run_worker(self.app.action_open_palette(), exclusive=True)  # type: ignore[attr-defined]
 
 
 def _kpi(label: str, value: str, value_style: str) -> str:
@@ -41,12 +78,8 @@ class DashboardScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield _TitleBar()
         with Vertical(id="dash-root"):
-            yield Static("[bold #7aa2f7]Welcome to xrun[/]   "
-                         "[#565f89]press[/] [#7aa2f7]?[/] [#565f89]for help, "
-                         "ctrl+p for command palette[/]",
-                         classes="screen-title")
             with Grid(id="dash-kpi-grid"):
                 yield Static(_kpi("Active runs",  "—", "#9ece6a"),
                              id="kpi-active",  classes="kpi-card")
@@ -65,14 +98,6 @@ class DashboardScreen(Screen):
                     yield Static("Recently completed", classes="dash-section")
                     yield DataTable(id="dash-recent",
                                     cursor_type="row", zebra_stripes=True)
-            with Horizontal(id="dash-actions"):
-                yield Button("Launch  [l]",     id="nav-launch",    classes="nav-btn")
-                yield Button("Runs  [⏎]",       id="nav-runs",      classes="nav-btn")
-                yield Button("Instances  [i]",  id="nav-instances", classes="nav-btn")
-                yield Button("Vendors  [v]",    id="nav-vendors",   classes="nav-btn")
-                yield Button("Doctor  [h]",     id="nav-doctor",    classes="nav-btn")
-                yield Button("Settings  [,]",   id="nav-settings",  classes="nav-btn")
-                yield Button("Help  [?]",       id="nav-help",      classes="nav-btn")
         yield StatusBar()
         yield Footer()
 

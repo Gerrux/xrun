@@ -34,11 +34,14 @@ pub struct OfferQuery {
     pub dph_lte: Option<f64>,
     pub region: Option<String>,
     pub inet_up_gte: Option<f64>,
+    pub inet_down_gte: Option<f64>,
+    pub cuda_gte: Option<f64>,
+    pub reliability_gte: Option<f64>,
+    pub direct_port_count_gte: Option<u32>,
 }
 
 impl OfferQuery {
-    /// Render the query into a single vastai search condition string.
-    /// Example: "gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24"
+    /// Render the query into a human-readable summary (used in dry-run output).
     pub fn render(&self) -> String {
         let name = self.gpu_name.replace(' ', "_");
         let mut parts = vec![
@@ -56,6 +59,18 @@ impl OfferQuery {
         }
         if let Some(up) = self.inet_up_gte {
             parts.push(format!("inet_up>={:.1}", up));
+        }
+        if let Some(down) = self.inet_down_gte {
+            parts.push(format!("inet_down>={:.1}", down));
+        }
+        if let Some(cuda) = self.cuda_gte {
+            parts.push(format!("cuda_max_good>={:.1}", cuda));
+        }
+        if let Some(rel) = self.reliability_gte {
+            parts.push(format!("reliability2>={:.2}", rel));
+        }
+        if let Some(ports) = self.direct_port_count_gte {
+            parts.push(format!("direct_port_count>={}", ports));
         }
         parts.join(" ")
     }

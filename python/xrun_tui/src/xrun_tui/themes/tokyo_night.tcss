@@ -503,14 +503,6 @@ LoadingIndicator {
     border: tall #2d3149;
 }
 
-#dash-actions {
-    height: 3;
-    padding: 0 1;
-    border-top: solid #2d3149;
-    background: #1e2030;
-    align: left middle;
-}
-
 .nav-btn {
     background: #24283b;
     color: #c0caf5;

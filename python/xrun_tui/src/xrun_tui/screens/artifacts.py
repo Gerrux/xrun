@@ -76,9 +76,10 @@ class ArtifactsScreen(Screen):
             return
 
         if not entries:
-            summary.update("[#414868]No artifacts found[/]")
+            summary.update("[#414868]Artifact listing not yet available[/]")
             table.add_row(
-                Text(""), Text("No artifacts", style="#414868"),
+                Text(""),
+                Text("xrun pull not yet implemented", style="#565f89"),
                 Text(""), Text(""), Text(""),
             )
             return

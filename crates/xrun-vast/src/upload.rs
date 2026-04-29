@@ -107,7 +107,11 @@ fn ssh_endpoint(h: &InstanceHandle) -> Result<(&str, u16), VastError> {
 /// `dst` becomes the file path. Replaces `vastai cp`, which silently no-ops on
 /// directories and was the cause of the "upload ok but instance is empty"
 /// blocker (issue.md §2).
-async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastError> {
+async fn tar_upload(
+    h: &InstanceHandle,
+    source: &DataSource,
+    timeout: Option<std::time::Duration>,
+) -> Result<(), VastError> {
     let src = source.src.as_str();
     let dst = source.dst.as_str();
     let exclude = source.exclude.as_slice();
@@ -132,13 +136,44 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
         host_arg,
     ];
 
-    // Compression: chosen as a flag on the local `tar -c` and a matching flag
-    // on the remote `tar -x`. zstd assumes both ends ship modern GNU tar with
-    // the `--zstd` shorthand — vast's default cuda images do; a stripped-down
-    // image may not. gzip is the safe fallback.
+    // Compression: local tar gets a compress flag; remote tar gets a matching
+    // decompress flag. For zstd we pre-check the remote binary exists before
+    // starting the multi-GB pipe — missing zstd gives a clear error instead of
+    // an opaque mid-stream exit code. For gzip we emit a pigz hint in the
+    // remote command so `apt-get install -y pigz` in setup immediately unlocks
+    // parallel decompression without any xrun changes.
+    if compress == DataCompress::Zstd {
+        // Check that zstd is available on the remote before committing to the
+        // pipe. One SSH round-trip here saves a confusing mid-stream failure.
+        let check = crate::transfer::ssh_exec(
+            host,
+            port,
+            "command -v zstd >/dev/null 2>&1 || { echo 'zstd not found'; exit 127; }",
+        )
+        .await;
+        if let Err(_) = check {
+            return Err(VastError::CliFailure {
+                exit_code: 127,
+                stderr: format!(
+                    "zstd binary not found on the remote instance ({}:{}). \
+                     Either set `compress: gzip` in the manifest, or add \
+                     `apt-get install -y zstd` to `run.setup`.",
+                    host, port
+                ),
+            });
+        }
+    }
+
     let (compress_flag, remote_compress_flag): (Option<&str>, Option<&str>) = match compress {
         DataCompress::None => (None, None),
-        DataCompress::Gzip => (Some("-z"), Some("-z")),
+        // Remote side: prefer pigz (parallel gzip) when installed; fall back
+        // to the standard -z flag. The $() substitution is evaluated by the
+        // remote shell — it's safe because we pass the command as a single SSH
+        // argument, not through a local shell.
+        DataCompress::Gzip => (
+            Some("-z"),
+            Some("--use-compress-program=\"$(command -v pigz 2>/dev/null || echo gzip)\""),
+        ),
         DataCompress::Zstd => (Some("--zstd"), Some("--zstd")),
     };
     let mut excl_args: Vec<String> = Vec::with_capacity(exclude.len());
@@ -218,10 +253,14 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
     };
 
     // Spawn `tar` locally with stdout piped, then `ssh` with that pipe as stdin.
+    // Both children get `kill_on_drop(true)` so a cancelled future (e.g.
+    // `tokio::time::timeout`) terminates the local processes — without this
+    // the user is left with orphan tar.exe/ssh.exe writing into a closed pipe.
     let mut tar_child = tokio::process::Command::new("tar")
         .args(&tar_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => VastError::CliFailure {
@@ -239,11 +278,12 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
         .ok_or_else(|| VastError::ParseError("could not capture tar stdout".to_string()))?;
     let stdin_for_ssh: Stdio = tar_stdout.try_into().map_err(VastError::Io)?;
 
-    let ssh_status = tokio::process::Command::new("ssh")
+    let ssh_child = tokio::process::Command::new("ssh")
         .args(&ssh_args)
         .arg(&remote_cmd)
         .stdin(stdin_for_ssh)
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => VastError::CliFailure {
@@ -253,12 +293,49 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
                     .to_string(),
             },
             _ => VastError::Io(e),
-        })?
-        .wait_with_output()
-        .await
-        .map_err(VastError::Io)?;
+        })?;
 
-    let tar_status = tar_child.wait().await.map_err(VastError::Io)?;
+    // Run upload with optional deadline. On timeout: drop both children
+    // (kill_on_drop fires), probe the destination one last time so the error
+    // can report progress + effective throughput.
+    let started = std::time::Instant::now();
+    let host_owned = host.to_string();
+    let dst_owned = dst.to_string();
+    let upload_fut = async {
+        let ssh_out = ssh_child.wait_with_output().await.map_err(VastError::Io)?;
+        let tar_out = tar_child.wait().await.map_err(VastError::Io)?;
+        Ok::<_, VastError>((ssh_out, tar_out))
+    };
+
+    let (ssh_status, tar_status) = if let Some(timeout) = timeout {
+        match tokio::time::timeout(timeout, upload_fut).await {
+            Ok(Ok((ssh_out, tar_out))) => (ssh_out, tar_out),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                // The two child handles have been dropped by the cancelled
+                // future; kill_on_drop will reap them. Best-effort probe to
+                // tell the user how much actually transferred.
+                let elapsed = started.elapsed().as_secs();
+                let transferred = du_bytes(&host_owned, port, &dst_owned).await.unwrap_or(0);
+                let mbps = if elapsed > 0 {
+                    (transferred as f64 * 8.0 / 1_000_000.0) / elapsed as f64
+                } else {
+                    0.0
+                };
+                return Err(VastError::UploadTimeout {
+                    dst: dst_owned,
+                    transferred,
+                    elapsed_secs: elapsed,
+                    mbps,
+                });
+            }
+        }
+    } else {
+        match upload_fut.await {
+            Ok(pair) => pair,
+            Err(e) => return Err(e),
+        }
+    };
 
     // When ssh dies mid-stream (sshd not ready, network drop, dst FS full),
     // tar gets EPIPE and reports its own non-zero exit. The tar exit is then
@@ -291,6 +368,20 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
         });
     }
     Ok(())
+}
+
+/// Probe `du -sb <dst>` on the remote and return its size in bytes. Returns
+/// 0 when the path doesn't exist yet (e.g. before tar has started writing).
+/// Used both for live progress reporting and for the post-mortem "how far did
+/// we get" line in `UploadTimeout`.
+async fn du_bytes(host: &str, port: u16, dst: &str) -> Result<u64, VastError> {
+    let dst_q = shell_quote(dst);
+    let cmd = format!(
+        "if [ ! -e {dst_q} ]; then echo 0; else du -sb {dst_q} 2>/dev/null | awk '{{print $1}}'; fi"
+    );
+    let raw = crate::transfer::ssh_exec(host, port, &cmd).await?;
+    let out = String::from_utf8_lossy(&raw).trim().to_string();
+    Ok(out.parse().unwrap_or(0))
 }
 
 /// Sanity-check that the upload actually delivered bytes. Hits the remote with
@@ -339,10 +430,15 @@ async fn verify_upload(h: &InstanceHandle, dst: &str) -> Result<u64, VastError> 
 
 /// Upload all data sources to the remote instance.
 /// Dispatches each source to copy, rsync, or unpack logic based on its mode/unpack fields.
+///
+/// `timeout` is applied *per source*. A 4 KB launch script and a 4 GB dataset
+/// each get their own budget — sharing one global deadline meant the script
+/// always sailed through and the dataset always blew up.
 pub(crate) async fn upload_sources(
     instance_id: InstanceId,
     h: &InstanceHandle,
     sources: &[DataSource],
+    timeout: Option<std::time::Duration>,
 ) -> Result<(), VastError> {
     // Vast.ai reports actual_status=running well before sshd inside the
     // container is reachable — TCP layer up, but `ssh root@…` either rejects
@@ -368,15 +464,47 @@ pub(crate) async fn upload_sources(
     }
 
     for source in sources {
-        match source.mode.as_ref() {
-            None | Some(DataMode::Copy) => {
-                tar_upload(h, source).await?;
-            }
+        // Live progress probe: every 30s log measured destination size and
+        // effective Mbps. Tracing-only for now; the daemon doesn't have a
+        // back-channel from upload.rs to the events table.
+        let progress_handle = if let (Some(host), Some(port)) =
+            (h.ssh_host.as_deref().map(|s| s.to_string()), h.ssh_port)
+        {
+            let dst = source.dst.clone();
+            let started = std::time::Instant::now();
+            Some(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    let bytes = du_bytes(&host, port, &dst).await.unwrap_or(0);
+                    let elapsed = started.elapsed().as_secs().max(1);
+                    let mbps = (bytes as f64 * 8.0 / 1_000_000.0) / elapsed as f64;
+                    tracing::info!(
+                        "upload progress: {} = {} bytes after {}s ({:.1} Mbps)",
+                        dst,
+                        bytes,
+                        elapsed,
+                        mbps
+                    );
+                }
+            }))
+        } else {
+            None
+        };
+
+        let result = match source.mode.as_ref() {
+            None | Some(DataMode::Copy) => tar_upload(h, source, timeout).await,
             Some(DataMode::Rsync) => {
                 which::which("rsync").map_err(|_| VastError::RsyncNotFound)?;
-                run_rsync(h, source).await?;
+                run_rsync(h, source).await
             }
+        };
+
+        if let Some(handle) = progress_handle {
+            handle.abort();
         }
+        result?;
 
         verify_upload(h, &source.dst).await?;
 

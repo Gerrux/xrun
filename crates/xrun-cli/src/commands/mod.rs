@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+pub mod balance;
 pub mod config_cmd;
 pub mod confirm;
 pub mod cp;

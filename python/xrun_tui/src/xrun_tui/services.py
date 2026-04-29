@@ -114,24 +114,9 @@ async def metrics(run_id: str, key: str | None = None) -> tuple[bool, Any, str]:
 
 
 async def list_artifacts(run_id: str, path: str = "") -> tuple[bool, list[dict], str]:
-    args = ["ls", run_id, "--json"]
-    if path:
-        args.append(path)
-    code, out, err = await _run(*args, timeout=30)
-    if not out:
-        return False, [], err.strip() or "no output"
-    try:
-        data = json.loads(out)
-        if isinstance(data, list):
-            return True, data, ""
-        if isinstance(data, dict):
-            return True, data.get("files") or data.get("entries") or [], ""
-        return True, [], ""
-    except Exception:
-        # Plain text fallback: one path per line
-        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-        entries = [{"path": ln, "type": "file"} for ln in lines]
-        return True, entries, ""
+    # xrun pull / artifact listing is not yet implemented in the CLI.
+    # Return empty so the screen shows the "not available" state rather than a clap error.
+    return True, [], ""
 
 
 async def get_logs(run_id: str, last_n: int = 500) -> str:
@@ -139,6 +124,13 @@ async def get_logs(run_id: str, last_n: int = 500) -> str:
     if not out and err:
         return f"[#f7768e]error:[/] {err}"
     lines = out.splitlines()
+    if not lines:
+        return (
+            "[#414868]No local log snapshot yet.[/]\n\n"
+            "[#565f89]Stream live output with:[/]\n"
+            f"[bold #7aa2f7]  xrun logs -f {run_id}[/]\n\n"
+            "[#414868]The poller writes a local snapshot every ~5 s once the run is running.[/]"
+        )
     if len(lines) > last_n:
         lines = [
             f"[#414868]… ({len(lines) - last_n} earlier lines omitted) …[/]",

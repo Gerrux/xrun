@@ -51,7 +51,15 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
     }
 
     let global = GlobalConfig::load(config_dir).unwrap_or_default();
-    let caps = caps_from_args_and_config(args, &global.budget);
+    let mut caps = caps_from_args_and_config(args, &global.budget);
+    // Manifest policy.on_idle_minutes wins over global config, but CLI --idle-timeout
+    // still beats both (already applied by caps_from_args_and_config when args.idle_timeout
+    // is Some). Only apply the manifest value when the CLI flag was absent.
+    if args.idle_timeout.is_none() {
+        if let Some(m) = manifest.policy.as_ref().and_then(|p| p.on_idle_minutes) {
+            caps.idle_timeout_secs = if m > 0 { Some(m as i64 * 60) } else { None };
+        }
+    }
 
     let vendor: Box<dyn VendorAdapter> = match manifest.vendor {
         Vendor::Vast => {
@@ -64,6 +72,13 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
                 global.search.exclude_countries.clone(),
             );
             adapter.set_caps(caps.clone());
+            adapter.set_upload_timeout(
+                manifest
+                    .policy
+                    .as_ref()
+                    .and_then(|p| p.upload_timeout_secs)
+                    .map(std::time::Duration::from_secs),
+            );
             Box::new(adapter)
         }
         Vendor::Kaggle => {

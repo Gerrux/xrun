@@ -26,6 +26,10 @@ async fn search_offers_returns_at_least_one_4090() {
         dph_lte: None,
         region: None,
         inet_up_gte: None,
+        inet_down_gte: None,
+        cuda_gte: None,
+        reliability_gte: None,
+        direct_port_count_gte: None,
     };
     let offers = rest::search_offers(&key, &q)
         .await

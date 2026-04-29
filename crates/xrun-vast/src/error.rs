@@ -33,6 +33,18 @@ pub enum VastError {
     #[error("rsync not found in PATH")]
     RsyncNotFound,
 
+    #[error(
+        "upload timed out for {dst} after {elapsed_secs}s — transferred {transferred} bytes \
+         (effective {mbps:.1} Mbps). Raise `policy.upload_timeout_secs` in the manifest, or pick a node \
+         with higher `vast.inet_up_min_mbps`."
+    )]
+    UploadTimeout {
+        dst: String,
+        transferred: u64,
+        elapsed_secs: u64,
+        mbps: f64,
+    },
+
     #[error("already polling this run")]
     AlreadyPolling,
 

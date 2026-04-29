@@ -33,10 +33,20 @@ pub struct VastSpec {
     pub region: Option<String>,
     pub ssh: Option<bool>,
     pub ports: Option<Vec<u16>>,
-    /// Minimum upload bandwidth (Mbps). Filters out hosts whose advertised
-    /// `inet_up` is below the threshold — critical for big data uploads where
-    /// a slow host turns 30 s into 3 min and the NAT mapping drops mid-tar.
+    /// Minimum upload bandwidth (Mbps). Filters out slow upload hosts.
     pub inet_up_min_mbps: Option<f64>,
+    /// Minimum download bandwidth (Mbps).
+    pub inet_down_min_mbps: Option<f64>,
+    /// Minimum CUDA version (e.g. 12.1). Filters hosts running older drivers.
+    pub cuda_min: Option<f64>,
+    /// Minimum reliability score (0.0–1.0). vast reports this as a fraction.
+    pub reliability_min: Option<f64>,
+    /// Minimum number of direct (non-proxied) TCP ports available.
+    pub direct_port_count_min: Option<u32>,
+    /// Geolocation region filter list (e.g. `[Europe, "North America"]`).
+    /// When set, replaces the single `region` field for multi-region matching.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -132,6 +142,12 @@ pub struct Policy {
     pub on_stage_failed: Option<String>,
     pub on_idle_minutes: Option<u32>,
     pub on_done: Option<String>,
+    /// Per-source upload timeout in seconds. When `None`, uploads have no
+    /// deadline (default since v0.3.1 — slow nodes are common). When set, each
+    /// `data:` source's tar-pipe is wrapped in `tokio::time::timeout` and the
+    /// run fails with `upload: timeout` event on expiry. Picked per-source —
+    /// a 4 KB script and a 4 GB dataset don't share one budget.
+    pub upload_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

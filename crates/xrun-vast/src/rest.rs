@@ -157,6 +157,18 @@ pub fn build_offer_search_body(query: &OfferQuery, allocated_storage_gb: f64) ->
     if let Some(up) = query.inet_up_gte {
         q.insert("inet_up".into(), json!({ "gte": up }));
     }
+    if let Some(down) = query.inet_down_gte {
+        q.insert("inet_down".into(), json!({ "gte": down }));
+    }
+    if let Some(cuda) = query.cuda_gte {
+        q.insert("cuda_max_good".into(), json!({ "gte": cuda }));
+    }
+    if let Some(rel) = query.reliability_gte {
+        q.insert("reliability2".into(), json!({ "gte": rel }));
+    }
+    if let Some(ports) = query.direct_port_count_gte {
+        q.insert("direct_port_count".into(), json!({ "gte": ports }));
+    }
 
     q.insert("type".into(), json!("on-demand"));
     q.insert("order".into(), json!([["score", "desc"]]));

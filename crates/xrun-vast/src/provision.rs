@@ -14,6 +14,10 @@ pub fn offer_query_from_manifest(vast: &VastSpec) -> OfferQuery {
         dph_lte: vast.price.as_ref().map(|p| p.max_per_hour),
         region: vast.region.clone(),
         inet_up_gte: vast.inet_up_min_mbps,
+        inet_down_gte: vast.inet_down_min_mbps,
+        cuda_gte: vast.cuda_min,
+        reliability_gte: vast.reliability_min,
+        direct_port_count_gte: vast.direct_port_count_min,
     }
 }
 

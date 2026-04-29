@@ -52,6 +52,7 @@ class XrunApp(App):
     BINDINGS = [
         Binding("question_mark", "open_help",          "Help",     priority=True),
         Binding("ctrl+p",        "open_palette",       "Palette",  priority=True),
+        Binding("ctrl+o",        "open_jump",          "Jump",     priority=True),
         Binding("n",             "open_notifications", "Notifs",   priority=True),
         Binding("g",             "chord_g",            "Go…",      priority=True),
     ]
@@ -108,6 +109,11 @@ class XrunApp(App):
         })
         return super().notify(*args, **kwargs)
 
+    # ── Header icon → open command palette ──────────────────────────────────
+
+    async def action_command_palette(self) -> None:
+        await self.action_open_palette()
+
     # ── Global actions ───────────────────────────────────────────────────────
 
     async def action_open_help(self) -> None:
@@ -115,6 +121,16 @@ class XrunApp(App):
         if isinstance(self.screen, HelpScreen):
             return
         await self.push_screen(HelpScreen())
+
+    async def action_open_jump(self) -> None:
+        from xrun_tui.widgets.jump_overlay import JumpOverlay
+        from xrun_tui.screens.palette import run_target
+
+        async def _on_pick(target: str | None) -> None:
+            if target:
+                await run_target(self, target)
+
+        await self.push_screen(JumpOverlay(), _on_pick)
 
     async def action_open_palette(self) -> None:
         from xrun_tui.screens.palette import CommandPalette, run_target

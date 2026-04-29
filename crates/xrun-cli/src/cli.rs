@@ -62,6 +62,8 @@ pub enum Commands {
     Doctor(DoctorArgs),
     /// Manage xrun configuration
     Config(ConfigArgs),
+    /// Show your vast.ai account balance
+    Balance(BalanceArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)
@@ -171,7 +173,7 @@ pub struct LogsArgs {
     /// Filter lines matching this pattern
     #[arg(long)]
     pub grep: Option<String>,
-    /// Follow log output (not supported in v0.1)
+    /// Stream remote stdout live via SSH (tail -F)
     #[arg(long, short = 'f')]
     pub follow: bool,
 }
@@ -183,7 +185,7 @@ pub struct EventsArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
-    /// Follow events (not supported in v0.1)
+    /// Follow events (not yet implemented — use `xrun logs -f` for live stdout)
     #[arg(long, short = 'f')]
     pub follow: bool,
 }
@@ -265,6 +267,13 @@ pub struct RerunArgs {
     /// Patch a run parameter (jq-style path, e.g. run.args.--lr=5e-4)
     #[arg(long)]
     pub patch: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct BalanceArgs {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args)]

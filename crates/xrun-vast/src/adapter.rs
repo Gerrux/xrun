@@ -31,6 +31,7 @@ pub struct VastAdapter {
     run_id: RefCell<Option<RunId>>,
     exclude_countries: Vec<String>,
     caps: RefCell<InstanceCaps>,
+    upload_timeout: RefCell<Option<std::time::Duration>>,
 }
 
 impl VastAdapter {
@@ -53,7 +54,15 @@ impl VastAdapter {
             run_id: RefCell::new(None),
             exclude_countries,
             caps: RefCell::new(InstanceCaps::default()),
+            upload_timeout: RefCell::new(None),
         }
+    }
+
+    /// Per-source upload deadline. `None` (default) means no timeout — we'd
+    /// rather a 4 GB upload take 30 min on a 17 Mbps node than silently abort.
+    /// Threaded from `manifest.policy.upload_timeout_secs`.
+    pub fn set_upload_timeout(&self, dur: Option<std::time::Duration>) {
+        *self.upload_timeout.borrow_mut() = dur;
     }
 
     /// Associate a run with this adapter so events/instances are linked.
@@ -255,7 +264,48 @@ impl VastAdapter {
             }
         }
 
-        upload::upload_sources(instance_id, h, sources).await?;
+        let timeout = *self.upload_timeout.borrow();
+        let result = upload::upload_sources(instance_id, h, sources, timeout).await;
+
+        if let Err(ref e) = result {
+            // Surface the cancellation cause as an event so `xrun events <id>`
+            // shows *why* the run flipped, not just `instance_destroyed: ok`.
+            let run_id_opt = self.run_id.borrow().clone();
+            let mut store = self.store.borrow_mut();
+            if let Some(ref rid) = run_id_opt {
+                let (status, msg, payload) = match e {
+                    VastError::UploadTimeout {
+                        dst,
+                        transferred,
+                        elapsed_secs,
+                        mbps,
+                    } => (
+                        "timeout".to_string(),
+                        Some(format!(
+                            "upload of {dst} timed out after {elapsed_secs}s ({transferred} bytes, {mbps:.1} Mbps)"
+                        )),
+                        Some(serde_json::json!({
+                            "dst": dst,
+                            "transferred": transferred,
+                            "elapsed_secs": elapsed_secs,
+                            "mbps": mbps,
+                        }).to_string()),
+                    ),
+                    other => ("fail".to_string(), Some(other.to_string()), None),
+                };
+                let _ = store.append_event(
+                    rid,
+                    NewEvent {
+                        ts: Utc::now(),
+                        stage: "upload".to_string(),
+                        status,
+                        msg,
+                        payload_json: payload,
+                    },
+                );
+            }
+        }
+        result?;
 
         {
             let run_id_opt = self.run_id.borrow().clone();

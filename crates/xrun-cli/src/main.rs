@@ -126,6 +126,10 @@ fn run() -> Result<()> {
             let runs_dir = args.runs_dir.clone().unwrap_or(ctx.runs_dir);
             xrun_cli::commands::poll_daemon::run(&args, &ctx.db_path, &runs_dir, &config_dir)?;
         }
+        Some(Commands::Balance(args)) => {
+            let config_dir = get_config()?;
+            xrun_cli::commands::balance::run(&args, &config_dir)?;
+        }
         Some(Commands::Tui) => {
             #[cfg(feature = "tui")]
             {

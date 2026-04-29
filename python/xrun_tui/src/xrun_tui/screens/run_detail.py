@@ -197,15 +197,25 @@ class RunDetailScreen(Screen):
                 Text(msg,   style="#c0caf5"),
             )
 
+    _TERMINAL_STATUSES = frozenset({"done", "succeeded", "failed", "cancelled"})
+    _ACTIVE_STATUSES = frozenset({"running", "provisioning", "uploading"})
+
     async def _load_logs(self) -> None:
         from xrun_tui import services
         log = self.query_one("#logs-view", RichLog)
         content = await services.get_logs(self._run_id)
-        log.clear()
-        log.write(content)
-        # Auto-scroll to bottom while run is active
-        if self._run and self._run.get("status") in ("running", "provisioning", "uploading"):
+        # Only refresh when we have actual content — an empty result (e.g.
+        # SSH is gone after the instance was destroyed) must not wipe the
+        # last snapshot that was already displayed.
+        if content:
+            log.clear()
+            log.write(content)
+        status = (self._run or {}).get("status", "")
+        if status in self._ACTIVE_STATUSES or status in self._TERMINAL_STATUSES:
             log.scroll_end(animate=False)
+        # No more live updates needed once the run has reached a terminal state
+        if status in self._TERMINAL_STATUSES:
+            self._stop_log_poll()
 
     def _start_log_poll(self) -> None:
         if self._log_timer is None:

@@ -15,6 +15,10 @@ fn search_body_includes_default_filters_and_user_query() {
         dph_lte: Some(0.5),
         region: Some("US".into()),
         inet_up_gte: None,
+        inet_down_gte: None,
+        cuda_gte: None,
+        reliability_gte: None,
+        direct_port_count_gte: None,
     };
     let body = build_offer_search_body(&q, 5.0);
 
@@ -50,6 +54,10 @@ fn search_body_normalises_underscored_gpu_name_to_spaces() {
         dph_lte: None,
         region: None,
         inet_up_gte: None,
+        inet_down_gte: None,
+        cuda_gte: None,
+        reliability_gte: None,
+        direct_port_count_gte: None,
     };
     let body = build_offer_search_body(&q, 5.0);
     assert_eq!(body["gpu_name"]["eq"], Value::String("RTX 4090".into()));
@@ -64,6 +72,10 @@ fn search_body_omits_optional_filters_when_unset() {
         dph_lte: None,
         region: None,
         inet_up_gte: None,
+        inet_down_gte: None,
+        cuda_gte: None,
+        reliability_gte: None,
+        direct_port_count_gte: None,
     };
     let body = build_offer_search_body(&q, 5.0);
     assert!(body.get("gpu_ram").is_none());

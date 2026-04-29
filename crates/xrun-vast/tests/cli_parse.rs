@@ -67,6 +67,10 @@ fn offer_query_renders_correctly() {
         dph_lte: None,
         region: None,
         inet_up_gte: None,
+        inet_down_gte: None,
+        cuda_gte: None,
+        reliability_gte: None,
+        direct_port_count_gte: None,
     };
     assert_eq!(query.render(), "gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24");
 }
@@ -80,6 +84,10 @@ fn offer_query_renders_with_all_fields() {
         dph_lte: Some(2.5),
         region: Some("us-east".to_string()),
         inet_up_gte: None,
+        inet_down_gte: None,
+        cuda_gte: None,
+        reliability_gte: None,
+        direct_port_count_gte: None,
     };
     let rendered = query.render();
     assert!(rendered.contains("gpu_name=A100_SXM4"));
