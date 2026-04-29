@@ -112,6 +112,16 @@ pub struct LaunchArgs {
     /// staging data on a long-lived instance that you'll resume later.
     #[arg(long)]
     pub upload_only: bool,
+    /// Override a manifest run-arg without editing YAML, e.g.
+    /// `--override run.args.--lr=5e-4`. Repeatable. Same syntax as
+    /// `xrun rerun --patch`.
+    #[arg(long = "override", value_name = "PATH=VALUE")]
+    pub overrides: Vec<String>,
+    /// Print every external command we shell out to (vastai, ssh, tar, ...)
+    /// before running it. Use when something fails opaquely and you need to
+    /// see the exact invocation.
+    #[arg(long)]
+    pub trace: bool,
 }
 
 #[derive(Args)]
@@ -256,4 +266,8 @@ pub struct DoctorArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+    /// Validate one or more manifest files (parse + schema check, no network).
+    /// Failures here are fatal exit 1 even with --json.
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifests: Vec<PathBuf>,
 }

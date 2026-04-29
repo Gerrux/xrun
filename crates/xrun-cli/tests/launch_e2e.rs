@@ -20,6 +20,10 @@ fn make_args(manifest_path: PathBuf) -> LaunchArgs {
         max_hours: None,
         idle_timeout: None,
         yes: false,
+        reuse_instance: None,
+        upload_only: false,
+        overrides: Vec::new(),
+        trace: false,
     }
 }
 

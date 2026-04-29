@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use xrun_core::Store;
+use xrun_core::{manifest::Manifest, Store};
 
 use crate::cli::DoctorArgs;
 
@@ -90,6 +90,24 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
             "not found in PATH (only needed for data.mode: rsync)".to_string()
         },
     });
+
+    // Manifest validation (--manifest path), one check per file. Fatal on
+    // failure since the user explicitly asked us to validate.
+    for path in &args.manifests {
+        let (ok, detail) = match std::fs::read_to_string(path) {
+            Ok(yaml) => match Manifest::from_yaml_str(&yaml) {
+                Ok(m) => (true, format!("{} (vendor={:?})", path.display(), m.vendor)),
+                Err(e) => (false, format!("{}: {e}", path.display())),
+            },
+            Err(e) => (false, format!("{}: read failed: {e}", path.display())),
+        };
+        checks.push(Check {
+            name: "manifest",
+            ok,
+            warn_only: false,
+            detail,
+        });
+    }
 
     // python3 xrun_hook: installed on training instance; optional locally
     let hook_ok = check_python_hook();

@@ -17,6 +17,7 @@ use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
 use crate::commands::confirm::{confirm_billable_or_exit, ConfirmEstimate};
+use crate::commands::patch;
 
 /// Resolve `vast.api_key` from xrun's config, falling back to the legacy
 /// `~/.config/vastai/vast_api_key` file. Returns `None` if neither is set —
@@ -47,6 +48,11 @@ pub fn run(
 
     let manifest =
         Manifest::from_yaml_str(&content).with_context(|| "manifest validation failed")?;
+    let manifest = patch::apply(&manifest, &args.overrides)?;
+
+    if args.trace {
+        std::env::set_var("XRUN_TRACE", "1");
+    }
 
     let global = GlobalConfig::load(config_dir).unwrap_or_default();
     let caps = caps_from_args_and_config(args, &global.budget);
@@ -218,8 +224,13 @@ fn do_launch_with_budget(
     let run_dir = runs_dir.join(run_id.to_string());
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("failed to create run dir: {}", run_dir.display()))?;
-    std::fs::copy(&args.manifest, run_dir.join("manifest.yaml"))
-        .context("failed to copy manifest")?;
+    // Write the (possibly patched) in-memory manifest so reruns and post-mortem
+    // tooling see the values that actually ran, not the on-disk source. When
+    // there were no overrides this round-trip is a no-op modulo whitespace.
+    let yaml = serde_yaml::to_string(manifest)
+        .unwrap_or_else(|_| std::fs::read_to_string(&args.manifest).unwrap_or_default());
+    std::fs::write(run_dir.join("manifest.yaml"), yaml)
+        .context("failed to write manifest copy in run dir")?;
 
     eprintln!("Created run {run_id}");
 

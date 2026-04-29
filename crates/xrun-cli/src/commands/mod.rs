@@ -10,6 +10,7 @@ pub mod launch;
 pub mod logs;
 pub mod ls;
 pub mod metrics_cmd;
+pub mod patch;
 pub mod poll_daemon;
 pub mod pull;
 pub mod rerun;

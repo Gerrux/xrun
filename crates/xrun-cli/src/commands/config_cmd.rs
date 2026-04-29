@@ -23,6 +23,11 @@ pub enum ConfigCommand {
         /// Emit machine-readable JSON instead of TOML.
         #[arg(long)]
         json: bool,
+        /// Reveal the last 6 characters of each set credential (helps confirm
+        /// you are using the key you think you are without printing the whole
+        /// thing).
+        #[arg(long)]
+        secrets: bool,
     },
     /// Set a configuration value by dotted key
     Set {
@@ -36,7 +41,7 @@ pub enum ConfigCommand {
 pub fn run(args: &ConfigArgs, config_dir: &Path) -> Result<()> {
     match &args.command {
         ConfigCommand::Init => cmd_init(config_dir),
-        ConfigCommand::Show { json } => cmd_show(config_dir, *json),
+        ConfigCommand::Show { json, secrets } => cmd_show(config_dir, *json, *secrets),
         ConfigCommand::Set { key, value } => cmd_set(config_dir, key, value),
     }
 }
@@ -51,7 +56,7 @@ fn cmd_init(config_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_show(config_dir: &Path, json: bool) -> Result<()> {
+fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
     let cfg = GlobalConfig::load(config_dir)?;
     let creds = Credentials::load(config_dir)?;
     if json {
@@ -66,46 +71,52 @@ fn cmd_show(config_dir: &Path, json: bool) -> Result<()> {
                     "mlflow.token": creds.mlflow.token.is_some(),
                 }),
             );
+            if secrets {
+                map.insert(
+                    "_credentials_tail".into(),
+                    serde_json::json!({
+                        "vast.api_key": creds.vast.api_key.as_deref().map(tail6),
+                        "kaggle.username": creds.kaggle.username.as_deref().map(tail6),
+                        "kaggle.key": creds.kaggle.key.as_deref().map(tail6),
+                        "mlflow.token": creds.mlflow.token.as_deref().map(tail6),
+                    }),
+                );
+            }
         }
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
     println!("# config.toml");
     print!("{}", toml::to_string_pretty(&cfg)?);
-    println!("# credentials (showing which keys are set)");
-    println!(
-        "vast.api_key: {}",
-        if creds.vast.api_key.is_some() {
-            "<set>"
-        } else {
-            "<unset>"
-        }
+    println!("# credentials");
+    print_cred("vast.api_key", creds.vast.api_key.as_deref(), secrets);
+    print_cred(
+        "kaggle.username",
+        creds.kaggle.username.as_deref(),
+        secrets,
     );
-    println!(
-        "kaggle.username: {}",
-        if creds.kaggle.username.is_some() {
-            "<set>"
-        } else {
-            "<unset>"
-        }
-    );
-    println!(
-        "kaggle.key: {}",
-        if creds.kaggle.key.is_some() {
-            "<set>"
-        } else {
-            "<unset>"
-        }
-    );
-    println!(
-        "mlflow.token: {}",
-        if creds.mlflow.token.is_some() {
-            "<set>"
-        } else {
-            "<unset>"
-        }
-    );
+    print_cred("kaggle.key", creds.kaggle.key.as_deref(), secrets);
+    print_cred("mlflow.token", creds.mlflow.token.as_deref(), secrets);
     Ok(())
+}
+
+fn print_cred(key: &str, value: Option<&str>, secrets: bool) {
+    match (value, secrets) {
+        (Some(v), true) => println!("{key}: <set ...{}>", tail6(v)),
+        (Some(_), false) => println!("{key}: <set>"),
+        (None, _) => println!("{key}: <unset>"),
+    }
+}
+
+/// Last 6 characters of a credential. Used to confirm you're shipping the key
+/// you think you are without leaking the whole secret to the terminal.
+fn tail6(s: &str) -> String {
+    let n = s.chars().count();
+    if n <= 6 {
+        "*".repeat(n)
+    } else {
+        s.chars().skip(n - 6).collect()
+    }
 }
 
 fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
