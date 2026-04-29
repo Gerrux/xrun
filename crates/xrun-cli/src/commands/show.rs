@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use xrun_core::{RunId, Store};
+use xrun_core::{vendor::InstanceHandle, RunId, Store};
 
 use crate::cli::ShowArgs;
 
@@ -26,11 +26,31 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
         .list_metric_keys(&id)
         .context("failed to list metric keys")?;
 
+    // Pull ssh_host/port from the instance handle persisted at provision time.
+    // Active runs hit this constantly during debugging — without it every
+    // `vastai ssh` command starts with a `xrun show | grep ssh` round-trip.
+    let ssh = run
+        .instance_id
+        .as_deref()
+        .and_then(|iid| store.get_instance(iid).ok().flatten())
+        .and_then(|inst| inst.state_json)
+        .and_then(|s| serde_json::from_str::<InstanceHandle>(&s).ok())
+        .and_then(|h| match (h.ssh_host, h.ssh_port) {
+            (Some(host), Some(port)) if !host.is_empty() => {
+                Some((host, port, h.ssh_user))
+            }
+            _ => None,
+        });
+
     if args.json {
+        let ssh_json = ssh.as_ref().map(|(h, p, u)| serde_json::json!({
+            "host": h, "port": p, "user": u, "command": format!("ssh -p {p} {u}@{h}")
+        }));
         let out = serde_json::json!({
             "run": run,
             "events": events,
             "metric_keys": metric_keys.iter().map(|(k, c)| serde_json::json!({"key": k, "count": c})).collect::<Vec<_>>(),
+            "ssh": ssh_json,
         });
         println!("{out}");
     } else {
@@ -62,6 +82,10 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
                 .map(|c| format!("${c:.4}"))
                 .unwrap_or_else(|| "-".to_string())
         );
+        if let Some((host, port, user)) = &ssh {
+            println!("  ssh:           {user}@{host}:{port}");
+            println!("  ssh_command:   ssh -p {port} {user}@{host}");
+        }
         println!();
         let run_dir = runs_dir.join(run.id.to_string());
         println!("  run_dir: {}", run_dir.display());
