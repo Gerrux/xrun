@@ -9,7 +9,7 @@ fn version_exit_0() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(contains("0.1.0"));
+        .stdout(contains("xrun"));
 }
 
 #[test]

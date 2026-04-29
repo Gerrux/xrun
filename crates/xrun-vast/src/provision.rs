@@ -44,8 +44,12 @@ pub fn filter_excluded_countries(offers: Vec<Offer>, exclude: &[String]) -> Vec<
     offers
         .into_iter()
         .filter(|o| {
-            let Some(geo) = &o.geolocation else { return true };
-            let Some(found) = extract_iso_alpha2(geo) else { return true };
+            let Some(geo) = &o.geolocation else {
+                return true;
+            };
+            let Some(found) = extract_iso_alpha2(geo) else {
+                return true;
+            };
             !codes.iter().any(|code| code.as_str() == found.as_str())
         })
         .collect()

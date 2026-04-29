@@ -76,14 +76,12 @@ pub fn evaluate_caps(inst: &Instance, now: DateTime<Utc>) -> Option<DestroyReaso
 /// Total spend on a UTC date: completed runs (`runs.cost_usd_estimate`) +
 /// live accrual on instances created that day. Live accrual is computed at
 /// `now` so the dashboard shows "today so far" without waiting for a tick.
-pub fn daily_spend(
-    store: &Store,
-    day: NaiveDate,
-    now: DateTime<Utc>,
-) -> Result<f64, StoreError> {
+pub fn daily_spend(store: &Store, day: NaiveDate, now: DateTime<Utc>) -> Result<f64, StoreError> {
     let mut total = store.sum_run_cost_for_date(day)?;
     for inst in store.list_instances()? {
-        let Some(created) = inst.created_at else { continue };
+        let Some(created) = inst.created_at else {
+            continue;
+        };
         if created.date_naive() != day {
             continue;
         }
@@ -101,10 +99,7 @@ pub fn daily_spend(
 /// "Burn" card and by the runway calculation in the status bar.
 pub fn active_hourly_burn(store: &Store) -> Result<f64, StoreError> {
     let active = store.list_active_instances()?;
-    Ok(active
-        .iter()
-        .filter_map(|i| i.price_per_hour)
-        .sum())
+    Ok(active.iter().filter_map(|i| i.price_per_hour).sum())
 }
 
 /// Pure-slice variant of `active_hourly_burn`. The TUI keeps the instance list
@@ -263,8 +258,7 @@ mod tests {
     fn cap_idle_uses_last_active() {
         let mut inst = make_instance();
         inst.idle_timeout_secs = Some(600);
-        inst.last_active_at =
-            Some(inst.created_at.unwrap() + chrono::Duration::minutes(5));
+        inst.last_active_at = Some(inst.created_at.unwrap() + chrono::Duration::minutes(5));
         let now = inst.last_active_at.unwrap() + chrono::Duration::minutes(11);
         assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::IdleTimeout));
     }

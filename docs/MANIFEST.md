@@ -119,14 +119,80 @@ mlflow:
 | `mlflow` | object | нет | Если отсутствует — метрики только в SQLite |
 | `policy` | object | нет | Поведение при ошибках/idle |
 
+### `vast`
+
+| Поле | Описание |
+|------|----------|
+| `image` | Docker image |
+| `gpu.type` | GPU модель (e.g. `RTX 4090`) |
+| `gpu.count` | Количество GPU (default 1) |
+| `gpu.vram_min_gb` | Минимальный VRAM |
+| `disk_gb` | Размер диска на инстансе |
+| `price.max_per_hour` | Максимальная цена ($/hr) |
+| `inet_up_min_mbps` | Минимальный аплинк (Mbps) — критично для больших данных |
+| `inet_down_min_mbps` | Минимальный даунлинк (Mbps) |
+| `cuda_min` | Минимальная версия CUDA (e.g. `12.1`) |
+| `reliability_min` | Минимальный reliability score (`0.0`–`1.0`) |
+| `direct_port_count_min` | Минимум прямых TCP-портов |
+| `regions` | Список регионов: `[Europe, "North America"]` |
+
+#### Тихие дефолтные фильтры
+
+Каждый поиск автоматически добавляет следующие фильтры (переопределить нельзя через манифест):
+
+| Фильтр | Значение | Причина |
+|--------|----------|---------|
+| `verified` | `true` | Только верифицированные хосты |
+| `rentable` | `true` | Только реально арендуемые |
+| `external` | `false` | Не внешние (иные провайдеры через vast) |
+| `rented` | `false` | Только свободные |
+| `type` | `on-demand` | Не spot/bid |
+| `order` | `score-desc` | Сортировка по vast score |
+
+Если вы получаете «no offers available», попробуйте ослабить `price.max_per_hour` или убрать `gpu.type`.
+
+### `kaggle`
+
+| Поле | Описание |
+|------|----------|
+| `kernel_slug` | `<username>/<slug>` (обязательно) |
+| `competition` | Название соревнования (или `null`) |
+| `dataset` | Attached dataset slug (`user/ds`) |
+| `enable_gpu` | `true` / `false` |
+| `enable_internet` | `false` для большинства соревнований |
+
+#### Kaggle constraints
+
+- `enable_internet=false` → нельзя `pip install` на ходу. xrun автоматически кладёт `xrun_hook` wheel в staging и инжектит `sys.path` — ничего настраивать не нужно.
+- `run.notebook` указывает `.ipynb`; первая ячейка должна содержать `import xrun_hook` (или xrun добавит её автоматически через nbformat).
+- `kernel_slug` обязан быть в формате `<username>/<slug>` — `push` упадёт иначе.
+- Live-tail недоступен (нет SSH на Kaggle). Метрики и события восстанавливаются после завершения через `ingest` (парсинг `events.jsonl` / `metrics.jsonl` из output).
+
 ### `data[]`
 
 | Поле | Описание |
 |------|----------|
 | `src` | Локальный путь (файл или директория) |
 | `dst` | Путь на инстансе |
-| `mode` | `copy` (default) \| `rsync` |
+| `mode` | `copy` (default, tar-pipe) \| `rsync` |
+| `compress` | `gzip` (default) \| `zstd` — сжатие при tar-pipe; zstd быстрее, gzip универсальнее |
+| `exclude` | Список glob-паттернов для исключения (tar `--exclude` семантика) |
 | `unpack` | `{ format: tar\|zip\|tar.gz, into: <path> }` после копирования |
+
+#### `exclude` паттерны — важно
+
+Паттерны матчатся против **относительного пути** от `src`, без implicit prefix wildcard.
+
+```yaml
+exclude:
+  - "**/__pycache__"   # любой уровень вложенности
+  - "*.pyc"            # в любой директории
+  - "_cache_*"         # ДОЛЖЕН включать ведущий символ если он есть
+  - "output/**"        # поддерево под src
+  - ".git"             # скрытые директории
+```
+
+Ошибка: `cache_*/` не матчит `_cache_model/` — нужно `_cache_*/`.
 
 ### `run`
 

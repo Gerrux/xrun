@@ -90,8 +90,8 @@ async fn run_vastai_inner(args: Vec<String>) -> Result<Vec<u8>, VastError> {
     // owner: Extra inputs are not permitted"). Some versions write to stdout,
     // others to stderr — check both. Surface as CliFailure so callers don't
     // try to parse the message as JSON.
-    if let Some(msg) = detect_inline_error(&output.stdout)
-        .or_else(|| detect_inline_error(&output.stderr))
+    if let Some(msg) =
+        detect_inline_error(&output.stdout).or_else(|| detect_inline_error(&output.stderr))
     {
         return Err(VastError::CliFailure {
             exit_code: 0,

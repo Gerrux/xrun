@@ -1,0 +1,3 @@
+{"ts":"2024-01-01T12:00:01.000Z","stage":"train.start","status":"start","msg":"Training started"}
+{"ts":"2024-01-01T12:00:10.000Z","stage":"train.epoch","status":"ok","msg":"Epoch 1 complete"}
+{"ts":"2024-01-01T12:00:42.000Z","stage":"done","status":"ok","msg":"Training complete"}

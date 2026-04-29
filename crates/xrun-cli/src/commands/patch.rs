@@ -29,9 +29,8 @@ pub fn apply(manifest: &Manifest, overrides: &[String]) -> Result<Manifest> {
         set_path(&mut value, path, parsed)
             .with_context(|| format!("failed to apply override {raw}"))?;
     }
-    serde_json::from_value(value).context(
-        "patched manifest no longer validates — check the override paths and value types",
-    )
+    serde_json::from_value(value)
+        .context("patched manifest no longer validates — check the override paths and value types")
 }
 
 /// Try JSON first (so `5e-4`, `true`, `[1,2]`, `null` round-trip as their

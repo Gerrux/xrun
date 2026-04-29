@@ -85,9 +85,10 @@ pub(crate) async fn run_rsync(h: &InstanceHandle, source: &DataSource) -> Result
 }
 
 fn ssh_endpoint(h: &InstanceHandle) -> Result<(&str, u16), VastError> {
-    let host = h.ssh_host.as_deref().ok_or_else(|| {
-        VastError::ParseError(format!("instance {} has no ssh_host", h.id))
-    })?;
+    let host = h
+        .ssh_host
+        .as_deref()
+        .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_host", h.id)))?;
     let port = h
         .ssh_port
         .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_port", h.id)))?;
@@ -114,9 +115,8 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
     let (host, port) = ssh_endpoint(h)?;
 
     let src_path = Path::new(src);
-    let metadata = std::fs::metadata(src_path).map_err(|e| {
-        VastError::ParseError(format!("local source {} unreadable: {}", src, e))
-    })?;
+    let metadata = std::fs::metadata(src_path)
+        .map_err(|e| VastError::ParseError(format!("local source {} unreadable: {}", src, e)))?;
 
     let port_str = port.to_string();
     let host_arg = format!("root@{}", host);
@@ -163,7 +163,9 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
         args.extend(excl_args.iter().cloned());
         args.push(".".to_string());
 
-        let rcompress = remote_compress_flag.map(|f| format!("{f} ")).unwrap_or_default();
+        let rcompress = remote_compress_flag
+            .map(|f| format!("{f} "))
+            .unwrap_or_default();
         let cmd = format!("mkdir -p {dst_q} && tar {rcompress}-xf - -C {dst_q}");
         (args, cmd)
     } else {
@@ -176,9 +178,7 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
             .unwrap_or_else(|| ".".to_string());
         let basename = src_path
             .file_name()
-            .ok_or_else(|| {
-                VastError::ParseError(format!("source path has no file name: {}", src))
-            })?
+            .ok_or_else(|| VastError::ParseError(format!("source path has no file name: {}", src)))?
             .to_string_lossy()
             .to_string();
 
@@ -196,7 +196,9 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
         let basename_q = shell_quote(&basename);
         let dst_basename_q = shell_quote(&dst_basename);
 
-        let rcompress = remote_compress_flag.map(|f| format!("{f} ")).unwrap_or_default();
+        let rcompress = remote_compress_flag
+            .map(|f| format!("{f} "))
+            .unwrap_or_default();
         let cmd = if basename == dst_basename {
             format!("mkdir -p {dst_parent_q} && tar {rcompress}-xf - -C {dst_parent_q}")
         } else {
@@ -263,7 +265,9 @@ async fn tar_upload(h: &InstanceHandle, source: &DataSource) -> Result<(), VastE
     // the *symptom*, not the root cause — the user needs to see ssh's stderr
     // to diagnose. So: report ssh first, even if tar also failed.
     if !ssh_status.status.success() {
-        let stderr = String::from_utf8_lossy(&ssh_status.stderr).trim().to_string();
+        let stderr = String::from_utf8_lossy(&ssh_status.stderr)
+            .trim()
+            .to_string();
         return Err(VastError::CliFailure {
             exit_code: ssh_status.status.code().unwrap_or(-1),
             stderr: format!(
@@ -313,10 +317,12 @@ async fn verify_upload(h: &InstanceHandle, dst: &str) -> Result<u64, VastError> 
             ),
         });
     }
-    let bytes: u64 = out.parse().map_err(|_| VastError::ParseError(format!(
-        "upload verification: unexpected `du -sb` output for {}: {:?}",
-        dst, out
-    )))?;
+    let bytes: u64 = out.parse().map_err(|_| {
+        VastError::ParseError(format!(
+            "upload verification: unexpected `du -sb` output for {}: {:?}",
+            dst, out
+        ))
+    })?;
     if bytes == 0 {
         return Err(VastError::CliFailure {
             exit_code: 0,

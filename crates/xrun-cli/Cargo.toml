@@ -19,7 +19,10 @@ tui = ["dep:xrun-tui"]
 [dependencies]
 xrun-core = { path = "../xrun-core" }
 xrun-vast = { path = "../xrun-vast" }
+xrun-kaggle = { path = "../xrun-kaggle" }
+xrun-mlflow = { path = "../xrun-mlflow" }
 xrun-poller = { path = "../xrun-poller" }
+plotters = { workspace = true }
 xrun-tui = { path = "../xrun-tui", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

@@ -36,16 +36,16 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
         .and_then(|inst| inst.state_json)
         .and_then(|s| serde_json::from_str::<InstanceHandle>(&s).ok())
         .and_then(|h| match (h.ssh_host, h.ssh_port) {
-            (Some(host), Some(port)) if !host.is_empty() => {
-                Some((host, port, h.ssh_user))
-            }
+            (Some(host), Some(port)) if !host.is_empty() => Some((host, port, h.ssh_user)),
             _ => None,
         });
 
     if args.json {
-        let ssh_json = ssh.as_ref().map(|(h, p, u)| serde_json::json!({
-            "host": h, "port": p, "user": u, "command": format!("ssh -p {p} {u}@{h}")
-        }));
+        let ssh_json = ssh.as_ref().map(|(h, p, u)| {
+            serde_json::json!({
+                "host": h, "port": p, "user": u, "command": format!("ssh -p {p} {u}@{h}")
+            })
+        });
         let out = serde_json::json!({
             "run": run,
             "events": events,

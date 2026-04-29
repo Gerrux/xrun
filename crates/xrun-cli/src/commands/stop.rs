@@ -56,12 +56,7 @@ pub fn run(args: &StopArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn stop_all(
-    store: Store,
-    config_dir: &Path,
-    keep_instance: bool,
-    db_path: &Path,
-) -> Result<()> {
+fn stop_all(store: Store, config_dir: &Path, keep_instance: bool, db_path: &Path) -> Result<()> {
     let active = store.list_active_runs()?;
     if active.is_empty() {
         println!("no active runs");
@@ -107,9 +102,9 @@ fn stop_one(
                         let creds = resolve_vast_credentials(config_dir);
                         let adapter = build_adapter(&handle.vendor, creds, adapter_store)?;
                         adapter.set_run_id(&run.id);
-                        adapter
-                            .destroy(&handle)
-                            .with_context(|| format!("destroy failed for instance {}", handle.id))?;
+                        adapter.destroy(&handle).with_context(|| {
+                            format!("destroy failed for instance {}", handle.id)
+                        })?;
                     } else {
                         store.update_instance_destroyed(instance_id, Utc::now())?;
                     }

@@ -95,9 +95,9 @@ pub(crate) async fn launch_run(
             handle.id
         ))
     })?;
-    let port = handle.ssh_port.ok_or_else(|| {
-        VastError::ParseError(format!("instance {} has no ssh_port", handle.id))
-    })?;
+    let port = handle
+        .ssh_port
+        .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_port", handle.id)))?;
 
     // Cheap readiness re-check: when there were no data sources, upload was
     // skipped and this is the first SSH round-trip after provision. Same

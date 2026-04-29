@@ -247,11 +247,7 @@ pub async fn create_instance_at(
     disk_gb: u32,
     ssh: bool,
 ) -> Result<u64, VastError> {
-    let url = format!(
-        "{}/asks/{}/",
-        base_url.trim_end_matches('/'),
-        offer_id
-    );
+    let url = format!("{}/asks/{}/", base_url.trim_end_matches('/'), offer_id);
     let body = json!({
         "client_id": "me",
         "image": image,
@@ -288,7 +284,12 @@ pub async fn create_instance_at(
     if !status.is_success() {
         return Err(VastError::CliFailure {
             exit_code: status.as_u16() as i32,
-            stderr: format!("REST PUT /asks/{}/ → {}: {}", offer_id, status.as_u16(), text),
+            stderr: format!(
+                "REST PUT /asks/{}/ → {}: {}",
+                offer_id,
+                status.as_u16(),
+                text
+            ),
         });
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| {
@@ -325,11 +326,7 @@ pub async fn destroy_instance(api_key: &str, id: u64) -> Result<(), VastError> {
     destroy_instance_at(DEFAULT_BASE_URL, api_key, id).await
 }
 
-pub async fn destroy_instance_at(
-    base_url: &str,
-    api_key: &str,
-    id: u64,
-) -> Result<(), VastError> {
+pub async fn destroy_instance_at(base_url: &str, api_key: &str, id: u64) -> Result<(), VastError> {
     let url = format!("{}/instances/{}/", base_url.trim_end_matches('/'), id);
     let resp = client()?
         .delete(&url)
@@ -353,7 +350,12 @@ pub async fn destroy_instance_at(
         }
         return Err(VastError::CliFailure {
             exit_code: status.as_u16() as i32,
-            stderr: format!("REST DELETE /instances/{}/ → {}: {}", id, status.as_u16(), body),
+            stderr: format!(
+                "REST DELETE /instances/{}/ → {}: {}",
+                id,
+                status.as_u16(),
+                body
+            ),
         });
     }
     Ok(())
@@ -385,7 +387,12 @@ pub async fn show_instance_at(
     if !status.is_success() {
         return Err(VastError::CliFailure {
             exit_code: status.as_u16() as i32,
-            stderr: format!("REST GET /instances/{}/ → {}: {}", id, status.as_u16(), text),
+            stderr: format!(
+                "REST GET /instances/{}/ → {}: {}",
+                id,
+                status.as_u16(),
+                text
+            ),
         });
     }
     // The /instances/{id}/ endpoint returns either `{"instances": <row>}` or a
@@ -397,7 +404,11 @@ pub async fn show_instance_at(
         Bare(RemoteInstance),
     }
     let parsed: SingleResp = serde_json::from_str(&text).map_err(|e| {
-        VastError::ParseError(format!("decode show_instance ({}) — body: {}", e, preview(&text)))
+        VastError::ParseError(format!(
+            "decode show_instance ({}) — body: {}",
+            e,
+            preview(&text)
+        ))
     })?;
     Ok(match parsed {
         SingleResp::Wrapped { instances } => instances,
