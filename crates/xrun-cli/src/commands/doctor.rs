@@ -272,8 +272,8 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         .collect::<String>();
     let actual_suffix = kaggle_spec
         .kernel_slug
-        .split('/')
-        .next_back()
+        .rsplit('/')
+        .next()
         .unwrap_or(&kaggle_spec.kernel_slug);
     let slug_ok = actual_suffix == expected_slug_suffix;
     checks.push(Check {
