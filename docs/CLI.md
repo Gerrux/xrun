@@ -80,9 +80,9 @@ stdout/stderr.
 ```
 
 ### `xrun tui`
-Открывает интерактивный TUI (ratatui). `xrun` без аргументов делает то же самое, если stdout — TTY; в противном случае выводит help и завершается с кодом 0.
+Открывает Python Textual TUI (`xrun-tui`). `xrun` без аргументов делает то же самое, если stdout — TTY; в противном случае выводит help и завершается с кодом 0.
 
-Экраны: Runs (главный), Run detail (Stages/Logs/Manifest), Launch picker, Instances, Settings. Live-обновления через канал поллера. Биндинги: `?` help, `:` command palette, `q`/`Esc` — назад/выход.
+Требует: `pip install -e python/xrun_tui`. Экраны: Dashboard, Runs, Run detail (Stages/Logs/Metrics/Manifest), Instances, Vendors, Launch, Artifacts, Settings, Doctor. Chord-навигация: `g→r`, `g→v`, `g→s` и др. Биндинги: `?` help, `:` command palette, `q`/`Esc` — назад/выход.
 
 ### `xrun doctor`
 Проверки: креды есть, vastai/kaggle CLI работают, MLflow server поднят, диск, сеть.
