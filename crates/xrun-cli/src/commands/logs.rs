@@ -15,7 +15,7 @@ pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
         .with_context(|| format!("invalid run ID: {}", args.id))?;
 
     if args.follow {
-        return follow_remote(&id, db_path, args.grep.as_deref());
+        return follow_logs(&id, db_path, runs_dir, args.grep.as_deref());
     }
 
     let log_path = runs_dir.join(id.to_string()).join("stdout.log");
@@ -41,21 +41,62 @@ pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `xrun logs -f <id>` streams the live stdout from the running instance over
-/// ssh. Doesn't go through the poller — the poller already snapshots the tail
-/// every few seconds, but for an active debug session a 0-latency stream is
-/// what you actually want.
-fn follow_remote(id: &RunId, db_path: &Path, grep: Option<&str>) -> Result<()> {
+/// Dispatch `xrun logs --follow` to either SSH streaming (vast) or local file
+/// reading (kaggle, which has no live log streaming).
+fn follow_logs(id: &RunId, db_path: &Path, runs_dir: &Path, grep: Option<&str>) -> Result<()> {
     let store = Store::open(db_path)
         .with_context(|| format!("failed to open store at {}", db_path.display()))?;
     let run = store
         .get_run(id)?
         .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
+
+    if run.vendor == "kaggle" {
+        // §1: Kaggle has no live streaming — show the locally pulled log file.
+        let log_path = runs_dir.join(id.to_string()).join("stdout.log");
+        if log_path.exists() {
+            let content = std::fs::read_to_string(&log_path)
+                .with_context(|| format!("failed to read log: {}", log_path.display()))?;
+            match grep {
+                Some(pattern) => {
+                    for line in content.lines() {
+                        if line.contains(pattern) {
+                            println!("{line}");
+                        }
+                    }
+                }
+                None => print!("{content}"),
+            }
+        } else {
+            eprintln!(
+                "No log available yet for Kaggle run {id}.\n\
+                 Live streaming is not supported. Run `xrun pull {id}` after the \
+                 kernel completes to download the output."
+            );
+        }
+        return Ok(());
+    }
+
+    follow_remote(id, &run, db_path, grep)
+}
+
+/// `xrun logs -f <id>` streams the live stdout from the running instance over
+/// ssh. Doesn't go through the poller — the poller already snapshots the tail
+/// every few seconds, but for an active debug session a 0-latency stream is
+/// what you actually want.
+fn follow_remote(
+    id: &RunId,
+    run: &xrun_core::Run,
+    db_path: &Path,
+    grep: Option<&str>,
+) -> Result<()> {
     let instance_id = run
         .instance_id
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("run {id} has no instance yet"))?;
+    let store = Store::open(db_path)
+        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
     let inst = store
-        .get_instance(&instance_id)?
+        .get_instance(instance_id)?
         .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?;
     let state_json = inst
         .state_json

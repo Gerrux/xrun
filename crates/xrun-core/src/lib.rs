@@ -23,4 +23,7 @@ pub use store::{
     Instance, InstanceCaps, ListFilter, Run, RunId, RunStatus, Store, StoredEvent, StoredMetric,
 };
 pub use updates::DataUpdate;
-pub use vendor::{DryRunPlan, InstanceHandle, VendorAdapter, VendorRemoteInstance, VendorStatus};
+pub use vendor::{
+    DryRunPlan, InstanceHandle, PollCompletion, SyntheticEvent, VendorAdapter, VendorRemoteInstance,
+    VendorStatus,
+};

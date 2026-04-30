@@ -25,21 +25,23 @@ pub struct KernelMetadata {
 impl KernelMetadata {
     pub fn new_script(
         slug: &str,
-        title: &str,
+        _title: &str,
         code_file: &str,
         enable_gpu: bool,
         enable_internet: bool,
+        dataset_sources: Vec<String>,
     ) -> Self {
+        let kernel_name = slug.split('/').last().unwrap_or(slug);
         Self {
             id: slug.to_string(),
-            title: title.to_string(),
+            title: kernel_name.to_string(),
             code_file: code_file.to_string(),
             language: "python".to_string(),
             kernel_type: "script".to_string(),
             is_private: true,
             enable_gpu,
             enable_internet,
-            dataset_sources: vec![],
+            dataset_sources,
             competition_sources: vec![],
             kernel_sources: vec![],
         }
@@ -47,21 +49,23 @@ impl KernelMetadata {
 
     pub fn new_notebook(
         slug: &str,
-        title: &str,
+        _title: &str,
         code_file: &str,
         enable_gpu: bool,
         enable_internet: bool,
+        dataset_sources: Vec<String>,
     ) -> Self {
+        let kernel_name = slug.split('/').last().unwrap_or(slug);
         Self {
             id: slug.to_string(),
-            title: title.to_string(),
+            title: kernel_name.to_string(),
             code_file: code_file.to_string(),
             language: "python".to_string(),
             kernel_type: "notebook".to_string(),
             is_private: true,
             enable_gpu,
             enable_internet,
-            dataset_sources: vec![],
+            dataset_sources,
             competition_sources: vec![],
             kernel_sources: vec![],
         }

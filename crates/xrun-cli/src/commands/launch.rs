@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use xrun_core::{
     budget,
-    config::credentials::VastCredentials,
+    config::credentials::{KaggleCredentials, VastCredentials},
     manifest::{Manifest, Vendor},
     store::{InstanceCaps, RunId, RunStatus},
     vendor::InstanceHandle,
@@ -19,6 +19,33 @@ use xrun_vast::VastAdapter;
 use crate::cli::LaunchArgs;
 use crate::commands::confirm::{confirm_billable_or_exit, ConfirmEstimate};
 use crate::commands::patch;
+
+fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
+    if let Ok(creds) = Credentials::load(config_dir) {
+        if creds.kaggle.token.is_some()
+            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
+        {
+            return creds.kaggle;
+        }
+    }
+    // Fall back to native kaggle.json
+    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
+        return KaggleCredentials {
+            token: None,
+            username: Some(username),
+            key: Some(key),
+        };
+    }
+    // Fall back to access_token file
+    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
+        return KaggleCredentials {
+            token: Some(token),
+            username: None,
+            key: None,
+        };
+    }
+    KaggleCredentials::default()
+}
 
 /// Resolve `vast.api_key` from xrun's config, falling back to the legacy
 /// `~/.config/vastai/vast_api_key` file. Returns `None` if neither is set —
@@ -83,7 +110,12 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
         }
         Vendor::Kaggle => {
             let data_dir = db_path.parent().unwrap_or(db_path);
-            Box::new(KaggleAdapter::new().with_store_path(data_dir.to_path_buf()))
+            let kaggle_creds = resolve_kaggle_credentials(config_dir);
+            Box::new(
+                KaggleAdapter::new()
+                    .with_store_path(data_dir.to_path_buf())
+                    .with_credentials(kaggle_creds),
+            )
         }
     };
 

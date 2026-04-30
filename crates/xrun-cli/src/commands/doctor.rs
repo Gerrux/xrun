@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use xrun_core::{manifest::Manifest, Store};
+use xrun_kaggle::KaggleAdapter;
 
 use crate::cli::DoctorArgs;
 
@@ -94,19 +95,34 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     // Manifest validation (--manifest path), one check per file. Fatal on
     // failure since the user explicitly asked us to validate.
     for path in &args.manifests {
-        let (ok, detail) = match std::fs::read_to_string(path) {
+        match std::fs::read_to_string(path) {
             Ok(yaml) => match Manifest::from_yaml_str(&yaml) {
-                Ok(m) => (true, format!("{} (vendor={:?})", path.display(), m.vendor)),
-                Err(e) => (false, format!("{}: {e}", path.display())),
+                Ok(m) => {
+                    checks.push(Check {
+                        name: "manifest",
+                        ok: true,
+                        warn_only: false,
+                        detail: format!("{} (vendor={:?})", path.display(), m.vendor),
+                    });
+                    // For Kaggle manifests, run additional checks.
+                    if matches!(m.vendor, xrun_core::manifest::Vendor::Kaggle) {
+                        kaggle_manifest_checks(&m, config_dir, &mut checks);
+                    }
+                }
+                Err(e) => checks.push(Check {
+                    name: "manifest",
+                    ok: false,
+                    warn_only: false,
+                    detail: format!("{}: {e}", path.display()),
+                }),
             },
-            Err(e) => (false, format!("{}: read failed: {e}", path.display())),
-        };
-        checks.push(Check {
-            name: "manifest",
-            ok,
-            warn_only: false,
-            detail,
-        });
+            Err(e) => checks.push(Check {
+                name: "manifest",
+                ok: false,
+                warn_only: false,
+                detail: format!("{}: read failed: {e}", path.display()),
+            }),
+        }
     }
 
     // python3 xrun_hook: installed on training instance; optional locally
@@ -223,6 +239,141 @@ fn dir_writable(path: &Path) -> bool {
     let ok = std::fs::write(&probe, b"").is_ok();
     let _ = std::fs::remove_file(&probe);
     ok
+}
+
+/// Kaggle-specific checks for manifests with `vendor: kaggle`.
+fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut Vec<Check>) {
+    let kaggle_spec = match &manifest.kaggle {
+        Some(s) => s,
+        None => {
+            checks.push(Check {
+                name: "kaggle_spec",
+                ok: false,
+                warn_only: false,
+                detail: "vendor is kaggle but no [kaggle] section found in manifest".to_string(),
+            });
+            return;
+        }
+    };
+
+    // Check kernel_slug consistency with manifest.name.
+    // Kaggle slugifies names by lowercasing and replacing spaces/special chars with hyphens.
+    let expected_slug_suffix = manifest
+        .name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>();
+    let actual_suffix = kaggle_spec
+        .kernel_slug
+        .split('/')
+        .last()
+        .unwrap_or(&kaggle_spec.kernel_slug);
+    let slug_ok = actual_suffix == expected_slug_suffix;
+    checks.push(Check {
+        name: "kaggle_kernel_slug",
+        ok: slug_ok,
+        warn_only: true,
+        detail: if slug_ok {
+            format!("kernel_slug '{}' matches manifest name", kaggle_spec.kernel_slug)
+        } else {
+            format!(
+                "kernel_slug suffix '{}' differs from slugified manifest name '{}' — \
+                 Kaggle may create the kernel at the wrong slug",
+                actual_suffix, expected_slug_suffix
+            )
+        },
+    });
+
+    // Build adapter to access KaggleCli.
+    let creds = resolve_kaggle_credentials(config_dir);
+    let adapter = KaggleAdapter::new().with_credentials(creds);
+    let cli = adapter.cli();
+
+    // Check Kaggle credentials via `kaggle config view`.
+    let creds_ok = match cli.username() {
+        Ok(u) => {
+            checks.push(Check {
+                name: "kaggle_credentials",
+                ok: true,
+                warn_only: false,
+                detail: format!("authenticated as {u}"),
+            });
+            true
+        }
+        Err(e) => {
+            checks.push(Check {
+                name: "kaggle_credentials",
+                ok: false,
+                warn_only: false,
+                detail: format!("could not authenticate: {e}"),
+            });
+            false
+        }
+    };
+
+    // Check each dataset slug for readiness (skip if not authenticated).
+    if creds_ok {
+        let mut all_slugs: Vec<&str> = Vec::new();
+        if let Some(s) = &kaggle_spec.dataset {
+            all_slugs.push(s.as_str());
+        }
+        for s in &kaggle_spec.datasets {
+            all_slugs.push(s.as_str());
+        }
+        for slug in all_slugs {
+            let (ok, warn_only, detail) = match cli.is_dataset_ready(slug) {
+                Ok(true) => (true, false, format!("dataset '{slug}' is ready")),
+                Ok(false) => (
+                    false,
+                    true,
+                    format!(
+                        "dataset '{slug}' exists but is not ready yet — \
+                         training will fail until it finishes processing"
+                    ),
+                ),
+                Err(e) => (
+                    false,
+                    false,
+                    format!("dataset '{slug}' check failed: {e}"),
+                ),
+            };
+            checks.push(Check {
+                name: "kaggle_dataset",
+                ok,
+                warn_only,
+                detail,
+            });
+        }
+    }
+}
+
+fn resolve_kaggle_credentials(
+    config_dir: &Path,
+) -> xrun_core::config::credentials::KaggleCredentials {
+    use xrun_core::Credentials;
+    if let Ok(creds) = Credentials::load(config_dir) {
+        if creds.kaggle.token.is_some()
+            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
+        {
+            return creds.kaggle;
+        }
+    }
+    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
+        return xrun_core::config::credentials::KaggleCredentials {
+            token: None,
+            username: Some(username),
+            key: Some(key),
+        };
+    }
+    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
+        return xrun_core::config::credentials::KaggleCredentials {
+            token: Some(token),
+            username: None,
+            key: None,
+        };
+    }
+    xrun_core::config::credentials::KaggleCredentials::default()
 }
 
 fn binary_available(name: &str) -> bool {

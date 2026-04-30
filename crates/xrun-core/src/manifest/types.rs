@@ -53,7 +53,11 @@ pub struct VastSpec {
 pub struct KaggleSpec {
     pub kernel_slug: String,
     pub competition: Option<String>,
+    /// Single dataset slug (legacy). Use `datasets` for multiple.
     pub dataset: Option<String>,
+    /// Multiple dataset slugs (owner/name). Available at /kaggle/input/<name>/.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<String>,
     pub enable_gpu: Option<bool>,
     pub enable_internet: Option<bool>,
 }

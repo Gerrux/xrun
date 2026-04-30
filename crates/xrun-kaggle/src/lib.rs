@@ -8,6 +8,6 @@ pub mod ingest;
 pub mod kernel_metadata;
 
 pub use adapter::KaggleAdapter;
-pub use cli::{KaggleCli, KaggleProcess, KernelState, KernelStatus};
+pub use cli::{DatasetListItem, KaggleCli, KaggleProcess, KernelListItem, KernelState, KernelStatus};
 pub use error::KaggleError;
 pub use kernel_metadata::KernelMetadata;

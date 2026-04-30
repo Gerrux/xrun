@@ -4,12 +4,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use xrun_core::{
-    config::credentials::VastCredentials,
+    config::credentials::{KaggleCredentials, VastCredentials},
     manifest::{Manifest, Vendor},
     store::{RunId, RunStatus},
     vendor::InstanceHandle,
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
+use xrun_kaggle::KaggleAdapter;
 use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
 use xrun_vast::VastAdapter;
 
@@ -59,6 +60,31 @@ fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
     VastCredentials::default()
 }
 
+fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
+    if let Ok(creds) = Credentials::load(config_dir) {
+        if creds.kaggle.token.is_some()
+            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
+        {
+            return creds.kaggle;
+        }
+    }
+    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
+        return KaggleCredentials {
+            token: None,
+            username: Some(username),
+            key: Some(key),
+        };
+    }
+    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
+        return KaggleCredentials {
+            token: Some(token),
+            username: None,
+            key: None,
+        };
+    }
+    KaggleCredentials::default()
+}
+
 /// Run the poller daemon for an existing run.
 ///
 /// Called by `xrun __poll-daemon <run-id>` when a run is launched with `--detach`.
@@ -100,13 +126,26 @@ pub fn run(
     let handle: InstanceHandle =
         serde_json::from_str(&state_json).context("failed to deserialize instance handle")?;
 
-    // Reconstruct the vendor adapter for the poller (only needs tail/destroy).
-    let adapter_store = Store::open(db_path)
-        .with_context(|| format!("failed to open adapter store at {}", db_path.display()))?;
-    let creds = resolve_vast_credentials(config_dir);
-    let adapter = VastAdapter::new(creds, adapter_store);
-    adapter.set_run_id(&run_id);
-    let vendor: Box<dyn VendorAdapter> = Box::new(adapter);
+    // Reconstruct the vendor adapter based on the run's vendor field.
+    let vendor: Box<dyn VendorAdapter> = match run.vendor.as_str() {
+        "kaggle" => {
+            let kaggle_creds = resolve_kaggle_credentials(config_dir);
+            let data_dir = db_path.parent().unwrap_or(db_path);
+            let adapter = KaggleAdapter::new()
+                .with_store_path(data_dir.to_path_buf())
+                .with_credentials(kaggle_creds);
+            adapter.set_run_id(&run_id);
+            Box::new(adapter)
+        }
+        _ => {
+            let adapter_store = Store::open(db_path)
+                .with_context(|| format!("failed to open adapter store at {}", db_path.display()))?;
+            let creds = resolve_vast_credentials(config_dir);
+            let adapter = VastAdapter::new(creds, adapter_store);
+            adapter.set_run_id(&run_id);
+            Box::new(adapter)
+        }
+    };
 
     let global = GlobalConfig::load(config_dir).unwrap_or_default();
     let budget_cfg = global.budget.clone();

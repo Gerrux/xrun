@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::VendorError;
 use crate::manifest::{DataSource, Manifest, RunSpec};
-use crate::store::RunId;
+use crate::store::{RunId, RunStatus};
 
 /// Snapshot of a vendor's account state, surfaced to TUI/CLI.
 /// `connected = false` means the credentials are missing or rejected.
@@ -68,6 +68,24 @@ pub struct DryRunPlan {
     pub cmd_line: String,
 }
 
+/// A synthetic lifecycle event emitted by `poll_completion` (Kaggle and similar vendors
+/// that do not support live JSONL streaming).
+pub struct SyntheticEvent {
+    pub stage: String,
+    /// "start" | "ok" | "fail" | "progress"
+    pub status: String,
+    pub msg: Option<String>,
+}
+
+/// Return value of `VendorAdapter::poll_completion`. Carries zero or more
+/// synthetic events to write to the store, plus an optional terminal status.
+/// When `terminal_status` is `Some`, the Poller stops.
+pub struct PollCompletion {
+    /// `None` = still running (but events may still be present).
+    pub terminal_status: Option<RunStatus>,
+    pub events: Vec<SyntheticEvent>,
+}
+
 pub trait VendorAdapter {
     fn name(&self) -> &'static str;
     /// Associate a run ID so the adapter can link events/instances to the run.
@@ -84,6 +102,13 @@ pub trait VendorAdapter {
     /// Default impl returns `NotImplemented`; adapters override.
     fn vendor_instances(&self) -> Result<Vec<VendorRemoteInstance>, VendorError> {
         Err(VendorError::NotImplemented)
+    }
+    /// Called on each Poller tick for vendors that use completion-poll instead of
+    /// live JSONL streaming (e.g. Kaggle). Returns `Some` when there is a state
+    /// change or terminal condition; returns `None` to skip (no new info).
+    /// Default: always `None` (vast uses the normal `tail()` path).
+    fn poll_completion(&self, _h: &InstanceHandle, _run_dir: &Path) -> Option<PollCompletion> {
+        None
     }
     fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError>;
     fn upload(&self, h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError>;

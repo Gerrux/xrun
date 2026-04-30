@@ -66,6 +66,27 @@ impl KaggleProcess for MockPushProcess {
     fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
         unimplemented!()
     }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
 }
 
 #[test]
@@ -112,6 +133,27 @@ impl KaggleProcess for MockStatusProcess {
         Ok(self.status_json.clone())
     }
     fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
         unimplemented!()
     }
 }

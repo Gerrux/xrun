@@ -3,7 +3,7 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::commands::{config_cmd::ConfigArgs, cp::CpArgs};
+use crate::commands::{config_cmd::ConfigArgs, cp::CpArgs, dataset::DatasetSubcommand};
 
 #[derive(Parser)]
 #[command(name = "xrun", version, about = "ML experiment runner")]
@@ -64,6 +64,11 @@ pub enum Commands {
     Config(ConfigArgs),
     /// Show your vast.ai account balance
     Balance(BalanceArgs),
+    /// Manage Kaggle datasets (push, status, list)
+    Dataset(DatasetArgs),
+    /// Reconcile stale `running` runs against the vendor and fix their status
+    #[command(name = "fix-status")]
+    FixStatus(FixStatusArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)
@@ -281,8 +286,58 @@ pub struct DoctorArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
-    /// Validate one or more manifest files (parse + schema check, no network).
+    /// Validate one or more manifest files (parse + schema check + Kaggle resource checks).
     /// Failures here are fatal exit 1 even with --json.
     #[arg(long = "manifest", value_name = "PATH")]
     pub manifests: Vec<PathBuf>,
+}
+
+// ---------------------------------------------------------------------------
+// xrun dataset subcommand
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct DatasetPushArgs {
+    /// Local directory to upload (must contain the dataset files)
+    pub local_dir: PathBuf,
+    /// Kaggle dataset slug in owner/name format (e.g. kartaviychert/my-dataset)
+    #[arg(long)]
+    pub slug: String,
+    /// Version message for subsequent pushes
+    #[arg(long, short = 'm')]
+    pub message: Option<String>,
+    /// Wait for the dataset to become ready before exiting (default: true)
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+    pub wait: bool,
+}
+
+#[derive(Args)]
+pub struct DatasetStatusArgs {
+    /// Kaggle dataset slug (owner/name)
+    pub slug: String,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args)]
+pub struct DatasetListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args)]
+pub struct DatasetArgs {
+    #[command(subcommand)]
+    pub subcommand: DatasetSubcommand,
+}
+
+#[derive(Args)]
+pub struct FixStatusArgs {
+    /// Run ID (ULID) to check. Omit to reconcile all runs in `running` status.
+    pub id: Option<String>,
+    /// Show what would change without writing to the DB
+    #[arg(long)]
+    pub dry_run: bool,
 }

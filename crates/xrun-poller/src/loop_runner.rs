@@ -70,6 +70,8 @@ pub struct PollerConfig {
     pub events_file: String,
     /// Path to the metrics JSONL file on the remote instance.
     pub metrics_file: String,
+    /// Path to the stdout log file on the remote instance.
+    pub stdout_file: String,
     /// Policy for handling `status=fail` events.
     pub on_stage_failed: FailPolicy,
 }
@@ -83,6 +85,7 @@ impl Default for PollerConfig {
             on_idle_minutes: None,
             events_file: "/workspace/run/events.jsonl".to_string(),
             metrics_file: "/workspace/run/metrics.jsonl".to_string(),
+            stdout_file: "/workspace/run/stdout.log".to_string(),
             on_stage_failed: FailPolicy::StopInstance,
         }
     }
@@ -206,6 +209,7 @@ impl Poller {
             .store
             .get_poll_offset(&self.run_id, &self.config.metrics_file)
             .unwrap_or(0);
+        let mut offset_s: u64 = 0;
 
         let mut last_progress = Instant::now();
         let mut last_offset_e = offset_e;
@@ -381,6 +385,36 @@ impl Poller {
                 }
             }
 
+            // --- snapshot stdout.log ---
+            match self
+                .vendor
+                .tail(&self.handle, &self.config.stdout_file, offset_s)
+            {
+                Ok(bytes) if !bytes.is_empty() => {
+                    let log_path = self.runs_dir.join(self.run_id.to_string()).join("stdout.log");
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        let _ = f.write_all(&bytes);
+                    }
+                    offset_s += bytes.len() as u64;
+                }
+                Ok(_) => {}
+                Err(VendorError::Truncated) => {
+                    // Remote log was truncated (pre-emption restart): start over.
+                    if let Ok(()) = std::fs::remove_file(
+                        self.runs_dir.join(self.run_id.to_string()).join("stdout.log"),
+                    ) {}
+                    offset_s = 0;
+                }
+                Err(e) => {
+                    tracing::warn!("tail stdout error: {e}");
+                }
+            }
+
             // --- cost estimate + budget enforcement ---
             let now_wall = Utc::now();
             if let Ok(Some(run)) = self.store.get_run(&self.run_id) {
@@ -523,6 +557,40 @@ impl Poller {
                         RunStatus::Failed,
                     ));
                     return Ok(RunStatus::Failed);
+                }
+            }
+
+            // --- vendor completion poll (Kaggle and similar non-streaming vendors) ---
+            let run_dir = self.runs_dir.join(self.run_id.to_string());
+            if let Some(completion) = self.vendor.poll_completion(&self.handle, &run_dir) {
+                if !completion.events.is_empty() {
+                    for ev in &completion.events {
+                        let _ = self.store.append_event(
+                            &self.run_id,
+                            NewEvent {
+                                ts: Utc::now(),
+                                stage: ev.stage.clone(),
+                                status: ev.status.clone(),
+                                msg: ev.msg.clone(),
+                                payload_json: None,
+                            },
+                        );
+                    }
+                    self.send_update(DataUpdate::EventsAppended(
+                        self.run_id.clone(),
+                        completion.events.len(),
+                    ));
+                }
+                if let Some(terminal) = completion.terminal_status {
+                    self.store.update_run_status(&self.run_id, terminal.clone())?;
+                    self.send_update(DataUpdate::RunStatusChanged(
+                        self.run_id.clone(),
+                        terminal.clone(),
+                    ));
+                    if let Some(ref mirror) = mlflow {
+                        mirror.finish(&terminal);
+                    }
+                    return Ok(terminal);
                 }
             }
 
