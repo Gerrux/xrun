@@ -135,25 +135,45 @@ kaggle kernels push -k ...
 xrun __poll-daemon <run-id>   # вручную из терминала, foreground
 ```
 
-## v0.1 status
+## Статус команд (v0.3)
 
 | Команда | Статус | Заметки |
 |---------|--------|---------|
-| `xrun launch <manifest> --dry-run` | Работает | Парсит манифест, считает хеш, показывает DryRunPlan |
-| `xrun launch <manifest>` | Работает | Полная цепочка: provision → upload → exec → poller |
-| `xrun launch <manifest> --detach` | Работает | Спавнит фоновый поллер, сразу выходит |
-| `xrun ls` | Работает | Читает runs из SQLite; `--manifests` возвращает пустой список (v0.2) |
-| `xrun show <id>` | Работает | Карточка run из БД |
-| `xrun logs <id>` | Работает | Читает stdout.log; `--follow` → exit 64 (not supported in v0.1) |
-| `xrun events <id>` | Работает | Из SQLite; `--follow` → exit 64 |
-| `xrun metrics <id>` | Работает | Список ключей и точек; `--ascii` → «no data yet» |
-| `xrun pull <id>` | Заглушка | «no active runs to act on» |
-| `xrun stop <id>` | Заглушка | «no active runs to act on» |
-| `xrun rerun <id>` | Заглушка | «no active runs to act on» |
-| `xrun doctor` | Работает | Проверяет config_dir, vastai/kaggle в PATH, ssh key, rsync, xrun_hook |
-| `xrun config init/show/set` | Работает | Полная реализация |
-| `xrun tui` | Работает | TUI с live-обновлениями; Metrics tab — v0.3 |
-| `xrun sweep` | Не реализовано | Отложено |
+| `xrun launch <manifest>` | ✅ | Полная цепочка: provision → upload → exec → poller |
+| `xrun launch --dry-run` | ✅ | Парсит манифест, показывает DryRunPlan |
+| `xrun launch --detach` | ✅ | Спавнит фоновый поллер, сразу выходит |
+| `xrun launch --max-cost/--max-hours/--idle-timeout` | ✅ | Budget caps; `--yes` для скриптов |
+| `xrun ls` | ✅ | Фильтры: `--status`, `--tag`, `--vendor`, `--json` |
+| `xrun show <id>` | ✅ | Карточка run из БД |
+| `xrun logs <id>` | ✅ | Читает локальный stdout.log |
+| `xrun logs <id> --follow` | ✅ | SSH tail -F на удалённый инстанс |
+| `xrun events <id>` | ✅ | Таблица стадий из SQLite |
+| `xrun events <id> --follow` | ✅ | Polling SQLite каждые 1s до terminal status |
+| `xrun metrics <id>` | ✅ | `--ascii`, `--json`, `--png`, `--mlflow-url` |
+| `xrun pull <id>` | ✅ | `--ckpt best/latest/all`, `--artifacts`, `--into` |
+| `xrun stop <id>` | ✅ | Graceful: SIGTERM → wait → pull → destroy |
+| `xrun rerun <id>` | ✅ | `--patch run.args.--lr=5e-4` |
+| `xrun balance` | ✅ | Баланс vast.ai |
+| `xrun gc` | ✅ | Удалить orphan-инстансы |
+| `xrun cp` | ✅ | Streaming tar transfer между инстансами |
+| `xrun shell <id>` | ✅ | SSH-сессия на инстанс |
+| `xrun doctor` | ✅ | Проверяет конфиг, vastai/kaggle в PATH, ssh key, xrun_hook |
+| `xrun config init/show/set` | ✅ | |
+| `xrun tui` | ✅ | Запускает Python Textual TUI (`xrun-tui`) |
+| `xrun sweep` | ⏳ | v0.4 backlog (декартово произведение гиперпараметров) |
+
+### TUI
+
+`xrun` без аргументов (если stdout — TTY) запускает Python Textual TUI через
+`xrun-tui`. Требует отдельной установки:
+
+```bash
+pip install -e python/xrun_tui
+```
+
+Экраны: Dashboard, Runs, Run detail (Stages/Logs/Metrics/Manifest), Instances,
+Vendors, Launch, Artifacts, Compare, Settings, Doctor.  
+Навигация: chord `g→X`, `?` help, `:` command palette.
 
 ## Exit codes
 
