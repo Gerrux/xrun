@@ -105,7 +105,7 @@ fn snapshot_stages_three_stages() {
         return;
     }
 
-    let expected = std::fs::read_to_string(&golden).unwrap();
+    let expected = std::fs::read_to_string(&golden).unwrap().replace('\r', "");
     assert_eq!(
         actual, expected,
         "snapshot mismatch — run with BLESS=1 to update"
@@ -129,7 +129,7 @@ fn snapshot_logs_50_lines() {
         return;
     }
 
-    let expected = std::fs::read_to_string(&golden).unwrap();
+    let expected = std::fs::read_to_string(&golden).unwrap().replace('\r', "");
     assert_eq!(
         actual, expected,
         "snapshot mismatch — run with BLESS=1 to update"

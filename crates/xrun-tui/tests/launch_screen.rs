@@ -78,7 +78,7 @@ fn snapshot_launch_picker_two_manifests() {
         return;
     }
 
-    let expected = std::fs::read_to_string(&golden_path).unwrap();
+    let expected = std::fs::read_to_string(&golden_path).unwrap().replace('\r', "");
     assert_eq!(
         actual, expected,
         "snapshot mismatch — run with BLESS=1 to update"

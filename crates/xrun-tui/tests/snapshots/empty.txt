@@ -1,5 +1,5 @@
 ┌ vendor ────────────────┐┌ active ──────────────────┐┌ today ─────────────────┐
-│   Configure → press V  ││           none           ││      no runs today     │
+│   Configure → press V  ││           idle           ││      no runs today     │
 │                        ││                          ││                        │
 │                        ││                          ││                        │
 └────────────────────────┘└──────────────────────────┘└────────────────────────┘
