@@ -430,13 +430,13 @@ async def _test_kaggle_api(username: str, key: str) -> str:
     def _do() -> str:
         token = base64.b64encode(f"{username}:{key}".encode()).decode()
         req = urllib.request.Request(
-            "https://www.kaggle.com/api/v1/kernels?page_size=1",
+            "https://www.kaggle.com/api/v1/competitions/list?page=1&pageSize=1",
             headers={"Authorization": f"Basic {token}"},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
         count = len(data) if isinstance(data, list) else "?"
-        return f"[#565f89]kernels visible:[/] [#c0caf5]{count}[/]"
+        return f"[#565f89]competitions visible:[/] [#c0caf5]{count}[/]"
     return await asyncio.to_thread(_do)
 
 
