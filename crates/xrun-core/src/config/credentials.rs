@@ -13,6 +13,9 @@ pub struct VastCredentials {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct KaggleCredentials {
+    /// New-style Bearer token (kaggle CLI ≥ 1.8.0 / kagglehub ≥ 0.4.1)
+    pub token: Option<String>,
+    /// Legacy username+key from kaggle.json
     pub username: Option<String>,
     pub key: Option<String>,
 }
@@ -34,6 +37,7 @@ pub struct Credentials {
 impl Credentials {
     pub fn is_empty(&self) -> bool {
         self.vast.api_key.is_none()
+            && self.kaggle.token.is_none()
             && self.kaggle.username.is_none()
             && self.kaggle.key.is_none()
             && self.mlflow.token.is_none()

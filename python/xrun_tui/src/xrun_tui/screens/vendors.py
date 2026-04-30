@@ -26,7 +26,8 @@ def _vendor_configured(creds: dict, vid: str) -> bool:
     """Return True if the vendor has all required credentials set."""
     v = creds.get(vid, {})
     if vid == "kaggle":
-        return bool(v.get("username")) and bool(v.get("key"))
+        # New-style Bearer token OR legacy username+key
+        return bool(v.get("token")) or (bool(v.get("username")) and bool(v.get("key")))
     return bool(v.get("api_key"))
 
 
@@ -109,18 +110,19 @@ class VendorsScreen(Screen):
 
     async def _check_kaggle(self) -> None:
         v = self._creds.get("kaggle", {})
+        if not _vendor_configured({"kaggle": v}, "kaggle"):
+            return
         username = v.get("username", "").strip()
         key      = v.get("key", "").strip()
-        if not username or not key:
-            return
         idx = next(i for i, (vid, _, _) in enumerate(_VENDORS) if vid == "kaggle")
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
         status_widget.update("[#e0af68]checking…[/]")
+        token = v.get("token", "").strip()
         try:
-            info = await _test_kaggle_api(username, key)
+            label, info = await _test_kaggle_api(username, key, token)
             status_widget.update("[bold #9ece6a]✓ connected[/]")
-            info_widget.update(f"[#565f89]user:[/] [#c0caf5]{username}[/]  {info}")
+            info_widget.update(f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}")
             self.query_one(f"#vdot-{idx}", Static).update("[#9ece6a]●[/]")
         except Exception as exc:
             status_widget.update(f"[#f7768e]✗ {exc}[/]")
@@ -237,8 +239,7 @@ class VendorsScreen(Screen):
             self._refresh_row(i)
         if self._creds.get("vast", {}).get("api_key"):
             self.call_after_refresh(self._check_vast)
-        v = self._creds.get("kaggle", {})
-        if v.get("username") and v.get("key"):
+        if _vendor_configured(self._creds, "kaggle"):
             self.call_after_refresh(self._check_kaggle)
 
 
@@ -265,9 +266,29 @@ class VendorEditScreen(Screen):
         yield Static(f"Edit credentials — {self._vname}", classes="screen-title")
         with Vertical(id="vendor-form"):
             if self._vid == "kaggle":
-                # Kaggle needs username + key
+                token    = v.get("token") or ""
                 username = v.get("username") or ""
                 key      = v.get("key") or ""
+                # New-style token (Bearer)
+                yield Static(
+                    "[bold #bb9af7]API Token[/] [#565f89](recommended — kaggle CLI ≥ 1.8.0)[/]",
+                    classes="form-section",
+                )
+                with Horizontal(classes="form-row"):
+                    yield Label("Token:", classes="form-label")
+                    yield Input(
+                        token,
+                        id="input-kaggle-token",
+                        password=True,
+                        placeholder="Paste API token from kaggle.com/settings…",
+                        classes="form-input",
+                    )
+                yield Static(_masked(token), id="token-hint", classes="form-hint")
+                # Legacy credentials
+                yield Static(
+                    "[bold #bb9af7]Legacy credentials[/] [#565f89](kaggle.json / username+key)[/]",
+                    classes="form-section",
+                )
                 with Horizontal(classes="form-row"):
                     yield Label("Username:", classes="form-label")
                     yield Input(
@@ -277,12 +298,12 @@ class VendorEditScreen(Screen):
                         classes="form-input",
                     )
                 with Horizontal(classes="form-row"):
-                    yield Label("API Key:", classes="form-label")
+                    yield Label("Key:", classes="form-label")
                     yield Input(
                         key,
                         id="input-kaggle-key",
                         password=True,
-                        placeholder="Kaggle API key…",
+                        placeholder="Kaggle API key (from kaggle.json)…",
                         classes="form-input",
                     )
                 yield Static(_masked(key), id="key-hint", classes="form-hint")
@@ -320,12 +341,18 @@ class VendorEditScreen(Screen):
         yield Footer()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id in ("input-api-key", "input-kaggle-key"):
-            try:
+        try:
+            if event.input.id == "input-api-key":
                 self.query_one("#key-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
-            except Exception:
-                pass
+            elif event.input.id == "input-kaggle-token":
+                self.query_one("#token-hint", Static).update(_masked(event.value))
+                self.query_one("#test-result", Static).update("")
+            elif event.input.id == "input-kaggle-key":
+                self.query_one("#key-hint", Static).update(_masked(event.value))
+                self.query_one("#test-result", Static).update("")
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:
@@ -336,9 +363,17 @@ class VendorEditScreen(Screen):
     def action_save(self) -> None:
         creds = dict(self._creds)
         if self._vid == "kaggle":
+            token    = self.query_one("#input-kaggle-token",    Input).value.strip()
             username = self.query_one("#input-kaggle-username", Input).value.strip()
             key      = self.query_one("#input-kaggle-key",      Input).value.strip()
-            creds.setdefault("kaggle", {}).update({"username": username, "key": key})
+            entry: dict = {}
+            if token:
+                entry["token"] = token
+            if username:
+                entry["username"] = username
+            if key:
+                entry["key"] = key
+            creds["kaggle"] = entry
         else:
             api_key = self.query_one("#input-api-key", Input).value.strip()
             creds.setdefault(self._vid, {})["api_key"] = api_key
@@ -368,16 +403,17 @@ class VendorEditScreen(Screen):
                     f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
                 )
             elif self._vid == "kaggle":
+                token    = self.query_one("#input-kaggle-token",    Input).value.strip()
                 username = self.query_one("#input-kaggle-username", Input).value.strip()
                 key      = self.query_one("#input-kaggle-key",      Input).value.strip()
-                if not username or not key:
-                    self.notify("Enter username and key first", severity="warning")
+                if not token and not (username and key):
+                    self.notify("Enter token or username+key first", severity="warning")
                     result.update("")
                     return
-                info = await _test_kaggle_api(username, key)
+                label, info = await _test_kaggle_api(username, key, token)
                 result.update(
                     f"[bold #9ece6a]✓ Connected[/]  "
-                    f"[#565f89]user:[/] [#c0caf5]{username}[/]  {info}"
+                    f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}"
                 )
             else:
                 result.update("[#565f89]Test not available for this vendor[/]")
@@ -425,18 +461,24 @@ async def _fetch_user(api_key: str) -> dict:
     return await asyncio.to_thread(_do)
 
 
-async def _test_kaggle_api(username: str, key: str) -> str:
-    """Test Kaggle credentials via REST API. Returns a short info string on success."""
-    def _do() -> str:
-        token = base64.b64encode(f"{username}:{key}".encode()).decode()
+async def _test_kaggle_api(username: str, key: str, token: str = "") -> tuple[str, str]:
+    """Test Kaggle credentials. Returns (label, info_markup) on success."""
+    def _do() -> tuple[str, str]:
+        if token:
+            auth_header = f"Bearer {token}"
+            label = "token"
+        else:
+            encoded = base64.b64encode(f"{username}:{key}".encode()).decode()
+            auth_header = f"Basic {encoded}"
+            label = username or "?"
         req = urllib.request.Request(
             "https://www.kaggle.com/api/v1/competitions/list?page=1&pageSize=1",
-            headers={"Authorization": f"Basic {token}"},
+            headers={"Authorization": auth_header},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
         count = len(data) if isinstance(data, list) else "?"
-        return f"[#565f89]competitions visible:[/] [#c0caf5]{count}[/]"
+        return label, f"[#565f89]competitions visible:[/] [#c0caf5]{count}[/]"
     return await asyncio.to_thread(_do)
 
 
