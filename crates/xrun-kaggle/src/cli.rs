@@ -512,7 +512,7 @@ fn ensure_dataset_metadata(local_dir: &Path, slug: &str) -> Result<(), KaggleErr
     if meta_path.exists() {
         return Ok(());
     }
-    let title = slug.split('/').last().unwrap_or(slug).replace('-', " ");
+    let title = slug.split('/').next_back().unwrap_or(slug).replace('-', " ");
     let meta = serde_json::json!({
         "title": title,
         "id": slug,

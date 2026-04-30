@@ -149,7 +149,7 @@ pub fn run_list(args: &DatasetListArgs, config_dir: &Path) -> Result<()> {
             println!("(no datasets found)");
             return Ok(());
         }
-        println!("{:<40}  {:<30}  {}", "slug", "title", "last_updated");
+        println!("{:<40}  {:<30}  last_updated", "slug", "title");
         println!("{}", "-".repeat(90));
         for item in &items {
             println!(

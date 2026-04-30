@@ -31,7 +31,7 @@ impl KernelMetadata {
         enable_internet: bool,
         dataset_sources: Vec<String>,
     ) -> Self {
-        let kernel_name = slug.split('/').last().unwrap_or(slug);
+        let kernel_name = slug.split('/').next_back().unwrap_or(slug);
         Self {
             id: slug.to_string(),
             title: kernel_name.to_string(),
@@ -55,7 +55,7 @@ impl KernelMetadata {
         enable_internet: bool,
         dataset_sources: Vec<String>,
     ) -> Self {
-        let kernel_name = slug.split('/').last().unwrap_or(slug);
+        let kernel_name = slug.split('/').next_back().unwrap_or(slug);
         Self {
             id: slug.to_string(),
             title: kernel_name.to_string(),
