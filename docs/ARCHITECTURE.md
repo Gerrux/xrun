@@ -16,54 +16,78 @@
 ## Компоненты
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                     Локальная машина (контроллер)                │
-│                                                                  │
-│   ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐  │
-│   │ xrun (CLI)  │────▶│   xrun-core      │◀────│ xrun-tui     │  │
-│   │ subcommands │     │  (manifest, db,  │     │ (ratatui)    │  │
-│   └─────────────┘     │   poller, sync)  │     └──────────────┘  │
-│         │             └──────────────────┘            │          │
-│         │                  │      │                   │          │
-│         │                  ▼      ▼                   ▼          │
-│         │           ┌──────────┐ ┌─────────┐    ┌───────────┐    │
-│         │           │ SQLite   │ │ MLflow  │◀───│ Browser   │    │
-│         │           │ runs.db  │ │  REST   │    │ (share)   │    │
-│         │           └──────────┘ └─────────┘    └───────────┘    │
-│         │                                                        │
-│         ▼                                                        │
-│   ┌─────────────┐  ┌─────────────┐                               │
-│   │ vastai CLI  │  │ kaggle CLI  │                               │
-│   └─────────────┘  └─────────────┘                               │
-└─────────│─────────────────│──────────────────────────────────────┘
-          │                 │
-          ▼                 ▼
-   ┌─────────────┐    ┌─────────────┐
-   │ vast.ai GPU │    │ Kaggle      │
-   │             │    │ Kernel      │
-   │ /workspace/ │    │ /kaggle/    │
-   │   run/      │    │   working/  │
-   │   ├ events  │    │             │
-   │   │  .jsonl │    │ stdout +    │
-   │   ├ metrics │    │  output/    │
-   │   │  .jsonl │    │             │
-   │   └ ckpts/  │    │             │
-   └─────────────┘    └─────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                     Локальная машина (контроллер)                    │
+│                                                                      │
+│  ┌──────────────┐  spawn   ┌───────────────────────────────────┐    │
+│  │  xrun (CLI)  │─────────▶│  xrun-tui (Python Textual)        │    │
+│  │  Rust binary │          │  python/xrun_tui/                 │    │
+│  └──────┬───────┘          │  - читает SQLite (aiosqlite)      │    │
+│         │                  │  - вызывает xrun CLI (subprocess) │    │
+│         │                  └───────────────┬───────────────────┘    │
+│         │                                  │                        │
+│         ▼                                  ▼                        │
+│  ┌──────────────┐          ┌───────────────────┐                    │
+│  │  xrun-core   │◀─────────│     SQLite        │                    │
+│  │  (manifest,  │          │     runs.db       │                    │
+│  │   db, vendor │          └─────────┬─────────┘                    │
+│  │   trait)     │                    │                              │
+│  └──────┬───────┘                    ▼                              │
+│         │                  ┌───────────────────┐  ┌─────────────┐  │
+│         │                  │  MLflow REST      │◀─│   Browser   │  │
+│         │                  └───────────────────┘  └─────────────┘  │
+│         ▼                                                            │
+│  ┌─────────────┐  ┌─────────────┐                                   │
+│  │ vastai CLI  │  │ kaggle CLI  │                                   │
+│  └─────────────┘  └─────────────┘                                   │
+└────────────────────────────────────────────────────────────────────┘
+         │                 │
+         ▼                 ▼
+  ┌─────────────┐    ┌─────────────┐
+  │ vast.ai GPU │    │ Kaggle      │
+  │ /workspace/ │    │ Kernel      │
+  │   ├ events  │    │ stdout +    │
+  │   │  .jsonl │    │  output/    │
+  │   ├ metrics │    │             │
+  │   │  .jsonl │    │             │
+  │   └ ckpts/  │    │             │
+  └─────────────┘    └─────────────┘
 ```
 
-## Crates
+## Crates (Rust)
 
 ```
-xrun-core      — manifest types, sqlite, event/metric model, vendor trait
+xrun-core      — manifest types, sqlite, event/metric model, budget, vendor trait
 xrun-poller    — polling loop engine (Poller, CancellationToken, PollerLock); used by xrun-cli
-xrun-vast      — vast.ai адаптер (provision, upload, exec, tail, pull)
-xrun-kaggle    — kaggle адаптер (kernels push/status/output)
-xrun-mlflow    — REST клиент для tracking server
-xrun-cli       — clap-парсер, subcommands; этот же бинарь умеет запускать TUI (`xrun tui`)
-xrun-tui       — ratatui frontend, читает только из xrun-core, действия — через те же функции, что CLI
+xrun-vast      — vast.ai адаптер (provision, upload, exec, tail, pull, CREATE_NO_WINDOW on Windows)
+xrun-kaggle    — kaggle адаптер (kernels push/status/output, embedded xrun_hook wheel)
+xrun-mlflow    — REST клиент для tracking server (metric mirror, retry, wiremock tests)
+xrun-cli       — clap-парсер, все subcommands; spawn xrun-tui при запуске без аргументов
+xrun-tui       — legacy Rust ratatui TUI (за feature-флагом, не используется по умолчанию)
 ```
 
-Один бинарь (`xrun`) — `xrun-cli` подключает `xrun-tui` как фичу. По умолчанию `xrun` без аргументов открывает TUI.
+## Python TUI (xrun-tui)
+
+```
+python/xrun_tui/          — Python Textual TUI
+  src/xrun_tui/
+    app.py                — главное приложение, chord-навигация, screen stack
+    db.py                 — async SQLite (aiosqlite), read-only, тот же runs.db
+    services.py           — asyncio subprocess wrappers вокруг xrun CLI
+    screens/              — 16 экранов: dashboard, runs, run_detail, instances,
+                            vendors, launch, artifacts, compare, settings,
+                            doctor, help, splash, confirm, ...
+    widgets/              — status_bar, ascii_chart, ...
+    themes/               — Tokyo Night, Catppuccin, Gruvbox CSS
+```
+
+**Интеграция с Rust CLI:**
+- `xrun` без аргументов на TTY: `std::process::Command::new("xrun-tui").status()`
+- TUI читает SQLite напрямую (aiosqlite, WAL mode — safe concurrent read/write)
+- Мутирующие операции (stop, pull, launch) вызывают `xrun` CLI через `asyncio.create_subprocess_exec`
+- На Windows: все subprocess-вызовы используют `CREATE_NO_WINDOW`
+
+Бинарь `xrun-tui` устанавливается через `pip install -e python/xrun_tui` (`pyproject.toml` → `hatchling`).
 
 ## Поток данных запуска
 

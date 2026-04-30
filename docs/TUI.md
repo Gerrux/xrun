@@ -1,147 +1,167 @@
 # TUI
 
-ratatui + crossterm. Single-window app с стеком экранов и общим status bar.
+Python Textual. Single-window app с chord-навигацией, command palette и общим status bar.
+
+**Требования**: `pip install -e python/xrun_tui` (Python ≥ 3.11, Textual ≥ 0.70).
+
+**Запуск**: `xrun` без аргументов (TTY) или `xrun-tui`.
 
 ## Экраны
 
-### 1. Runs (главный)
+### 1. Runs (g r)
 
 ```
-┌── xrun ─────────────────────────────────── balance: $34.12  │  q quit  ─┐
-│                                                                          │
-│  ┌─ Active (2) ──────────────────────────────────────────────────────┐  │
-│  │ ▶ arborust_v7_C        vast 4090   2h 14m   epoch 18/30   loss 0.41│  │
-│  │   classifier_eb0       kgl  T4     0h 47m   uploading                │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌─ Recent ─────────────────────────────────────────────────────────┐  │
-│  │ ✓ arborust_v6γ_ep25    vast        14h 02m   F1 0.885             │  │
-│  │ ✓ ablation_dropout03   vast         3h 51m   F1 0.879             │  │
-│  │ ✗ tuba_winter          vast         0h 12m   FAILED: oom            │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  enter:open  L:launch  S:stop  P:pull  R:rerun  /:filter  T:tags        │
-└──────────────────────────────────────────────────────────────────────┘
+┌── xrun › runs ───────────── vast ✓ $12.34  │  g:goto  ?:help  ::cmd ─┐
+│                                                                        │
+│  Active (2)         Vendor   Run: $0.42/hr · cap-left $4.21            │
+│  ▶ arborust_v7_C    vast     2h 14m   epoch 18/30   loss 0.41          │
+│    classifier_eb0   kaggle   0h 47m   uploading                        │
+│                                                                        │
+│  Recent                                                                │
+│  ✓ arborust_v6γ     vast     14h 02m   F1 0.885                        │
+│  ✓ ablation_drop    vast      3h 51m   F1 0.879                        │
+│  ✗ tuba_winter      vast      0h 12m   FAILED: oom                     │
+│                                                                        │
+│  enter:open  L:launch  S:stop  P:pull  R:rerun  /:filter               │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Run detail (Enter)
+Dashboard cards сверху: текущий burn `$/hr`, `cap-left $X.XX`, `today $spent`.
 
-Tab'ы: **Stages** | **Metrics** | **Logs** | **Artifacts** | **Manifest**.
+### 2. Run detail (Enter из Runs)
 
-- **Stages**: вертикальный таймлайн с throbber на текущей. Цвета: pending grey, running yellow, ok green, failed red.
-- **Metrics**: ratatui Chart, выбор серий через мульти-чекбокс справа, X-axis = step или time. `s` — сохранить PNG (через MLflow API → возвращает локальный путь). `o` — открыть MLflow run в браузере.
-- **Logs**: tail с автоскроллом, поиск (`/`), пауза (`p`).
-- **Artifacts**: дерево, `enter` — открыть в системе, `space` — пометить, `P` — pull выбранных.
-- **Manifest**: read-only YAML, `e` — открыть в `$EDITOR` для последующего `rerun --patch`.
+Вкладки: **Stages** | **Logs** | **Metrics** | **Artifacts** | **Manifest**
 
-### 3. Launch (L на главном)
+- **Stages**: таймлайн с throbber на текущей стадии. Цвета: grey pending, yellow running, green ok, red failed.
+- **Logs**: читает локальный снапшот `stdout.log` (поллер обновляет каждые ~5s). Для live-стриминга: `xrun logs <id> --follow` в терминале.
+- **Metrics**: ключи метрик из SQLite, ASCII chart по выбранному ключу. `o` — открыть MLflow run в браузере.
+- **Artifacts**: дерево артефактов. `P` — pull выбранных.
+- **Manifest**: read-only YAML. `e` — открыть в `$EDITOR`.
 
-Picker по `exp/`. Превью манифеста справа. На enter — диф со схемой, валидация, preview плана (что зальётся, оценка стоимости vast). Confirm Y/N.
+### 3. Launch (g l)
 
-### 4. Instances (I)
+Picker по `exp/`. Превью манифеста справа. Enter → confirm с оценкой стоимости.
 
-Сырой список vast/kaggle инстансов из адаптера, не привязанных к runs (legacy/manual). Чтобы можно было погасить забытые.
+### 4. Instances (g i)
 
-```
-GPU         price/h   uptime    run-id            status
-RTX 4090    $0.48     2h 14m    arborust_v7_C     running
-RTX 3090    $0.31     8h 03m    (orphan)          running   <- D=destroy
-```
+Список vast/kaggle инстансов из адаптера. Показывает orphan-инстансы (без привязанного run) — `D` для destroy.
 
-### 5. Settings (,)
+### 5. Vendors (g v / V)
 
-Тема, override poll interval (active/idle), default vendor. Креды редактируются на экране Vendors.
-
-### 6. Vendors (V)
-
-Менеджер вендоров и кредов: статус подключения, баланс, ввод/импорт ключей.
+Менеджер вендоров и кредов:
 
 ```
-┌─ Vendors ────────────────────────────────────────────────────────────────┐
+┌─ Vendors ───────────────────────────────────────────────────────────────┐
 │ Vendor   Status              Account              Balance   Last checked │
-│ vast     ✓ connected         tester@example.com   $12.34    32s ago      │
+│ vast     ✓ connected         user@example.com     $12.34    32s ago      │
 │ kaggle   ✗ not configured                         —         —            │
 │ mlflow   ⚠ unauthorized                           —         15s ago      │
-└──────────────────────────────────────────────────────────────────────────┘
-┌─ Detail ─────────────────────────────────────────────────────────────────┐
-│    vendor: vast                                                          │
-│ connected: yes                                                           │
-│   account: tester@example.com                                            │
-│   balance: USD 12.34                                                     │
-└──────────────────────────────────────────────────────────────────────────┘
-e/Enter:edit  i:import-native  t:test  r:revoke  Esc/q:back
+└─────────────────────────────────────────────────────────────────────────┘
+  e/Enter:edit  i:import  t:test  r:revoke  Esc:back
 ```
 
-- **`e` / Enter** — открывает masked-input форму для ввода/правки ключей.
-  Для vast: `api_key`. Для kaggle: `username` + `key`. Для mlflow: `url` + `token`.
-  Все секретные поля рендерятся как `••••`. Tab/Shift+Tab между полями. Enter — сохранить (`credentials.toml` 0600 на Unix) и сразу запросить probe.
-- **`i`** — import существующего native-ключа: `~/.config/vastai/vast_api_key`
-  для vast, `~/.kaggle/kaggle.json` для kaggle. Если файл есть — забирает оттуда и сохраняет в `credentials.toml`.
-- **`t`** — внеочередной probe соединения (`vastai show user --raw` для vast).
-- **`r`** — revoke (стирает ключ в credentials.toml после confirm).
+- **`e`** — masked-input форма для ввода ключей. Tab/Shift+Tab между полями. Enter — сохранить и запустить probe.
+- **`i`** — импортировать существующий ключ: `~/.config/vastai/vast_api_key` для vast, `~/.kaggle/kaggle.json` для kaggle.
+- **`t`** — принудительный probe.
+- **`r`** — revoke (стирает ключ после confirm).
 
-Probe запускается автоматически фоном (раз в 60s) для каждого настроенного вендора, плюс по триггеру после сохранения / `t`.
+Фоновый probe запускается каждые 60s и по триггеру (после save / `t`). Баланс vast появляется в status bar после первого успешного probe.
 
-**First-run splash**: если все credentials пустые, при старте `xrun` короткий ASCII-сплеш с логотипом и подсказкой; любая клавиша сразу открывает экран Vendors.
+**First-run splash**: если credentials пустые — ASCII-сплеш при старте. Любая клавиша открывает экран Vendors.
 
-## Биндинги (глобальные)
+### 6. Settings (g s)
+
+Тема, poll interval (active/idle), default vendor, MLflow URL, exclude-countries. Секция Database: размер файла, очистка завершённых runs.
+
+### 7. Dashboard (g d)
+
+Сводка: активные runs, spend today, burn rate, баланс.
+
+### 8. Doctor (g h)
+
+Проверки окружения: `xrun doctor` в TUI-форме. CLI-эквивалент: `xrun doctor`.
+
+### 9. Compare
+
+Сравнение метрик двух runs side-by-side. Открывается из Runs: выбрать первый (`c`), выбрать второй (`c`).
+
+### 10. Artifacts
+
+Браузер артефактов по всем runs (не только текущего). `P` — pull.
+
+## Биндинги
+
+### Глобальные
 
 | Key | Action |
 |-----|--------|
-| `q` / `Esc` | Закрыть текущий экран / выход |
+| `q` / `Esc` | Назад / выход |
 | `?` | Help overlay |
-| `:` | Command palette (vim-style: `:launch exp/foo.yaml`, `:goto vendors`) |
-| `V` | Vendors screen |
-| `,` | Settings |
-| `tab` / `shift-tab` | Переключение tab'ов в run detail |
-| `g g` / `G` | Top / bottom |
-| `/` | Filter / search |
+| `:` | Command palette |
 
-## Виджеты и крейты
+### Chord-навигация (лидер `g`)
 
-Базовый стек: `ratatui`, `crossterm`, `tokio`, `tracing`.
+| Chord | Экран |
+|-------|-------|
+| `g d` | Dashboard |
+| `g r` | Runs |
+| `g i` | Instances |
+| `g v` | Vendors |
+| `g s` | Settings |
+| `g l` | Launch |
+| `g h` | Doctor |
 
-Дополнительно (готовое из экосистемы):
-- `throbber-widgets-tui` — спиннеры для running-стадий.
-- `tui-logger` — встроенный лог-пейн (DEBUG в stderr пайпится сюда).
-- `tui-input` — ввод для filter/command palette.
-- `ratatui::widgets::Chart` — нативный line chart, хватит для метрик.
-- `color-eyre` — error reporting.
+### Прямые клавиши (из Runs)
 
-Не используем: `tachyonfx` (overhead без очевидной пользы), `tui-realm` (overhead, наш state простой), сторонние chart-библиотеки (Chart хватит).
+| Key | Action |
+|-----|--------|
+| `V` | Vendors |
+| `Enter` | Открыть run detail |
+| `L` | Launch picker |
+| `S` | Stop выбранного run |
+| `P` | Pull чекпоинт |
+| `R` | Rerun |
+| `/` | Фильтр |
 
-Metrics tab (графики метрик) — реализован в v0.3. В v0.2 вкладка Metrics отсутствует в Run detail; доступны Stages, Logs, Manifest.
+### Run detail
 
-## Архитектура TUI
+| Key | Action |
+|-----|--------|
+| `tab` / `shift-tab` | Переключение вкладок |
+| `o` | Открыть MLflow run в браузере |
+| `e` | Открыть manifest в $EDITOR |
+| `P` | Pull артефакты |
+
+## Command palette
+
+`:goto <screen>` — навигация по имени.  
+`:launch <manifest>` — запустить манифест.  
+`:stop <id>` — остановить run.
+
+## Status bar
+
+Три сегмента:
+1. `xrun › <breadcrumb>` — текущий экран
+2. `<vendor> <status-icon> $<balance>` — состояние дефолтного вендора
+3. Screen hotkeys
+
+Предупреждения: `⚠ <Nh runway` (красный) если `balance/burn < N часов`.
+
+## Темы
+
+Доступные: `tokyo-night` (default), `catppuccin-mocha`, `gruvbox-dark`.  
+Переключение: Settings → Theme → Ctrl+S. Полный эффект после перезапуска.
+
+## Архитектура
 
 ```
-fn main_loop() {
-    let (tx_app, rx_app) = mpsc::channel();   // user events
-    let (tx_data, rx_data) = mpsc::channel(); // poller pushes data updates
+xrun (Rust CLI)
+  └─ при запуске без аргументов: spawn xrun-tui (Python Textual binary)
 
-    spawn(input_handler → tx_app);
-    spawn(poller(db, vendors) → tx_data);     // та же функция, что и в CLI
-
-    loop {
-        select! {
-            ev = rx_app.recv() => state.apply(ev),
-            data = rx_data.recv() => state.apply_data(data),
-        }
-        terminal.draw(|f| ui::render(f, &state));
-    }
-}
+xrun-tui (Python)
+  ├─ читает SQLite напрямую (aiosqlite, тот же runs.db)
+  ├─ вызывает xrun CLI через asyncio subprocess (stop, pull, launch, config)
+  └─ не пишет в SQLite напрямую — только через CLI
 ```
 
-State целиком в памяти TUI, источник правды — SQLite. Запись в SQLite только через `xrun-core` API; TUI никогда не пишет в БД мимо него.
-
-## Цвета и темы
-
-Default theme — низкоконтрастный (greys + accent). `,` → Settings → theme переключает на high-contrast. Цвета стадий и статусов прибиты:
-
-```
-pending: dim grey
-running: yellow + throbber
-ok:      green
-failed:  red bold
-warn:    magenta
-```
+Python TUI и Rust CLI используют одну БД (WAL mode — concurrent read-write безопасен).
