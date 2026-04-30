@@ -129,6 +129,7 @@ class VendorsScreen(Screen):
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
         status_widget.update("[#e0af68]checking…[/]")
+        info_widget.update("")
         try:
             label, info = await _test_kaggle_api(username, key, token)
             status_widget.update("[bold #9ece6a]✓ connected[/]")
@@ -518,7 +519,7 @@ async def _test_kaggle_api(username: str, key: str, token: str = "") -> tuple[st
             "https://www.kaggle.com/api/v1/competitions/list?page=1&pageSize=1",
             headers={"Authorization": auth_header},
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read())
         count = len(data) if isinstance(data, list) else "?"
         return label, f"[#565f89]competitions visible:[/] [#c0caf5]{count}[/]"
