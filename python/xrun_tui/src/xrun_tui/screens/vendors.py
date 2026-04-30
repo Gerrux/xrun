@@ -124,9 +124,15 @@ class VendorsScreen(Screen):
             status_widget.update("[bold #9ece6a]✓ connected[/]")
             info_widget.update(f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}")
             self.query_one(f"#vdot-{idx}", Static).update("[#9ece6a]●[/]")
+            cache = getattr(self.app, "_kaggle_status_cache", None)
+            if isinstance(cache, dict):
+                cache.update({"kaggle_user": label, "kaggle_connected": True})
         except Exception as exc:
             status_widget.update(f"[#f7768e]✗ {exc}[/]")
             self.query_one(f"#vdot-{idx}", Static).update("[#f7768e]●[/]")
+            cache = getattr(self.app, "_kaggle_status_cache", None)
+            if isinstance(cache, dict):
+                cache.clear()
 
     # ── Navigation ────────────────────────────────────────────────────────────
 

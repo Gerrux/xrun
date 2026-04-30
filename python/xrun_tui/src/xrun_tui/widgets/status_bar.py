@@ -54,10 +54,13 @@ class StatusBar(Static):
         except Exception:
             snapshot["active"] = None
 
-        # Cached vast user info (set by VendorsScreen / DashboardScreen)
+        # Cached vendor info (set by VendorsScreen / DashboardScreen)
         cache = getattr(app, "_vast_status_cache", None)
         if isinstance(cache, dict):
             snapshot.update(cache)
+        kaggle_cache = getattr(app, "_kaggle_status_cache", None)
+        if isinstance(kaggle_cache, dict):
+            snapshot.update(kaggle_cache)
 
         # Theme name (for awareness)
         snapshot["theme"] = getattr(app, "theme_name", None)
@@ -84,6 +87,11 @@ class StatusBar(Static):
                 )
             elif user:
                 parts.append(f"[#7dcfff]vast[/] [#c0caf5]{user}[/]")
+
+        if snap.get("kaggle_connected") and "kaggle_user" in snap:
+            parts.append(
+                f"[#bb9af7]kaggle[/] [#c0caf5]{snap['kaggle_user']}[/] [#565f89]free[/]"
+            )
 
         burn = snap.get("vast_burn_dph")
         if burn:

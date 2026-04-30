@@ -63,6 +63,7 @@ class XrunApp(App):
         self.db = Database(db_path)
         # Cross-screen state
         self._vast_status_cache: dict[str, Any] = {}
+        self._kaggle_status_cache: dict[str, Any] = {}
         # Resolved at splash time from `xrun config show --json` (defaults.exp_dir).
         self._exp_dir: str | None = None
         self._notif_history: deque[dict[str, Any]] = deque(maxlen=200)
