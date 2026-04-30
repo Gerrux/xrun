@@ -1,124 +1,285 @@
 # xrun
 
-Унифицированный запуск ML-экспериментов на vast.ai и Kaggle: один YAML-манифест, один CLI, один TUI, одна локальная БД с историей и метриками.
+[![CI](https://github.com/gerrux/xrun/actions/workflows/ci.yml/badge.svg)](https://github.com/gerrux/xrun/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/github/v/release/gerrux/xrun)](https://github.com/gerrux/xrun/releases)
 
-## Зачем
+**ML experiment runner** — one YAML manifest → provision GPU → upload data → train → track metrics → pull checkpoints.
 
-- Каждый запуск на vast.ai сейчас — отдельный bash-скрипт, отдельный набор путей. Это шумно (расход токенов на повторяющийся код) и нестандартизовано.
-- Kaggle-ноутбуки запускаются вручную, история не агрегируется с vast.
-- Метрики и стадии приходится вытаскивать через `vastai logs | grep` каждый раз заново.
+Works with **vast.ai** and **Kaggle**. Keeps the full history in a local SQLite database. No third-party tracking service required.
 
-`xrun` решает это: описываешь эксперимент один раз в YAML, дальше всё через `xrun launch / ls / pull / metrics`. Claude Code знает только эти команды — bash-обёртки больше не нужны.
+```
+xrun launch exp/resnet50.yaml --detach   # kick off on a vast.ai GPU
+xrun events <id> --follow                # watch stages: provision → upload → running → done
+xrun metrics <id> --ascii                # live loss / accuracy curves
+xrun pull <id> --ckpt best               # download the best checkpoint
+```
 
-## Стек
+---
 
-| Компонент | |
-|-----------|--|
-| `xrun` CLI | Rust (clap, rusqlite, tokio) |
-| TUI | Python Textual (`python/xrun_tui/`) |
-| vast.ai адаптер | Rust subprocess → `vastai` CLI + native REST |
-| Kaggle адаптер | Rust subprocess → `kaggle` CLI |
-| MLflow mirror | Rust REST client (`xrun-mlflow`) |
-| Локальный state | SQLite WAL (`runs.db`) |
-| Training hook | Python `xrun_hook` (pip-пакет) |
+## Install
 
-## Quickstart
+### macOS / Linux
 
-```bash
-# 1. Сборка CLI
-cargo build --release
-./target/release/xrun config init
-./target/release/xrun doctor
+```sh
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh
+```
 
-# 2. TUI (отдельно)
+Installs to `~/.local/bin/xrun`. Pass `--prefix /usr/local` to change the location.
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/gerrux/xrun/main/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\xrun\bin\xrun.exe` and adds it to your user `PATH`.
+
+### Specific version
+
+```sh
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh -s -- --version v0.4.0
+```
+
+### From source
+
+```sh
+cargo install --git https://github.com/gerrux/xrun xrun-cli
+```
+
+### Python TUI (optional)
+
+The interactive TUI is a separate Python package:
+
+```sh
+pip install git+https://github.com/gerrux/xrun.git#subdirectory=python/xrun_tui
+# or from a local clone:
 pip install -e python/xrun_tui
-xrun              # открывает TUI если stdout — TTY
 ```
 
-При первом запуске без credentials TUI показывает сплеш и открывает экран Vendors — нажми `i` чтобы импортировать ключ из `~/.config/vastai/vast_api_key`.
+After install, `xrun` without arguments opens the TUI automatically (when stdout is a TTY).
 
-## Основные команды
+---
 
-```bash
-xrun launch exp/foo.yaml [--detach]          # запустить эксперимент
-xrun launch exp/foo.yaml --dry-run           # проверить без запуска
-xrun ls [--status running] [--json]          # список запусков
-xrun events <id> [--follow]                  # стадии: provision → upload → train → done
-xrun logs <id> [--follow]                    # stdout (--follow = SSH tail -F)
-xrun metrics <id> [--ascii] [--json] [--png] # метрики
-xrun pull <id> [--ckpt best] [--into dir/]   # скачать чекпоинты/артефакты
-xrun stop <id>                               # остановить
-xrun balance                                 # баланс vast.ai
-xrun doctor                                  # диагностика окружения
+## Quick start
+
+```sh
+# 1. Check your environment
+xrun doctor
+
+# 2. Set your vast.ai API key (or use the TUI: xrun → V → i)
+xrun config set vast.api_key <YOUR_KEY>
+
+# 3. Create a manifest
+cp exp/base.yaml exp/my_run.yaml   # edit gpu, data, run.cmd, …
+
+# 4. Launch (detached background run)
+xrun launch exp/my_run.yaml --detach
+#  → prints run ID, e.g. 01J2KX...
+
+# 5. Follow stages
+xrun events <id> --follow
+#  provision → upload → running → done
+
+# 6. Watch metrics
+xrun metrics <id> --ascii
+
+# 7. Retrieve the best checkpoint
+xrun pull <id> --ckpt best --into models/
 ```
 
-Все read-команды поддерживают `--json`. Полный справочник: [docs/CLI.md](docs/CLI.md).
+---
 
-## TUI
+## Commands
 
-```bash
-xrun          # запускает TUI (Python Textual) если stdout — TTY
-xrun-tui      # прямой вызов
-```
+| Command | Description |
+|---------|-------------|
+| `xrun launch <manifest>` | Provision → upload → exec; `--detach` returns immediately |
+| `xrun ls` | List runs; `--status running\|done\|failed`, `--json` |
+| `xrun show <id>` | Full run card from local DB |
+| `xrun events <id>` | Stage timeline; `--follow` polls until terminal |
+| `xrun logs <id>` | stdout log; `--follow` streams via SSH |
+| `xrun metrics <id>` | Metrics table/chart; `--ascii`, `--json`, `--png` |
+| `xrun pull <id>` | Download checkpoints; `--ckpt best\|latest\|all` |
+| `xrun stop <id>` | Graceful stop → pull artifacts → destroy instance |
+| `xrun rerun <id>` | Re-run with optional `--patch run.args.--lr=5e-4` |
+| `xrun balance` | vast.ai account balance |
+| `xrun doctor` | Check credentials, CLI tools, connectivity |
+| `xrun config` | `init \| show \| set <key> <val>` |
+| `xrun gc` | Remove orphan instances |
 
-Экраны: Dashboard · Runs · Run detail (Stages/Logs/Metrics/Manifest) · Instances · Vendors · Launch · Settings · Doctor
+All read commands support `--json` for scripting.  
+Full reference: [`docs/CLI.md`](docs/CLI.md)
 
-Навигация: `g r` Runs · `g v` Vendors · `g s` Settings · `g l` Launch · `?` Help · `:` Command palette
+---
 
-## Budget guards
-
-```bash
-xrun launch exp/foo.yaml \
-  --max-cost 5.0 \      # auto-destroy при $5 потраченных
-  --max-hours 8 \       # auto-destroy через 8 часов
-  --idle-timeout 30     # auto-destroy если GPU idle 30+ минут
-```
-
-Poll-daemon сам гасит инстанс при превышении cap, записывает `auto_destroyed_reason` в БД.
-
-## Манифест (минимальный)
+## Manifest
 
 ```yaml
-name: my_experiment
-vendor: vast
+name: resnet50_baseline
+vendor: vast          # or: kaggle
 gpu: RTX_4090
+
+# budget guards (auto-destroy when exceeded)
+max_cost: 5.0         # USD
+max_hours: 8
+
 data:
   - src: data/train.h5
     dst: /workspace/data/train.h5
+
 run:
   cmd: python train.py
   args:
     --lr: 5e-4
-    --batch-size: 4
+    --epochs: 30
+    --batch-size: 16
+
 artifacts:
-  patterns: ["checkpoints/best*.pt"]
+  patterns:
+    - "checkpoints/best*.pt"
+    - "logs/metrics.json"
 ```
 
-Полная схема: [docs/MANIFEST.md](docs/MANIFEST.md)
+Full schema: [`docs/MANIFEST.md`](docs/MANIFEST.md)
 
-## Документация
+---
 
-| Файл | Содержимое |
-|------|------------|
-| [docs/CLI.md](docs/CLI.md) | Все подкоманды, флаги, exit codes |
-| [docs/MANIFEST.md](docs/MANIFEST.md) | Полная YAML-схема с примерами |
-| [docs/TUI.md](docs/TUI.md) | Экраны, биндинги, виджеты |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Компоненты, поток данных |
-| [docs/EVENTS.md](docs/EVENTS.md) | Протокол events.jsonl + Python hook |
-| [docs/STATE.md](docs/STATE.md) | SQLite-схема |
-| [docs/SKILL.md](docs/SKILL.md) | Claude Code skill |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | История версий и backlog |
+## TUI
 
-## Статус: v0.3 complete
+```sh
+xrun        # opens TUI if stdout is a TTY
+xrun-tui    # direct launch (after pip install)
+```
+
+**Screens** (chord navigation with `g→X`):
+
+| Key | Screen |
+|-----|--------|
+| `g d` | Dashboard — burn rate, active runs, runway warning |
+| `g r` | Runs — filterable list with live status |
+| `g i` | Instances — raw vast.ai / Kaggle instances |
+| `g v` | Vendors — API key management, balance |
+| `g l` | Launch — manifest picker |
+| `g s` | Settings — config editor |
+| `?`   | Help |
+| `:`   | Command palette |
+
+Run detail opens on `Enter` and has tabs: **Stages · Logs · Metrics · Artifacts · Manifest**
+
+---
+
+## Training hook
+
+Add `xrun_hook` to your training script to emit structured events and metrics:
+
+```python
+# pip install git+https://github.com/gerrux/xrun.git#subdirectory=python/xrun_hook
+from xrun_hook import XRunHook
+
+hook = XRunHook()
+hook.event("epoch_start", stage="train", msg=f"epoch {epoch}")
+
+for epoch in range(epochs):
+    loss = train_one_epoch(...)
+    hook.metric("train_loss", loss, step=epoch)
+    hook.metric("val_f1",   eval_f1, step=epoch)
+
+hook.event("done", stage="train")
+```
+
+Metrics appear in `xrun metrics <id>` and the TUI in real time.
+
+---
+
+## Budget guards
+
+```sh
+xrun launch exp/foo.yaml \
+  --max-cost 5.0      \  # auto-destroy after $5 spent
+  --max-hours 8       \  # auto-destroy after 8 hours
+  --idle-timeout 30      # auto-destroy if GPU idle for 30 minutes
+```
+
+The background poll-daemon monitors spend and destroys the instance automatically, writing `auto_destroyed_reason` to the local DB.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 Local machine                        │
+│                                                      │
+│  xrun (Rust CLI)  ──spawn──▶  xrun-tui (Python)     │
+│        │                           │                 │
+│        ▼                           ▼                 │
+│     xrun-core  ◀──────────  SQLite runs.db           │
+│        │                                             │
+│   ┌────┴────┐   ┌────────────┐                       │
+│   │xrun-vast│   │xrun-kaggle │                       │
+│   └────┬────┘   └─────┬──────┘                       │
+└────────┼──────────────┼──────────────────────────────┘
+         ▼              ▼
+    vast.ai GPU    Kaggle Kernel
+    /workspace/    output/
+```
+
+- **`xrun-cli`** — command routing, user-facing UX
+- **`xrun-core`** — manifest types, SQLite schema, vendor trait
+- **`xrun-vast`** — vast.ai: provision, SSH upload, exec, poll, transfer
+- **`xrun-kaggle`** — Kaggle: kernel push, status poll, output download
+- **`xrun-poller`** — background daemon: events/metrics → SQLite, budget enforcement
+- **`xrun-mlflow`** — optional MLflow REST mirror for metric storage
+- **`xrun-tui`** (Python) — Textual TUI, reads SQLite, calls CLI via subprocess
+
+---
+
+## Requirements
+
+**For the CLI:**
+- [vastai CLI](https://github.com/vast-ai/vast-python) (`pip install vastai`) — for vast.ai runs
+- [kaggle CLI](https://github.com/Kaggle/kaggle-api) (`pip install kaggle`) — for Kaggle runs
+- SSH key configured for vast.ai (checked by `xrun doctor`)
+
+**For the TUI:**
+- Python ≥ 3.11
+- `pip install -e python/xrun_tui` (or via git URL above)
+
+**Building from source:**
+- Rust stable (≥ 1.75) — [install via rustup](https://rustup.rs)
+
+---
+
+## Documentation
+
+| File | Contents |
+|------|----------|
+| [`docs/CLI.md`](docs/CLI.md) | All subcommands, flags, exit codes |
+| [`docs/MANIFEST.md`](docs/MANIFEST.md) | Full YAML schema with examples |
+| [`docs/TUI.md`](docs/TUI.md) | Screens, key bindings, widgets |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Components and data flow |
+| [`docs/EVENTS.md`](docs/EVENTS.md) | events.jsonl protocol + Python hook |
+| [`docs/STATE.md`](docs/STATE.md) | SQLite schema |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version history and backlog |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
+
+---
+
+## Status: v0.4.0
 
 - ✅ vast.ai: provision, upload, exec, poll, pull, destroy
-- ✅ Kaggle: kernels push/status/output, embedded hook
-- ✅ Events и метрики в SQLite в реальном времени
-- ✅ MLflow mirror (метрики + ссылка на UI)
-- ✅ `xrun metrics --png` (plotters, Tokyo Night)
-- ✅ Budget guards (caps, confirm flow, auto-destroy, spend dashboard)
-- ✅ Python Textual TUI: 16 экранов, chord-навигация, Tokyo Night тема
-- ✅ `xrun events --follow` (SQLite poll), `xrun logs --follow` (SSH tail)
-- ✅ Claude Code skill + CLAUDE.md
+- ✅ Kaggle: kernel push, status poll, output download
+- ✅ Live events and metrics in SQLite
+- ✅ MLflow mirror (metrics + UI link)
+- ✅ Budget guards (caps, auto-destroy, spend dashboard)
+- ✅ Python Textual TUI: 16 screens, chord navigation, Tokyo Night theme
+- ✅ `xrun events --follow`, `xrun logs --follow`
+- ✅ Install scripts for macOS, Linux, Windows
+- ⏳ `xrun sweep` — hyperparameter grid (v0.5 backlog)
 
-Следующее: `xrun sweep` (hyperparameter grid), native vast.ai REST, web UI.
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE)
