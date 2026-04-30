@@ -89,8 +89,8 @@ class VendorsScreen(Screen):
 
     def on_mount(self) -> None:
         self._highlight(self._cursor)
-        self.call_after_refresh(self._check_vast)
-        self.call_after_refresh(self._check_kaggle)
+        self.run_worker(self._check_vast(),   exclusive=False, group="probe")
+        self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
 
     async def _check_vast(self) -> None:
         api_key = config.get_vast_api_key()
@@ -191,7 +191,7 @@ class VendorsScreen(Screen):
             self._creds = creds
             self._refresh_row(0)
             self.notify("vast.ai key imported from native config", severity="information")
-            self.call_after_refresh(self._check_vast)
+            self.run_worker(self._check_vast(), exclusive=False, group="probe")
 
         elif vid == "kaggle":
             # 1. KAGGLE_API_TOKEN env var
@@ -282,9 +282,9 @@ class VendorsScreen(Screen):
         for i in range(len(_VENDORS)):
             self._refresh_row(i)
         if self._creds.get("vast", {}).get("api_key"):
-            self.call_after_refresh(self._check_vast)
+            self.run_worker(self._check_vast(),   exclusive=False, group="probe")
         if _vendor_configured(self._creds, "kaggle"):
-            self.call_after_refresh(self._check_kaggle)
+            self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
