@@ -17,6 +17,10 @@ fn resolve_vast_key(config_dir: &Path) -> Option<String> {
 }
 
 fn kaggle_configured(config_dir: &Path) -> bool {
+    // Check env var / access_token file first (no disk config needed).
+    if Credentials::import_kaggle_access_token().ok().flatten().is_some() {
+        return true;
+    }
     Credentials::load(config_dir)
         .map(|c| {
             c.kaggle.token.is_some()

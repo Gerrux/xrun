@@ -53,9 +53,39 @@ impl Credentials {
         )
     }
 
+    /// Path to new-style token file (`~/.kaggle/access_token`).
+    pub fn kaggle_access_token_path() -> Option<PathBuf> {
+        let base = directories::BaseDirs::new()?;
+        Some(base.home_dir().join(".kaggle").join("access_token"))
+    }
+
+    /// Path to legacy credentials file (`~/.kaggle/kaggle.json`).
     pub fn kaggle_native_path() -> Option<PathBuf> {
         let base = directories::BaseDirs::new()?;
         Some(base.home_dir().join(".kaggle").join("kaggle.json"))
+    }
+
+    /// Try to read `~/.kaggle/access_token`. Returns `Ok(Some(token))` if present.
+    pub fn import_kaggle_access_token() -> Result<Option<String>, std::io::Error> {
+        // Also honour KAGGLE_API_TOKEN env var (same precedence as the file).
+        if let Ok(tok) = std::env::var("KAGGLE_API_TOKEN") {
+            let tok = tok.trim().to_string();
+            if !tok.is_empty() {
+                return Ok(Some(tok));
+            }
+        }
+        let Some(path) = Self::kaggle_access_token_path() else {
+            return Ok(None);
+        };
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let token = raw.trim().to_string();
+        if token.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(token))
     }
 
     /// Try to read `vastai`'s native key file. Returns `Ok(Some)` if the file

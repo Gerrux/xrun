@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import urllib.request
 from pathlib import Path
 
@@ -26,7 +27,11 @@ def _vendor_configured(creds: dict, vid: str) -> bool:
     """Return True if the vendor has all required credentials set."""
     v = creds.get(vid, {})
     if vid == "kaggle":
-        # New-style Bearer token OR legacy username+key
+        # Env var / access_token file takes priority (no stored creds needed)
+        if os.environ.get("KAGGLE_API_TOKEN", "").strip():
+            return True
+        if (Path.home() / ".kaggle" / "access_token").exists():
+            return True
         return bool(v.get("token")) or (bool(v.get("username")) and bool(v.get("key")))
     return bool(v.get("api_key"))
 
@@ -112,13 +117,18 @@ class VendorsScreen(Screen):
         v = self._creds.get("kaggle", {})
         if not _vendor_configured({"kaggle": v}, "kaggle"):
             return
+        # Resolve token: env var > access_token file > stored token > legacy user+key
+        token = (
+            os.environ.get("KAGGLE_API_TOKEN", "").strip()
+            or _read_access_token_file()
+            or v.get("token", "").strip()
+        )
         username = v.get("username", "").strip()
         key      = v.get("key", "").strip()
         idx = next(i for i, (vid, _, _) in enumerate(_VENDORS) if vid == "kaggle")
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
         status_widget.update("[#e0af68]checking…[/]")
-        token = v.get("token", "").strip()
         try:
             label, info = await _test_kaggle_api(username, key, token)
             status_widget.update("[bold #9ece6a]✓ connected[/]")
@@ -183,26 +193,53 @@ class VendorsScreen(Screen):
             self.call_after_refresh(self._check_vast)
 
         elif vid == "kaggle":
-            native = Path.home() / ".kaggle" / "kaggle.json"
-            if not native.exists():
-                self.notify("~/.kaggle/kaggle.json not found", severity="warning")
-                return
-            try:
-                data = json.loads(native.read_text(encoding="utf-8"))
-                username = data.get("username", "").strip()
-                key = data.get("key", "").strip()
-                if not username or not key:
-                    self.notify("kaggle.json missing username or key", severity="warning")
-                    return
-            except Exception as exc:
-                self.notify(f"Failed to parse kaggle.json: {exc}", severity="error")
-                return
+            # 1. KAGGLE_API_TOKEN env var
+            env_token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+            # 2. New-style access_token file
+            access_token_path = Path.home() / ".kaggle" / "access_token"
+            # 3. Legacy kaggle.json
+            legacy_path = Path.home() / ".kaggle" / "kaggle.json"
+
             creds = dict(self._creds)
-            creds.setdefault("kaggle", {}).update({"username": username, "key": key})
-            config.write_credentials(creds)
-            self._creds = creds
-            self._refresh_row(1)
-            self.notify(f"Kaggle credentials imported ({username})", severity="information")
+
+            if env_token:
+                creds.setdefault("kaggle", {})["token"] = env_token
+                config.write_credentials(creds)
+                self._creds = creds
+                self._refresh_row(1)
+                self.notify("Kaggle token imported from KAGGLE_API_TOKEN env var", severity="information")
+            elif access_token_path.exists():
+                token = access_token_path.read_text(encoding="utf-8").strip()
+                if not token:
+                    self.notify("~/.kaggle/access_token is empty", severity="warning")
+                    return
+                creds.setdefault("kaggle", {})["token"] = token
+                config.write_credentials(creds)
+                self._creds = creds
+                self._refresh_row(1)
+                self.notify("Kaggle token imported from ~/.kaggle/access_token", severity="information")
+            elif legacy_path.exists():
+                try:
+                    data = json.loads(legacy_path.read_text(encoding="utf-8"))
+                    username = data.get("username", "").strip()
+                    key = data.get("key", "").strip()
+                    if not username or not key:
+                        self.notify("kaggle.json missing username or key", severity="warning")
+                        return
+                except Exception as exc:
+                    self.notify(f"Failed to parse kaggle.json: {exc}", severity="error")
+                    return
+                creds.setdefault("kaggle", {}).update({"username": username, "key": key})
+                config.write_credentials(creds)
+                self._creds = creds
+                self._refresh_row(1)
+                self.notify(f"Kaggle credentials imported ({username})", severity="information")
+            else:
+                self.notify(
+                    "No Kaggle credentials found. Checked: KAGGLE_API_TOKEN, "
+                    "~/.kaggle/access_token, ~/.kaggle/kaggle.json",
+                    severity="warning",
+                )
 
     async def action_revoke(self) -> None:
         vid, vname, _ = _VENDORS[self._cursor]
@@ -498,6 +535,15 @@ async def fetch_vast_instances(api_key: str) -> list[dict]:
             return json.loads(r.read())
     data = await asyncio.to_thread(_do)
     return data.get("instances", [])
+
+
+def _read_access_token_file() -> str:
+    """Return contents of ~/.kaggle/access_token, or empty string if absent."""
+    p = Path.home() / ".kaggle" / "access_token"
+    try:
+        return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+    except Exception:
+        return ""
 
 
 def _masked(key: str) -> str:
