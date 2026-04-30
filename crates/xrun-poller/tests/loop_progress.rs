@@ -62,6 +62,8 @@ impl VendorAdapter for MockVendor {
     fn tail(&self, _h: &InstanceHandle, file: &str, _offset: u64) -> Result<Vec<u8>, VendorError> {
         let queue = if file.contains("metrics") {
             &self.metrics_queue
+        } else if file.contains("stdout") {
+            return Ok(vec![]);
         } else {
             &self.events_queue
         };
