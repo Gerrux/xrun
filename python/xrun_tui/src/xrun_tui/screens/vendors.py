@@ -466,7 +466,7 @@ async def _test_kaggle_api(username: str, key: str, token: str = "") -> tuple[st
     def _do() -> tuple[str, str]:
         if token:
             auth_header = f"Bearer {token}"
-            label = "token"
+            label = "API token"
         else:
             encoded = base64.b64encode(f"{username}:{key}".encode()).decode()
             auth_header = f"Basic {encoded}"
