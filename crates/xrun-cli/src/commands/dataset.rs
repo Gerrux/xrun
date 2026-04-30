@@ -58,7 +58,11 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
     let adapter = KaggleAdapter::new().with_credentials(creds);
     let cli = adapter.cli();
 
-    eprintln!("Pushing {} as Kaggle dataset {}…", args.local_dir.display(), args.slug);
+    eprintln!(
+        "Pushing {} as Kaggle dataset {}…",
+        args.local_dir.display(),
+        args.slug
+    );
     cli.dataset_push(&args.local_dir, &args.slug, args.message.as_deref())
         .with_context(|| format!("failed to push dataset '{}'", args.slug))?;
 
@@ -136,7 +140,10 @@ pub fn run_list(args: &DatasetListArgs, config_dir: &Path) -> Result<()> {
         .context("failed to list Kaggle datasets")?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&items).unwrap_or_default()
+        );
     } else {
         if items.is_empty() {
             println!("(no datasets found)");

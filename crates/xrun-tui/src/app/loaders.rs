@@ -3,7 +3,9 @@ use ratatui::backend::Backend;
 use ratatui::Terminal;
 use xrun_core::{ListFilter, RunId, RunStatus};
 
-use crate::state::{LaunchManifest, LogPaneState, RunDetailState, RunSection, Screen, SettingsState};
+use crate::state::{
+    LaunchManifest, LogPaneState, RunDetailState, RunSection, Screen, SettingsState,
+};
 
 use super::{vendor_name, App};
 

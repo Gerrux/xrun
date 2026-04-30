@@ -138,8 +138,9 @@ pub fn run(
             Box::new(adapter)
         }
         _ => {
-            let adapter_store = Store::open(db_path)
-                .with_context(|| format!("failed to open adapter store at {}", db_path.display()))?;
+            let adapter_store = Store::open(db_path).with_context(|| {
+                format!("failed to open adapter store at {}", db_path.display())
+            })?;
             let creds = resolve_vast_credentials(config_dir);
             let adapter = VastAdapter::new(creds, adapter_store);
             adapter.set_run_id(&run_id);

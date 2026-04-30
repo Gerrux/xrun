@@ -24,6 +24,6 @@ pub use store::{
 };
 pub use updates::DataUpdate;
 pub use vendor::{
-    DryRunPlan, InstanceHandle, PollCompletion, SyntheticEvent, VendorAdapter, VendorRemoteInstance,
-    VendorStatus,
+    DryRunPlan, InstanceHandle, PollCompletion, SyntheticEvent, VendorAdapter,
+    VendorRemoteInstance, VendorStatus,
 };

@@ -18,13 +18,16 @@ fn resolve_vast_key(config_dir: &Path) -> Option<String> {
 
 fn kaggle_configured(config_dir: &Path) -> bool {
     // Check env var / access_token file first (no disk config needed).
-    if Credentials::import_kaggle_access_token().ok().flatten().is_some() {
+    if Credentials::import_kaggle_access_token()
+        .ok()
+        .flatten()
+        .is_some()
+    {
         return true;
     }
     Credentials::load(config_dir)
         .map(|c| {
-            c.kaggle.token.is_some()
-                || (c.kaggle.username.is_some() && c.kaggle.key.is_some())
+            c.kaggle.token.is_some() || (c.kaggle.username.is_some() && c.kaggle.key.is_some())
         })
         .unwrap_or(false)
 }
@@ -82,7 +85,9 @@ pub fn run(args: &BalanceArgs, config_dir: &Path) -> Result<()> {
         }
 
         if kaggle {
-            println!("kaggle     free tier — GPU quota 30h/week (exact remainder not available via API)");
+            println!(
+                "kaggle     free tier — GPU quota 30h/week (exact remainder not available via API)"
+            );
         }
     }
 

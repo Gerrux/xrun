@@ -84,7 +84,12 @@ fn try_parse_jsonl(s: &str, ts: DateTime<Utc>) -> Option<Vec<Metric>> {
         }
         if let Some(f) = val.as_f64() {
             if f.is_finite() {
-                metrics.push(Metric { ts, step, key: key.clone(), value: f });
+                metrics.push(Metric {
+                    ts,
+                    step,
+                    key: key.clone(),
+                    value: f,
+                });
             }
         }
     }
@@ -155,7 +160,12 @@ fn try_parse_kv(s: &str, ts: DateTime<Utc>) -> Vec<Metric> {
             if !k.is_empty() && !k.contains(' ') && !step_keys.contains(&k.as_str()) {
                 if let Ok(f) = v.parse::<f64>() {
                     if f.is_finite() {
-                        metrics.push(Metric { ts, step, key: k, value: f });
+                        metrics.push(Metric {
+                            ts,
+                            step,
+                            key: k,
+                            value: f,
+                        });
                     }
                 }
             }
@@ -167,7 +177,12 @@ fn try_parse_kv(s: &str, ts: DateTime<Utc>) -> Vec<Metric> {
                     let v = next.trim_matches(['[', ']', ',', ';']);
                     if let Ok(f) = v.parse::<f64>() {
                         if f.is_finite() {
-                            metrics.push(Metric { ts, step, key: k, value: f });
+                            metrics.push(Metric {
+                                ts,
+                                step,
+                                key: k,
+                                value: f,
+                            });
                             i += 1; // consume the value token
                         }
                     }
@@ -180,7 +195,12 @@ fn try_parse_kv(s: &str, ts: DateTime<Utc>) -> Vec<Metric> {
             if !k.is_empty() && !k.contains(' ') && !step_keys.contains(&k.as_str()) {
                 if let Ok(f) = v.parse::<f64>() {
                     if f.is_finite() {
-                        metrics.push(Metric { ts, step, key: k, value: f });
+                        metrics.push(Metric {
+                            ts,
+                            step,
+                            key: k,
+                            value: f,
+                        });
                     }
                 }
             }
@@ -195,7 +215,9 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn ts() -> DateTime<Utc> { Utc::now() }
+    fn ts() -> DateTime<Utc> {
+        Utc::now()
+    }
 
     fn keys(ms: &[Metric]) -> Vec<&str> {
         ms.iter().map(|m| m.key.as_str()).collect()

@@ -233,9 +233,7 @@ impl App {
 /// Best-effort budget summary from a manifest path: (vendor, $/hr, max_hours,
 /// max_cost). Returns `None` if the manifest is unreadable or not a vast spec —
 /// the caller falls back to a plain confirm message.
-fn read_manifest_estimate(
-    path: &str,
-) -> Option<(String, f64, Option<f64>, Option<f64>)> {
+fn read_manifest_estimate(path: &str) -> Option<(String, f64, Option<f64>, Option<f64>)> {
     let yaml = std::fs::read_to_string(path).ok()?;
     let manifest = Manifest::from_yaml_str(&yaml).ok()?;
     let vast = manifest.vast.as_ref()?;

@@ -64,16 +64,13 @@ async fn run_vastai_inner(args: Vec<String>) -> Result<Vec<u8>, VastError> {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         vastai_cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = vastai_cmd
-        .output()
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                VastError::NotFound("vastai binary not found in PATH".to_string())
-            } else {
-                VastError::Io(e)
-            }
-        })?;
+    let output = vastai_cmd.output().await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            VastError::NotFound("vastai binary not found in PATH".to_string())
+        } else {
+            VastError::Io(e)
+        }
+    })?;
 
     if !output.status.success() {
         let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();

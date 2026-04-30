@@ -262,7 +262,13 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         .name
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     let actual_suffix = kaggle_spec
         .kernel_slug
@@ -275,7 +281,10 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         ok: slug_ok,
         warn_only: true,
         detail: if slug_ok {
-            format!("kernel_slug '{}' matches manifest name", kaggle_spec.kernel_slug)
+            format!(
+                "kernel_slug '{}' matches manifest name",
+                kaggle_spec.kernel_slug
+            )
         } else {
             format!(
                 "kernel_slug suffix '{}' differs from slugified manifest name '{}' — \
@@ -332,11 +341,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
                          training will fail until it finishes processing"
                     ),
                 ),
-                Err(e) => (
-                    false,
-                    false,
-                    format!("dataset '{slug}' check failed: {e}"),
-                ),
+                Err(e) => (false, false, format!("dataset '{slug}' check failed: {e}")),
             };
             checks.push(Check {
                 name: "kaggle_dataset",

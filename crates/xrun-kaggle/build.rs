@@ -7,10 +7,7 @@ fn main() {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from(&manifest_dir));
 
-    let dist_dir = workspace_root
-        .join("python")
-        .join("xrun_hook")
-        .join("dist");
+    let dist_dir = workspace_root.join("python").join("xrun_hook").join("dist");
 
     // Rebuild when the dist directory or the env flag changes.
     println!("cargo:rerun-if-changed={}", dist_dir.display());
@@ -29,7 +26,10 @@ fn main() {
                 wheel_path.display()
             );
             println!("cargo:rerun-if-changed={}", wheel_path.display());
-            eprintln!("cargo:warning=embedding xrun_hook wheel: {}", wheel_path.display());
+            eprintln!(
+                "cargo:warning=embedding xrun_hook wheel: {}",
+                wheel_path.display()
+            );
         }
         None => {
             panic!(
@@ -46,14 +46,11 @@ fn main() {
 
 fn find_wheel(dist_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let entries = std::fs::read_dir(dist_dir).ok()?;
-    entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| {
-            p.extension().map(|ext| ext == "whl").unwrap_or(false)
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("xrun_hook"))
-                    .unwrap_or(false)
-        })
+    entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+        p.extension().map(|ext| ext == "whl").unwrap_or(false)
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("xrun_hook"))
+                .unwrap_or(false)
+    })
 }

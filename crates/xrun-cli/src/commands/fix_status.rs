@@ -77,8 +77,8 @@ pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &P
             }
         };
 
-        let handle: InstanceHandle = serde_json::from_str(&state_json)
-            .context("failed to deserialize instance handle")?;
+        let handle: InstanceHandle =
+            serde_json::from_str(&state_json).context("failed to deserialize instance handle")?;
 
         let vendor: Box<dyn VendorAdapter> = match run.vendor.as_str() {
             "kaggle" => {
@@ -174,7 +174,9 @@ fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
         }
     }
     if let Ok(Some(token)) = Credentials::import_vast_native() {
-        return VastCredentials { api_key: Some(token) };
+        return VastCredentials {
+            api_key: Some(token),
+        };
     }
     VastCredentials::default()
 }

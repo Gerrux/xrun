@@ -10,7 +10,10 @@ use xrun_core::{
     error::VendorError,
     manifest::{DataSource, Manifest, RunSpec},
     store::{RunId, RunStatus, Store},
-    vendor::{DryRunPlan, InstanceHandle, PollCompletion, SyntheticEvent, VendorAdapter, VendorRemoteInstance, VendorStatus},
+    vendor::{
+        DryRunPlan, InstanceHandle, PollCompletion, SyntheticEvent, VendorAdapter,
+        VendorRemoteInstance, VendorStatus,
+    },
 };
 
 use crate::cli::{KaggleCli, KaggleProcess, KernelState};
@@ -85,8 +88,6 @@ impl KaggleAdapter {
         let sp = self.store_path.as_ref()?;
         Some(sp.join("runs").join(run_id.to_string()).join("artifacts"))
     }
-
-
 }
 
 impl Default for KaggleAdapter {
@@ -234,12 +235,17 @@ impl VendorAdapter for KaggleAdapter {
                 ),
             )
         } else {
-            let setup_block = manifest.run.setup.as_deref().unwrap_or("").trim().to_string();
+            let setup_block = manifest
+                .run
+                .setup
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let cmd_block = manifest.run.cmd.as_deref().unwrap_or("").trim().to_string();
             let workdir = manifest.run.workdir.as_deref().unwrap_or("/kaggle/working");
             // §11: pass dataset slugs so main.py can probe XRUN_INPUT_DIR
-            let main_py =
-                build_script_main(&setup_block, &cmd_block, workdir, &dataset_sources);
+            let main_py = build_script_main(&setup_block, &cmd_block, workdir, &dataset_sources);
             std::fs::write(staging.join("main.py"), main_py)
                 .map_err(|e| VendorError::Other(format!("failed to write entry script: {e}")))?;
             (
@@ -394,9 +400,7 @@ impl VendorAdapter for KaggleAdapter {
                 currency: None,
                 account: Some(account),
                 last_checked: Utc::now(),
-                error: Some(
-                    "GPU quota: 30 h/week (not queryable via API)".to_string(),
-                ),
+                error: Some("GPU quota: 30 h/week (not queryable via API)".to_string()),
             }),
             Err(e) => Ok(VendorStatus {
                 connected: false,
@@ -455,18 +459,14 @@ impl VendorAdapter for KaggleAdapter {
         let mut events: Vec<SyntheticEvent> = Vec::new();
 
         // Emit transition events (emitted exactly once per transition)
-        if prev.as_ref() != Some(&KernelState::Queued)
-            && new_state == KernelState::Queued
-        {
+        if prev.as_ref() != Some(&KernelState::Queued) && new_state == KernelState::Queued {
             events.push(SyntheticEvent {
                 stage: "queued".into(),
                 status: "start".into(),
                 msg: None,
             });
         }
-        if prev.as_ref() != Some(&KernelState::Running)
-            && new_state == KernelState::Running
-        {
+        if prev.as_ref() != Some(&KernelState::Running) && new_state == KernelState::Running {
             events.push(SyntheticEvent {
                 stage: "running".into(),
                 status: "start".into(),
@@ -527,7 +527,11 @@ impl VendorAdapter for KaggleAdapter {
 ///
 /// When the previous kernel version is still running, Kaggle returns 409. We
 /// poll until the current version completes, then retry the push once.
-fn push_with_retry(cli: &KaggleCli, staging: &Path, max_retries: u32) -> Result<String, VendorError> {
+fn push_with_retry(
+    cli: &KaggleCli,
+    staging: &Path,
+    max_retries: u32,
+) -> Result<String, VendorError> {
     for attempt in 0..=max_retries {
         match cli.push(staging) {
             Ok(slug) => return Ok(slug),

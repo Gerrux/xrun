@@ -391,7 +391,10 @@ impl Poller {
                 .tail(&self.handle, &self.config.stdout_file, offset_s)
             {
                 Ok(bytes) if !bytes.is_empty() => {
-                    let log_path = self.runs_dir.join(self.run_id.to_string()).join("stdout.log");
+                    let log_path = self
+                        .runs_dir
+                        .join(self.run_id.to_string())
+                        .join("stdout.log");
                     use std::io::Write;
                     if let Ok(mut f) = std::fs::OpenOptions::new()
                         .create(true)
@@ -406,7 +409,9 @@ impl Poller {
                 Err(VendorError::Truncated) => {
                     // Remote log was truncated (pre-emption restart): start over.
                     if let Ok(()) = std::fs::remove_file(
-                        self.runs_dir.join(self.run_id.to_string()).join("stdout.log"),
+                        self.runs_dir
+                            .join(self.run_id.to_string())
+                            .join("stdout.log"),
                     ) {}
                     offset_s = 0;
                 }
@@ -582,7 +587,8 @@ impl Poller {
                     ));
                 }
                 if let Some(terminal) = completion.terminal_status {
-                    self.store.update_run_status(&self.run_id, terminal.clone())?;
+                    self.store
+                        .update_run_status(&self.run_id, terminal.clone())?;
                     self.send_update(DataUpdate::RunStatusChanged(
                         self.run_id.clone(),
                         terminal.clone(),
