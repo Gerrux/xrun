@@ -101,7 +101,6 @@ pub async fn wait_for_ssh_ready(
             ]);
             #[cfg(windows)]
             {
-                use std::os::windows::process::CommandExt;
                 const CREATE_NO_WINDOW: u32 = 0x08000000;
                 probe_cmd.creation_flags(CREATE_NO_WINDOW);
             }
@@ -157,7 +156,6 @@ pub async fn ssh_exec(host: &str, port: u16, cmd: &str) -> Result<Vec<u8>, VastE
     ]);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         ssh_exec_cmd.creation_flags(CREATE_NO_WINDOW);
     }

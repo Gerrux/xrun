@@ -151,7 +151,7 @@ async fn tar_upload(
             "command -v zstd >/dev/null 2>&1 || { echo 'zstd not found'; exit 127; }",
         )
         .await;
-        if let Err(_) = check {
+        if check.is_err() {
             return Err(VastError::CliFailure {
                 exit_code: 127,
                 stderr: format!(

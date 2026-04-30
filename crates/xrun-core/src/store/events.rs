@@ -70,4 +70,28 @@ impl Store {
             .collect();
         Ok(rows?)
     }
+
+    pub fn list_events_after(
+        &self,
+        run_id: &super::RunId,
+        after_rowid: i64,
+    ) -> Result<Vec<StoredEvent>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rowid, ts, stage, status, msg, payload_json \
+             FROM events WHERE run_id = ?1 AND rowid > ?2 ORDER BY ts",
+        )?;
+        let rows: rusqlite::Result<Vec<StoredEvent>> = stmt
+            .query_map(params![run_id, after_rowid], |row| {
+                Ok(StoredEvent {
+                    id: row.get(0)?,
+                    ts: row.get(1)?,
+                    stage: row.get(2)?,
+                    status: row.get(3)?,
+                    msg: row.get(4)?,
+                    payload_json: row.get(5)?,
+                })
+            })?
+            .collect();
+        Ok(rows?)
+    }
 }
