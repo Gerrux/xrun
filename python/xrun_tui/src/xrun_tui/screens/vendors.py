@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import urllib.request
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -20,6 +21,14 @@ _VENDORS = [
 ]
 
 
+def _vendor_configured(creds: dict, vid: str) -> bool:
+    """Return True if the vendor has all required credentials set."""
+    v = creds.get(vid, {})
+    if vid == "kaggle":
+        return bool(v.get("username")) and bool(v.get("key"))
+    return bool(v.get("api_key"))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Overview screen
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -27,11 +36,13 @@ _VENDORS = [
 class VendorsScreen(Screen):
     TITLE = "xrun — vendors"
     BINDINGS = [
-        Binding("escape,q", "go_back", "Back"),
-        Binding("e",        "edit",    "Edit credentials"),
-        Binding("t",        "test",    "Test connection"),
-        Binding("j,down",   "next",    "Down", show=False),
-        Binding("k,up",     "prev",    "Up",   show=False),
+        Binding("escape,q",   "go_back", "Back"),
+        Binding("enter,e",    "edit",    "Edit"),
+        Binding("i",          "import_native", "Import"),
+        Binding("t",          "test",    "Test"),
+        Binding("r",          "revoke",  "Revoke"),
+        Binding("j,down",     "next",    "Down",   show=False),
+        Binding("k,up",       "prev",    "Up",     show=False),
     ]
 
     def __init__(self) -> None:
@@ -44,7 +55,7 @@ class VendorsScreen(Screen):
         yield Static("Vendors & Credentials", classes="screen-title")
         with Vertical(id="vendor-overview"):
             for i, (vid, vname, vdesc) in enumerate(_VENDORS):
-                configured = bool(self._creds.get(vid, {}).get("api_key"))
+                configured = _vendor_configured(self._creds, vid)
                 dot_style  = "#9ece6a" if configured else "#414868"
                 dot_sym    = "●" if configured else "○"
                 with Horizontal(classes="vendor-row", id=f"vrow-{i}"):
@@ -59,8 +70,10 @@ class VendorsScreen(Screen):
                     yield Static("", id=f"vinfo-{i}", classes="vendor-info-col")
             yield Rule()
             yield Static(
-                "[#565f89]Enter / e[/] [#c0caf5]Edit credentials[/]   "
-                "[#565f89]t[/] [#c0caf5]Test connection[/]   "
+                "[#565f89]Enter/e[/] [#c0caf5]Edit[/]   "
+                "[#565f89]i[/] [#c0caf5]Import native[/]   "
+                "[#565f89]t[/] [#c0caf5]Test[/]   "
+                "[#565f89]r[/] [#c0caf5]Revoke[/]   "
                 "[#565f89]j/k[/] [#c0caf5]Navigate[/]",
                 classes="vendor-hint",
             )
@@ -119,24 +132,88 @@ class VendorsScreen(Screen):
         if vid == "vast":
             await self._check_vast()
         else:
-            self.notify(f"Test not implemented for {vid}", severity="warning")
+            self.notify(f"Test not available for {vid} (no public status API)", severity="warning")
+
+    async def action_import_native(self) -> None:
+        vid = _VENDORS[self._cursor][0]
+        if vid == "vast":
+            native = Path.home() / ".config" / "vastai" / "vast_api_key"
+            if not native.exists():
+                self.notify("~/.config/vastai/vast_api_key not found", severity="warning")
+                return
+            key = native.read_text(encoding="utf-8").strip()
+            if not key:
+                self.notify("vast_api_key file is empty", severity="warning")
+                return
+            creds = dict(self._creds)
+            creds.setdefault("vast", {})["api_key"] = key
+            config.write_credentials(creds)
+            self._creds = creds
+            self._refresh_row(0)
+            self.notify("vast.ai key imported from native config", severity="information")
+            self.call_after_refresh(self._check_vast)
+
+        elif vid == "kaggle":
+            native = Path.home() / ".kaggle" / "kaggle.json"
+            if not native.exists():
+                self.notify("~/.kaggle/kaggle.json not found", severity="warning")
+                return
+            try:
+                data = json.loads(native.read_text(encoding="utf-8"))
+                username = data.get("username", "").strip()
+                key = data.get("key", "").strip()
+                if not username or not key:
+                    self.notify("kaggle.json missing username or key", severity="warning")
+                    return
+            except Exception as exc:
+                self.notify(f"Failed to parse kaggle.json: {exc}", severity="error")
+                return
+            creds = dict(self._creds)
+            creds.setdefault("kaggle", {}).update({"username": username, "key": key})
+            config.write_credentials(creds)
+            self._creds = creds
+            self._refresh_row(1)
+            self.notify(f"Kaggle credentials imported ({username})", severity="information")
+
+    async def action_revoke(self) -> None:
+        vid, vname, _ = _VENDORS[self._cursor]
+        idx = self._cursor
+
+        async def _do_revoke(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            creds = dict(self._creds)
+            creds.pop(vid, None)
+            config.write_credentials(creds)
+            self._creds = creds
+            self._refresh_row(idx)
+            self.notify(f"{vname} credentials revoked", severity="information")
+
+        from textual.widgets import Button
+        self.app.push_screen(
+            _ConfirmRevoke(vname),
+            _do_revoke,
+        )
+
+    def _refresh_row(self, idx: int) -> None:
+        vid = _VENDORS[idx][0]
+        configured = _vendor_configured(self._creds, vid)
+        dot_style  = "#9ece6a" if configured else "#414868"
+        self.query_one(f"#vdot-{idx}",    Static).update(
+            f"[{dot_style}]{'●' if configured else '○'}[/]"
+        )
+        self.query_one(f"#vstatus-{idx}", Static).update(
+            "[#9ece6a]configured[/]" if configured else "[#414868]not configured[/]"
+        )
+        self.query_one(f"#vinfo-{idx}",   Static).update("")
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
-    # Refresh overview after returning from edit screen
     def on_screen_resume(self) -> None:
         self._creds = config.read_credentials()
-        for i, (vid, _, _) in enumerate(_VENDORS):
-            configured = bool(self._creds.get(vid, {}).get("api_key"))
-            dot_style  = "#9ece6a" if configured else "#414868"
-            self.query_one(f"#vdot-{i}",    Static).update(
-                f"[{dot_style}]{'●' if configured else '○'}[/]"
-            )
-            self.query_one(f"#vstatus-{i}", Static).update(
-                "[#9ece6a]configured[/]" if configured else "[#414868]not configured[/]"
-            )
-            self.query_one(f"#vinfo-{i}",   Static).update("")
+        for i in range(len(_VENDORS)):
+            self._refresh_row(i)
         if self._creds.get("vast", {}).get("api_key"):
             self.call_after_refresh(self._check_vast)
 
@@ -159,38 +236,72 @@ class VendorEditScreen(Screen):
         self._creds = config.read_credentials()
 
     def compose(self) -> ComposeResult:
-        api_key = self._creds.get(self._vid, {}).get("api_key") or ""
+        v = self._creds.get(self._vid, {})
         yield Header(show_clock=True)
         yield Static(f"Edit credentials — {self._vname}", classes="screen-title")
         with Vertical(id="vendor-form"):
-            with Horizontal(classes="form-row"):
-                yield Label("API Key:", classes="form-label")
-                yield Input(
-                    api_key,
-                    id="input-api-key",
-                    password=True,
-                    placeholder=f"Enter {self._vname} API key…",
-                    classes="form-input",
+            if self._vid == "kaggle":
+                # Kaggle needs username + key
+                username = v.get("username") or ""
+                key      = v.get("key") or ""
+                with Horizontal(classes="form-row"):
+                    yield Label("Username:", classes="form-label")
+                    yield Input(
+                        username,
+                        id="input-kaggle-username",
+                        placeholder="Kaggle username…",
+                        classes="form-input",
+                    )
+                with Horizontal(classes="form-row"):
+                    yield Label("API Key:", classes="form-label")
+                    yield Input(
+                        key,
+                        id="input-kaggle-key",
+                        password=True,
+                        placeholder="Kaggle API key…",
+                        classes="form-input",
+                    )
+                yield Static(_masked(key), id="key-hint", classes="form-hint")
+                yield Static(
+                    "[#565f89]Native fallback:[/] [#7aa2f7]~/.kaggle/kaggle.json[/]",
+                    classes="form-footer-hint",
                 )
-            yield Static(_masked(api_key), id="key-hint", classes="form-hint")
+            else:
+                # vast and others: single api_key field
+                api_key = v.get("api_key") or ""
+                with Horizontal(classes="form-row"):
+                    yield Label("API Key:", classes="form-label")
+                    yield Input(
+                        api_key,
+                        id="input-api-key",
+                        password=True,
+                        placeholder=f"Enter {self._vname} API key…",
+                        classes="form-input",
+                    )
+                yield Static(_masked(api_key), id="key-hint", classes="form-hint")
+                if self._vid == "vast":
+                    yield Static(
+                        "[#565f89]Native fallback:[/] [#7aa2f7]~/.config/vastai/vast_api_key[/]",
+                        classes="form-footer-hint",
+                    )
+
             yield Static("", id="test-result", classes="form-hint")
             yield Static("", classes="form-spacer")
             with Horizontal(classes="form-actions"):
                 yield Button("Save  [Ctrl+S]", id="btn-save", variant="primary")
                 yield Button("Test  [Ctrl+T]", id="btn-test")
                 yield Button("Back  [Esc]",    id="btn-back")
-            if self._vid == "vast":
-                yield Static(
-                    "[#565f89]Native fallback:[/] [#7aa2f7]~/.config/vastai/vast_api_key[/]",
-                    classes="form-footer-hint",
-                )
+
         yield StatusBar()
         yield Footer()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "input-api-key":
-            self.query_one("#key-hint",    Static).update(_masked(event.value))
-            self.query_one("#test-result", Static).update("")
+        if event.input.id in ("input-api-key", "input-kaggle-key"):
+            try:
+                self.query_one("#key-hint", Static).update(_masked(event.value))
+                self.query_one("#test-result", Static).update("")
+            except Exception:
+                pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:
@@ -199,9 +310,14 @@ class VendorEditScreen(Screen):
             case "btn-back": self.action_go_back()
 
     def action_save(self) -> None:
-        api_key = self.query_one("#input-api-key", Input).value.strip()
         creds = dict(self._creds)
-        creds.setdefault(self._vid, {})["api_key"] = api_key
+        if self._vid == "kaggle":
+            username = self.query_one("#input-kaggle-username", Input).value.strip()
+            key      = self.query_one("#input-kaggle-key",      Input).value.strip()
+            creds.setdefault("kaggle", {}).update({"username": username, "key": key})
+        else:
+            api_key = self.query_one("#input-api-key", Input).value.strip()
+            creds.setdefault(self._vid, {})["api_key"] = api_key
         config.write_credentials(creds)
         self._creds = creds
         self.notify("Credentials saved", severity="information")
@@ -210,14 +326,15 @@ class VendorEditScreen(Screen):
         await self._do_test()
 
     async def _do_test(self) -> None:
-        api_key = self.query_one("#input-api-key", Input).value.strip()
-        if not api_key:
-            self.notify("Enter API key first", severity="warning")
-            return
         result = self.query_one("#test-result", Static)
         result.update("[#e0af68]Testing…[/]")
         try:
             if self._vid == "vast":
+                api_key = self.query_one("#input-api-key", Input).value.strip()
+                if not api_key:
+                    self.notify("Enter API key first", severity="warning")
+                    result.update("")
+                    return
                 info   = await _fetch_user(api_key)
                 name   = info.get("username") or info.get("email") or "unknown"
                 credit = float(info.get("credit", 0))
@@ -227,12 +344,36 @@ class VendorEditScreen(Screen):
                     f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
                 )
             else:
-                result.update("[#565f89]Test not implemented for this vendor[/]")
+                result.update("[#565f89]Test not available for this vendor[/]")
         except Exception as exc:
             result.update(f"[bold #f7768e]✗ {exc}[/]")
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Confirm revoke modal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class _ConfirmRevoke(Screen):
+    def __init__(self, vendor_name: str) -> None:
+        super().__init__()
+        self._vname = vendor_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-box"):
+            yield Static(
+                f"[bold #f7768e]Revoke {self._vname} credentials?[/]\n\n"
+                f"[#c0caf5]This will delete saved keys from credentials.toml.[/]",
+                id="confirm-msg",
+            )
+            with Horizontal(classes="form-actions"):
+                yield Button("Yes, revoke", id="btn-yes",    variant="error")
+                yield Button("Cancel",      id="btn-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn-yes")
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
