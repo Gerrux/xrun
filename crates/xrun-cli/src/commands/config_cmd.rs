@@ -66,6 +66,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                 "_credentials_set".into(),
                 serde_json::json!({
                     "vast.api_key": creds.vast.api_key.is_some(),
+                    "kaggle.token": creds.kaggle.token.is_some(),
                     "kaggle.username": creds.kaggle.username.is_some(),
                     "kaggle.key": creds.kaggle.key.is_some(),
                     "mlflow.token": creds.mlflow.token.is_some(),
@@ -76,6 +77,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                     "_credentials_tail".into(),
                     serde_json::json!({
                         "vast.api_key": creds.vast.api_key.as_deref().map(tail6),
+                        "kaggle.token": creds.kaggle.token.as_deref().map(tail6),
                         "kaggle.username": creds.kaggle.username.as_deref().map(tail6),
                         "kaggle.key": creds.kaggle.key.as_deref().map(tail6),
                         "mlflow.token": creds.mlflow.token.as_deref().map(tail6),
@@ -90,6 +92,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
     print!("{}", toml::to_string_pretty(&cfg)?);
     println!("# credentials");
     print_cred("vast.api_key", creds.vast.api_key.as_deref(), secrets);
+    print_cred("kaggle.token", creds.kaggle.token.as_deref(), secrets);
     print_cred("kaggle.username", creds.kaggle.username.as_deref(), secrets);
     print_cred("kaggle.key", creds.kaggle.key.as_deref(), secrets);
     print_cred("mlflow.token", creds.mlflow.token.as_deref(), secrets);
@@ -118,13 +121,14 @@ fn tail6(s: &str) -> String {
 fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
     let is_credential = matches!(
         key,
-        "vast.api_key" | "kaggle.key" | "kaggle.username" | "mlflow.token"
+        "vast.api_key" | "kaggle.token" | "kaggle.key" | "kaggle.username" | "mlflow.token"
     );
 
     if is_credential {
         let mut creds = Credentials::load(config_dir)?;
         match key {
             "vast.api_key" => creds.vast.api_key = Some(value.to_string()),
+            "kaggle.token" => creds.kaggle.token = Some(value.to_string()),
             "kaggle.key" => creds.kaggle.key = Some(value.to_string()),
             "kaggle.username" => creds.kaggle.username = Some(value.to_string()),
             "mlflow.token" => creds.mlflow.token = Some(value.to_string()),

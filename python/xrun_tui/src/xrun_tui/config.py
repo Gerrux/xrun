@@ -11,8 +11,9 @@ def config_dir() -> Path:
     if env := os.environ.get("XRUN_CONFIG_DIR"):
         return Path(env)
     if sys.platform == "win32":
+        # Match directories crate: %APPDATA%\xrun\config
         appdata = os.environ.get("APPDATA", str(Path.home()))
-        return Path(appdata) / "xrun"
+        return Path(appdata) / "xrun" / "config"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "xrun"
     return Path.home() / ".config" / "xrun"
