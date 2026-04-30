@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import urllib.request
 from pathlib import Path
@@ -83,6 +84,7 @@ class VendorsScreen(Screen):
     def on_mount(self) -> None:
         self._highlight(self._cursor)
         self.call_after_refresh(self._check_vast)
+        self.call_after_refresh(self._check_kaggle)
 
     async def _check_vast(self) -> None:
         api_key = config.get_vast_api_key()
@@ -104,6 +106,25 @@ class VendorsScreen(Screen):
         except Exception as exc:
             status_widget.update(f"[#f7768e]✗ {exc}[/]")
             self.query_one("#vdot-0", Static).update("[#f7768e]●[/]")
+
+    async def _check_kaggle(self) -> None:
+        v = self._creds.get("kaggle", {})
+        username = v.get("username", "").strip()
+        key      = v.get("key", "").strip()
+        if not username or not key:
+            return
+        idx = next(i for i, (vid, _, _) in enumerate(_VENDORS) if vid == "kaggle")
+        status_widget = self.query_one(f"#vstatus-{idx}", Static)
+        info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
+        status_widget.update("[#e0af68]checking…[/]")
+        try:
+            info = await _test_kaggle_api(username, key)
+            status_widget.update("[bold #9ece6a]✓ connected[/]")
+            info_widget.update(f"[#565f89]user:[/] [#c0caf5]{username}[/]  {info}")
+            self.query_one(f"#vdot-{idx}", Static).update("[#9ece6a]●[/]")
+        except Exception as exc:
+            status_widget.update(f"[#f7768e]✗ {exc}[/]")
+            self.query_one(f"#vdot-{idx}", Static).update("[#f7768e]●[/]")
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -131,8 +152,8 @@ class VendorsScreen(Screen):
         vid = _VENDORS[self._cursor][0]
         if vid == "vast":
             await self._check_vast()
-        else:
-            self.notify(f"Test not available for {vid} (no public status API)", severity="warning")
+        elif vid == "kaggle":
+            await self._check_kaggle()
 
     async def action_import_native(self) -> None:
         vid = _VENDORS[self._cursor][0]
@@ -216,6 +237,9 @@ class VendorsScreen(Screen):
             self._refresh_row(i)
         if self._creds.get("vast", {}).get("api_key"):
             self.call_after_refresh(self._check_vast)
+        v = self._creds.get("kaggle", {})
+        if v.get("username") and v.get("key"):
+            self.call_after_refresh(self._check_kaggle)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -343,6 +367,18 @@ class VendorEditScreen(Screen):
                     f"[#565f89]user:[/] [#c0caf5]{name}[/]  "
                     f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
                 )
+            elif self._vid == "kaggle":
+                username = self.query_one("#input-kaggle-username", Input).value.strip()
+                key      = self.query_one("#input-kaggle-key",      Input).value.strip()
+                if not username or not key:
+                    self.notify("Enter username and key first", severity="warning")
+                    result.update("")
+                    return
+                info = await _test_kaggle_api(username, key)
+                result.update(
+                    f"[bold #9ece6a]✓ Connected[/]  "
+                    f"[#565f89]user:[/] [#c0caf5]{username}[/]  {info}"
+                )
             else:
                 result.update("[#565f89]Test not available for this vendor[/]")
         except Exception as exc:
@@ -386,6 +422,21 @@ async def _fetch_user(api_key: str) -> dict:
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
+    return await asyncio.to_thread(_do)
+
+
+async def _test_kaggle_api(username: str, key: str) -> str:
+    """Test Kaggle credentials via REST API. Returns a short info string on success."""
+    def _do() -> str:
+        token = base64.b64encode(f"{username}:{key}".encode()).decode()
+        req = urllib.request.Request(
+            "https://www.kaggle.com/api/v1/kernels?page_size=1",
+            headers={"Authorization": f"Basic {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        count = len(data) if isinstance(data, list) else "?"
+        return f"[#565f89]kernels visible:[/] [#c0caf5]{count}[/]"
     return await asyncio.to_thread(_do)
 
 
