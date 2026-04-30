@@ -59,6 +59,28 @@ pip install -e python/xrun_tui
 
 After install, `xrun` without arguments opens the TUI automatically (when stdout is a TTY).
 
+### Claude Code skill (optional)
+
+Teaches Claude Code how to use xrun correctly — which commands to call, how to parse output, what to avoid.
+
+```sh
+# macOS / Linux — install binary + skill together
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh -s -- --with-skill
+
+# skill only (if xrun is already installed)
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh -s -- --skill-only
+```
+
+```powershell
+# Windows — install binary + skill together
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/main/install.ps1'))) -WithSkill
+
+# skill only
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/main/install.ps1'))) -SkillOnly
+```
+
+The skill is installed to `~/.claude/skills/xrun/SKILL.md` and picked up automatically by Claude Code in any project.
+
 ---
 
 ## Quick start
@@ -276,6 +298,7 @@ The background poll-daemon monitors spend and destroys the instance automaticall
 - ✅ Python Textual TUI: 16 screens, chord navigation, Tokyo Night theme
 - ✅ `xrun events --follow`, `xrun logs --follow`
 - ✅ Install scripts for macOS, Linux, Windows
+- ✅ Claude Code skill (`claude/skill.md`)
 - ⏳ `xrun sweep` — hyperparameter grid (v0.5 backlog)
 
 ---
