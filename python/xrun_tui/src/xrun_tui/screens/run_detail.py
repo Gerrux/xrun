@@ -233,7 +233,7 @@ class RunDetailScreen(Screen):
 
     def _start_log_poll(self) -> None:
         if self._log_timer is None:
-            self._log_timer = self.set_interval(2.0, self._poll_logs)
+            self._log_timer = self.set_interval(10.0, self._poll_logs)
 
     def _stop_log_poll(self) -> None:
         if self._log_timer is not None:

@@ -6,8 +6,9 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
+from textual.events import Click
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Static
+from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 
 from xrun_tui.utils import cost, duration, rel_time, status_dot, status_label
@@ -16,41 +17,43 @@ if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
 
 
+class _MenuBtn(Static):
+    DEFAULT_CSS = """
+    _MenuBtn {
+        width: auto;
+        height: 1;
+        color: #7aa2f7;
+        padding: 0 1;
+    }
+    _MenuBtn:hover { background: #2d3149; }
+    """
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self.run_worker(self.app.action_open_palette(), exclusive=True)  # type: ignore[attr-defined]
+
+
 class _TitleBar(Horizontal):
-    """Custom title bar: [⊞ Menu] xrun — dashboard  (clock via StatusBar)."""
+    """Custom title bar: [⊞ Menu] xrun — dashboard."""
 
     DEFAULT_CSS = """
     _TitleBar {
         dock: top;
         height: 1;
-        background: $panel;
-        padding: 0 1;
+        background: #24283b;
+        padding: 0 0;
         align: left middle;
     }
-    _TitleBar Button {
-        height: 1;
-        min-width: 8;
-        background: transparent;
-        border: none;
-        padding: 0 1;
-        color: $accent;
-    }
-    _TitleBar Button:hover { background: $foreground 10%; }
     _TitleBar #tb-title {
         width: 1fr;
         content-align: center middle;
-        color: $foreground;
+        color: #c0caf5;
     }
     """
 
     def compose(self) -> ComposeResult:
-        yield Button("⊞ Menu", id="tb-menu")
+        yield _MenuBtn("⊞ Menu")
         yield Static("xrun  —  dashboard", id="tb-title")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "tb-menu":
-            event.stop()
-            self.run_worker(self.app.action_open_palette(), exclusive=True)  # type: ignore[attr-defined]
 
 
 def _kpi(label: str, value: str, value_style: str) -> str:

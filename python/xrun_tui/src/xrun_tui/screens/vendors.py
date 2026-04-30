@@ -101,6 +101,8 @@ class VendorsScreen(Screen):
         status_widget.update("[#e0af68]checking…[/]")
         try:
             info = await _fetch_user(api_key)
+            if not self.is_attached:
+                return
             name   = info.get("username") or info.get("email") or "?"
             credit = float(info.get("credit", 0))
             status_widget.update("[bold #9ece6a]✓ connected[/]")
@@ -110,6 +112,8 @@ class VendorsScreen(Screen):
             )
             self.query_one("#vdot-0", Static).update("[#9ece6a]●[/]")
         except Exception as exc:
+            if not self.is_attached:
+                return
             status_widget.update(f"[#f7768e]✗ {exc}[/]")
             self.query_one("#vdot-0", Static).update("[#f7768e]●[/]")
 
@@ -132,6 +136,8 @@ class VendorsScreen(Screen):
         info_widget.update("")
         try:
             label, info = await _test_kaggle_api(username, key, token)
+            if not self.is_attached:
+                return
             status_widget.update("[bold #9ece6a]✓ connected[/]")
             info_widget.update(f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}")
             self.query_one(f"#vdot-{idx}", Static).update("[#9ece6a]●[/]")
@@ -139,6 +145,8 @@ class VendorsScreen(Screen):
             if isinstance(cache, dict):
                 cache.update({"kaggle_user": label, "kaggle_connected": True})
         except Exception as exc:
+            if not self.is_attached:
+                return
             status_widget.update(f"[#f7768e]✗ {exc}[/]")
             self.query_one(f"#vdot-{idx}", Static).update("[#f7768e]●[/]")
             cache = getattr(self.app, "_kaggle_status_cache", None)
