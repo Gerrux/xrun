@@ -57,8 +57,15 @@ async fn run_vastai_inner(args: Vec<String>) -> Result<Vec<u8>, VastError> {
 
     let label = cmd_label(&args);
 
-    let output = Command::new("vastai")
-        .args(&full_args)
+    let mut vastai_cmd = Command::new("vastai");
+    vastai_cmd.args(&full_args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        vastai_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = vastai_cmd
         .output()
         .await
         .map_err(|e| {

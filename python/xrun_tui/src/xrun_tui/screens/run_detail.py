@@ -201,19 +201,33 @@ class RunDetailScreen(Screen):
     _ACTIVE_STATUSES = frozenset({"running", "provisioning", "uploading"})
 
     async def _load_logs(self) -> None:
-        from xrun_tui import services
+        app: XrunApp = self.app  # type: ignore[assignment]
         log = self.query_one("#logs-view", RichLog)
-        content = await services.get_logs(self._run_id)
-        # Only refresh when we have actual content — an empty result (e.g.
-        # SSH is gone after the instance was destroyed) must not wipe the
-        # last snapshot that was already displayed.
-        if content:
-            log.clear()
-            log.write(content)
+        log_path = app.db.log_path(self._run_id)
+        if log_path.exists():
+            try:
+                raw = log_path.read_text(encoding="utf-8", errors="replace")
+                lines = raw.splitlines()
+                if len(lines) > 500:
+                    lines = [
+                        f"[#414868]… ({len(lines) - 500} earlier lines omitted) …[/]",
+                        *lines[-500:],
+                    ]
+                content = "\n".join(lines)
+            except OSError as exc:
+                content = f"[#f7768e]error reading log:[/] {exc}"
+        else:
+            content = (
+                "[#414868]No local log snapshot yet.[/]\n\n"
+                "[#565f89]Stream live output with:[/]\n"
+                f"[bold #7aa2f7]  xrun logs -f {self._run_id}[/]\n\n"
+                "[#414868]The poller writes a local snapshot every ~5 s once the run is running.[/]"
+            )
+        log.clear()
+        log.write(content)
         status = (self._run or {}).get("status", "")
         if status in self._ACTIVE_STATUSES or status in self._TERMINAL_STATUSES:
             log.scroll_end(animate=False)
-        # No more live updates needed once the run has reached a terminal state
         if status in self._TERMINAL_STATUSES:
             self._stop_log_poll()
 
@@ -243,7 +257,6 @@ class RunDetailScreen(Screen):
         view.write(Syntax(content, "yaml", theme="nord", line_numbers=True))
 
     async def _load_metrics(self) -> None:
-        from xrun_tui import services
         from xrun_tui.widgets.ascii_chart import render_chart
         summary = self.query_one("#metrics-summary", Static)
         table   = self.query_one("#metrics-table",   DataTable)
@@ -252,9 +265,11 @@ class RunDetailScreen(Screen):
         table.clear()
         chart.clear()
 
-        ok, keys, err = await services.metrics(self._run_id)
-        if not ok:
-            summary.update(f"[#f7768e]Error:[/] {err[:120]}")
+        app: XrunApp = self.app  # type: ignore[assignment]
+        try:
+            keys = await app.db.metric_keys(self._run_id)
+        except Exception as exc:
+            summary.update(f"[#f7768e]Error:[/] {exc}")
             return
         if not keys:
             summary.update("[#414868]No metrics emitted by this run yet[/]")
@@ -269,10 +284,10 @@ class RunDetailScreen(Screen):
         for entry in keys:
             k     = entry.get("key") or "?"
             count = entry.get("count") or 0
-            ok2, series, _ = await services.metrics(self._run_id, key=k)
+            series = await app.db.metrics_for_key(self._run_id, k)
             latest = "—"
             spark  = ""
-            if ok2 and isinstance(series, list) and series:
+            if series:
                 vals = [float(p.get("value", 0)) for p in series]
                 self._metrics_series[k] = vals
                 latest = f"{vals[-1]:.4g}"
@@ -285,7 +300,6 @@ class RunDetailScreen(Screen):
                 key=k,
             )
 
-        # Chart the first metric by default
         first_key = list(self._metrics_series.keys())[0] if self._metrics_series else None
         if first_key:
             self._render_chart(first_key)
@@ -321,9 +335,9 @@ class RunDetailScreen(Screen):
         else:
             self._stop_log_poll()
             if pid == "tab-manifest":
-                self.call_after_refresh(self._load_manifest)
+                self.run_worker(self._load_manifest())
             elif pid == "tab-metrics":
-                self.call_after_refresh(self._load_metrics)
+                self.run_worker(self._load_metrics())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:

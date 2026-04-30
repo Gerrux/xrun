@@ -126,6 +126,9 @@ class XrunApp(App):
         from xrun_tui.widgets.jump_overlay import JumpOverlay
         from xrun_tui.screens.palette import run_target
 
+        if isinstance(self.screen, JumpOverlay):
+            return
+
         async def _on_pick(target: str | None) -> None:
             if target:
                 await run_target(self, target)

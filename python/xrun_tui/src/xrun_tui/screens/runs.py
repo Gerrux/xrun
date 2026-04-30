@@ -124,7 +124,12 @@ class RunsScreen(Screen):
     async def _refresh(self) -> None:
         app: XrunApp = self.app  # type: ignore[assignment]
         try:
-            runs = await app.db.runs(status=None if self._filter == "all" else self._filter)
+            from xrun_tui import config as _cfg
+            limit = (_cfg.get_settings() or {}).get("history_limit", 300)
+            runs = await app.db.runs(
+                status=None if self._filter == "all" else self._filter,
+                limit=int(limit),
+            )
         except Exception as exc:
             self.notify(f"DB error: {exc}", severity="error", timeout=8)
             return

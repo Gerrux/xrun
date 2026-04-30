@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import os
 import sys
 import json
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 import aiosqlite
+
+_CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 def _default_data_dir() -> Path:
@@ -26,6 +29,7 @@ def find_db_path() -> Path:
         r = subprocess.run(
             ["xrun", "doctor", "--json"],
             capture_output=True, text=True, timeout=5,
+            creationflags=_CREATE_NO_WINDOW,
         )
         if r.returncode == 0:
             d = json.loads(r.stdout)
@@ -102,3 +106,76 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def metric_keys(self, run_id: str) -> list[dict]:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT key, COUNT(*) as count FROM metrics WHERE run_id=? GROUP BY key ORDER BY key",
+            [run_id],
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def metrics_for_key(self, run_id: str, key: str) -> list[dict]:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT step, key, value, ts FROM metrics WHERE run_id=? AND key=? ORDER BY step",
+            [run_id, key],
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def log_path(self, run_id: str) -> Path:
+        return self.path.parent / "runs" / run_id / "stdout.log"
+
+    # ── Maintenance ──────────────────────────────────────────────────────────
+
+    async def db_size_bytes(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except Exception:
+            return 0
+
+    async def count_finished_runs(self) -> int:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM runs"
+            " WHERE status NOT IN ('provisioning','uploading','running')"
+        ) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def cleanup_runs(self, keep_days: int) -> int:
+        """Delete finished runs older than keep_days (0 = delete all finished)."""
+        assert self._conn is not None
+        if keep_days <= 0:
+            q = (
+                "SELECT id FROM runs"
+                " WHERE status NOT IN ('provisioning','uploading','running')"
+            )
+            params: list = []
+        else:
+            cutoff = (
+                datetime.datetime.utcnow() - datetime.timedelta(days=keep_days)
+            ).isoformat()
+            q = (
+                "SELECT id FROM runs"
+                " WHERE status NOT IN ('provisioning','uploading','running')"
+                " AND created_at < ?"
+            )
+            params = [cutoff]
+        async with self._conn.execute(q, params) as cur:
+            rows = await cur.fetchall()
+        ids = [r[0] for r in rows]
+        if not ids:
+            return 0
+        ph = ",".join("?" * len(ids))
+        await self._conn.execute(f"DELETE FROM events  WHERE run_id IN ({ph})", ids)
+        await self._conn.execute(f"DELETE FROM metrics WHERE run_id IN ({ph})", ids)
+        await self._conn.execute(f"DELETE FROM runs    WHERE id      IN ({ph})", ids)
+        await self._conn.commit()
+        return len(ids)
+
+    async def vacuum(self) -> None:
+        assert self._conn is not None
+        await self._conn.execute("VACUUM")

@@ -7,17 +7,21 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 
 async def _run(*args: str, timeout: int = 30) -> tuple[int, str, str]:
+    kwargs: dict[str, Any] = dict(
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    if sys.platform == "win32":
+        import subprocess as _sub
+        kwargs["creationflags"] = _sub.CREATE_NO_WINDOW
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "xrun", *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await asyncio.create_subprocess_exec("xrun", *args, **kwargs)
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return (
             proc.returncode or 0,

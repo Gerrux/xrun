@@ -86,21 +86,26 @@ pub async fn wait_for_ssh_ready(
             // on key exchange.
             let host_arg = format!("root@{}", host);
             let port_str = port.to_string();
-            let probe = tokio::process::Command::new("ssh")
-                .args([
-                    "-p",
-                    &port_str,
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=5",
-                    &host_arg,
-                    "true",
-                ])
-                .output()
-                .await;
+            let mut probe_cmd = tokio::process::Command::new("ssh");
+            probe_cmd.args([
+                "-p",
+                &port_str,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                &host_arg,
+                "true",
+            ]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                probe_cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            let probe = probe_cmd.output().await;
             match probe {
                 Ok(out) if out.status.success() => return Ok(start.elapsed()),
                 Ok(out) => {
@@ -137,22 +142,26 @@ pub async fn wait_for_ssh_ready(
 pub async fn ssh_exec(host: &str, port: u16, cmd: &str) -> Result<Vec<u8>, VastError> {
     let host_arg = format!("root@{}", host);
     let port_str = port.to_string();
-    let output = tokio::process::Command::new("ssh")
-        .args([
-            "-p",
-            &port_str,
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=30",
-            &host_arg,
-            cmd,
-        ])
-        .output()
-        .await
-        .map_err(VastError::Io)?;
+    let mut ssh_exec_cmd = tokio::process::Command::new("ssh");
+    ssh_exec_cmd.args([
+        "-p",
+        &port_str,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=30",
+        &host_arg,
+        cmd,
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        ssh_exec_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = ssh_exec_cmd.output().await.map_err(VastError::Io)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -179,6 +188,12 @@ fn ssh_cmd(conn: &SshConn) -> std::process::Command {
         "ConnectTimeout=30",
         &format!("root@{}", conn.host),
     ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd
 }
 

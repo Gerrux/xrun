@@ -21,6 +21,7 @@ _TUI_FIELDS: list[tuple[str, str, str]] = [
     ("runs_refresh_secs",      "Runs auto-refresh (sec)",      "5"),
     ("instances_refresh_secs", "Instances auto-refresh (sec)", "15"),
     ("default_vendor",         "Default vendor",               "vast"),
+    ("history_limit",          "Run history limit (count)",    "300"),
 ]
 
 _XRUN_FIELDS: list[tuple[str, str, str, str]] = [
@@ -90,6 +91,13 @@ class SettingsScreen(Screen):
                                 classes="form-input",
                             )
 
+                yield Static("[bold #bb9af7]Database[/]", classes="form-section")
+                yield Static("", id="db-info", classes="form-hint")
+                with Horizontal(classes="form-row"):
+                    yield Label("Keep finished runs (days):", classes="form-label")
+                    yield Input("0", placeholder="0 = delete all", id="input-cleanup-days", classes="form-input")
+                    yield Button("Clean Up", id="btn-cleanup", classes="form-input")
+
                 yield Static("", classes="form-spacer")
                 with Horizontal(classes="form-actions"):
                     yield Button("Save  [Ctrl+S]", id="btn-save", variant="primary")
@@ -100,6 +108,21 @@ class SettingsScreen(Screen):
 
     def on_mount(self) -> None:
         self.run_worker(self._prefill_xrun_fields(), exclusive=True)
+        self.run_worker(self._load_db_info(), exclusive=False)
+
+    async def _load_db_info(self) -> None:
+        db = self.app.db  # type: ignore[attr-defined]
+        try:
+            size = await db.db_size_bytes()
+            finished = await db.count_finished_runs()
+            size_mb = size / (1024 * 1024)
+            self.query_one("#db-info", Static).update(
+                f"[#565f89]Path:[/] [#7dcfff]{db.path}[/]   "
+                f"[#565f89]Size:[/] [#c0caf5]{size_mb:.1f} MB[/]   "
+                f"[#565f89]Finished runs:[/] [#c0caf5]{finished}[/]"
+            )
+        except Exception as exc:
+            self.query_one("#db-info", Static).update(f"[#414868]DB info unavailable: {exc}[/]")
 
     async def _prefill_xrun_fields(self) -> None:
         from xrun_tui import services
@@ -133,6 +156,37 @@ class SettingsScreen(Screen):
             self.action_go_back()
         elif event.button.id == "btn-pick-countries":
             self._open_country_picker()
+        elif event.button.id == "btn-cleanup":
+            self.run_worker(self._cleanup_db(), exclusive=True)
+
+    async def _cleanup_db(self) -> None:
+        raw = self.query_one("#input-cleanup-days", Input).value.strip()
+        try:
+            days = int(raw)
+            if days < 0:
+                raise ValueError
+        except ValueError:
+            self._set_result("[bold #f7768e]✗[/] 'Keep days' must be 0 or a positive integer (0 = all)")
+            return
+
+        btn = self.query_one("#btn-cleanup", Button)
+        btn.disabled = True
+        try:
+            db = self.app.db  # type: ignore[attr-defined]
+            deleted = await db.cleanup_runs(keep_days=days)
+            if deleted:
+                await db.vacuum()
+            self._set_result(
+                f"[bold #9ece6a]✓[/] Deleted [#c0caf5]{deleted}[/] finished run(s)"
+                f" older than [#c0caf5]{days}[/] day(s)"
+            )
+            self.notify(f"Cleaned up {deleted} run(s)", severity="information")
+            # refresh DB info
+            await self._load_db_info()
+        except Exception as exc:
+            self._set_result(f"[bold #f7768e]✗[/] Cleanup failed: {exc}")
+        finally:
+            btn.disabled = False
 
     def _open_country_picker(self) -> None:
         from xrun_tui.screens.country_exclude import CountryExcludeScreen
@@ -160,7 +214,7 @@ class SettingsScreen(Screen):
             val = self.query_one(f"#input-tui-{key}", Input).value.strip()
             if not val:
                 continue
-            if key.endswith("_secs"):
+            if key.endswith("_secs") or key == "history_limit":
                 try:
                     tui_settings[key] = int(val)
                 except ValueError:
