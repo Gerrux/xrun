@@ -102,6 +102,12 @@ impl KaggleProcessReal {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd
     }
 }
@@ -228,6 +234,8 @@ impl KaggleProcess for KaggleProcessReal {
         let out = self
             .cmd(&["datasets", "create", "-p"])
             .arg(local_dir)
+            .arg("--dir-mode")
+            .arg("tar")
             .output()
             .map_err(|e| KaggleError::NotFound(e.to_string()))?;
         if !out.status.success() {
@@ -247,6 +255,8 @@ impl KaggleProcess for KaggleProcessReal {
         let out = self
             .cmd(&["datasets", "version", "-p"])
             .arg(local_dir)
+            .arg("--dir-mode")
+            .arg("tar")
             .arg("-m")
             .arg(message)
             .output()

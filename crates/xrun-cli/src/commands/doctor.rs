@@ -179,9 +179,15 @@ fn check_status_str(c: &Check) -> &'static str {
 
 /// Run `vastai show user --raw` and check for a non-empty ssh_key field.
 fn check_vastai_ssh_key() -> (bool, String) {
-    let result = std::process::Command::new("vastai")
-        .args(["show", "user", "--raw"])
-        .output();
+    let mut vastai_cmd = std::process::Command::new("vastai");
+    vastai_cmd.args(["show", "user", "--raw"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        vastai_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let result = vastai_cmd.output();
 
     match result {
         Ok(out) if out.status.success() => {
@@ -222,13 +228,17 @@ fn check_vastai_ssh_key() -> (bool, String) {
 
 /// Check if `python3 -c "import xrun_hook"` succeeds.
 fn check_python_hook() -> bool {
-    std::process::Command::new("python3")
-        .args(["-c", "import xrun_hook"])
+    let mut cmd = std::process::Command::new("python3");
+    cmd.args(["-c", "import xrun_hook"])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 fn dir_writable(path: &Path) -> bool {

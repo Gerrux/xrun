@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -297,11 +299,15 @@ def _nested_get(data: dict, dotted_key: str):
 
 
 async def _xrun_config_set(key: str, value: str) -> tuple[bool, str]:
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
         proc = await asyncio.create_subprocess_exec(
             "xrun", "config", "set", key, value,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **kwargs,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
     except asyncio.TimeoutError:
