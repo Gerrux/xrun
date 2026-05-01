@@ -15,6 +15,9 @@ from textual.widgets.option_list import Option
 PALETTE_COMMANDS: list[tuple[str, str]] = [
     ("Go: Dashboard",                "go:dashboard"),
     ("Go: Runs",                     "go:runs"),
+    ("Go: Watch  (live active runs)","go:watch"),
+    ("Go: Budget & Spend",           "go:budget"),
+    ("Go: Sweep results",            "go:sweep"),
     ("Go: Instances",                "go:instances"),
     ("Go: Vendors",                  "go:vendors"),
     ("Go: Doctor (system health)",   "go:doctor"),
@@ -126,6 +129,10 @@ async def run_target(app, target: str) -> None:
         await app.push_screen(NotificationsScreen())
         return
 
+    from xrun_tui.screens.watch  import WatchScreen
+    from xrun_tui.screens.budget import BudgetScreen
+    from xrun_tui.screens.sweep  import SweepScreen
+
     factories: dict[str, Callable[[], Any]] = {
         "go:dashboard":  DashboardScreen,
         "go:runs":       RunsScreen,
@@ -134,6 +141,9 @@ async def run_target(app, target: str) -> None:
         "go:doctor":     DoctorScreen,
         "go:launch":     LaunchScreen,
         "go:settings":   SettingsScreen,
+        "go:watch":      WatchScreen,
+        "go:budget":     BudgetScreen,
+        "go:sweep":      SweepScreen,
     }
     factory = factories.get(target)
     if factory is None:

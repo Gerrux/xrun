@@ -63,9 +63,9 @@ class NotificationsScreen(ModalScreen[None]):
             Text("Severity",style="#565f89"),
             Text("Message", style="#565f89"),
         )
-        self._render()
+        self._refresh_table()
 
-    def _render(self) -> None:
+    def _refresh_table(self) -> None:
         history = list(getattr(self.app, "_notif_history", []))
         table = self.query_one("#notif-table", DataTable)
         empty = self.query_one("#notif-empty", Static)
@@ -93,4 +93,4 @@ class NotificationsScreen(ModalScreen[None]):
         history = getattr(self.app, "_notif_history", None)
         if history is not None:
             history.clear()
-        self._render()
+        self._refresh_table()

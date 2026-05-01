@@ -13,6 +13,7 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     RichLog,
     Rule,
     Static,
@@ -39,9 +40,12 @@ class RunDetailScreen(Screen):
         Binding("s",        "stop_run",       "Stop"),
         Binding("S",        "sync_status",    "Sync"),
         Binding("r",        "rerun",          "Rerun"),
+        Binding("R",        "patch_rerun",    "Patch-rerun", show=False),
+        Binding("E",        "error_detail",   "Error",       show=False),
         Binding("p",        "pull",           "Pull"),
         Binding("a",        "artifacts",      "Artifacts"),
-        Binding("ctrl+r",   "refresh",        "Refresh", show=False),
+        Binding("ctrl+f",   "toggle_search",  "Search",      show=False),
+        Binding("ctrl+r",   "refresh",        "Refresh",     show=False),
         Binding("1",        "tab_stages",     show=False),
         Binding("2",        "tab_logs",       show=False),
         Binding("3",        "tab_manifest",   show=False),
@@ -54,6 +58,8 @@ class RunDetailScreen(Screen):
         self._run: dict | None = None
         self._log_timer: Any = None
         self._log_tab_active = False
+        self._log_lines: list[str] = []
+        self._search_active = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -72,9 +78,11 @@ class RunDetailScreen(Screen):
             with Horizontal(id="detail-actions"):
                 yield Button("Stop  [s]",       id="btn-stop",      classes="action-btn danger")
                 yield Button("Rerun [r]",       id="btn-rerun",     classes="action-btn")
+                yield Button("Patch [R]",       id="btn-patch",     classes="action-btn")
                 yield Button("Pull  [p]",       id="btn-pull",      classes="action-btn")
                 yield Button("Artifacts [a]",   id="btn-artifacts", classes="action-btn")
                 yield Button("Relaunch",        id="btn-relaunch",  classes="action-btn")
+                yield Button("Error detail [E]",id="btn-error",     classes="action-btn danger")
         with TabbedContent(id="detail-tabs"):
             with TabPane("Stages [1]", id="tab-stages"):
                 yield DataTable(id="stages-table",
@@ -82,6 +90,11 @@ class RunDetailScreen(Screen):
             with TabPane("Logs [2]", id="tab-logs"):
                 yield RichLog(id="logs-view",
                               highlight=False, markup=True, wrap=True)
+                yield Input(
+                    id="log-search-input",
+                    placeholder="/ search… (Ctrl+F to toggle)",
+                    classes="log-search-input",
+                )
             with TabPane("Manifest [3]", id="tab-manifest"):
                 yield RichLog(id="manifest-view",
                               highlight=True, markup=False, wrap=False)
@@ -95,6 +108,11 @@ class RunDetailScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        # Hide search input and extra buttons by default
+        self.query_one("#log-search-input", Input).display = False
+        self.query_one("#btn-patch",  Button).display = False
+        self.query_one("#btn-error",  Button).display = False
+
         t = self.query_one("#stages-table", DataTable)
         t.add_columns(
             Text("Time",    style="#565f89"),
@@ -183,12 +201,12 @@ class RunDetailScreen(Screen):
         else:
             proj_chip.update("")
 
-        self.query_one("#btn-stop", Button).disabled = not is_active
-        self.query_one("#btn-pull", Button).disabled = run["status"] not in (
-            "running", "done"
-        )
+        self.query_one("#btn-stop",  Button).disabled = not is_active
+        self.query_one("#btn-pull",  Button).disabled = run["status"] not in ("running", "done")
         has_manifest = bool(run.get("manifest_path"))
         self.query_one("#btn-relaunch", Button).disabled = not has_manifest
+        self.query_one("#btn-patch",    Button).display = has_manifest
+        self.query_one("#btn-error",    Button).display = (run["status"] == "failed")
 
     async def _load_stages(self) -> None:
         app: XrunApp = self.app  # type: ignore[assignment]
@@ -239,23 +257,39 @@ class RunDetailScreen(Screen):
                         f"[#414868]… ({len(lines) - 500} earlier lines omitted) …[/]",
                         *lines[-500:],
                     ]
-                content = "\n".join(lines)
+                self._log_lines = lines
             except OSError as exc:
-                content = f"[#f7768e]error reading log:[/] {exc}"
+                self._log_lines = [f"[#f7768e]error reading log:[/] {exc}"]
         else:
-            content = (
-                "[#414868]No local log snapshot yet.[/]\n\n"
-                "[#565f89]Stream live output with:[/]\n"
-                f"[bold #7aa2f7]  xrun logs -f {self._run_id}[/]\n\n"
-                "[#414868]The poller writes a local snapshot every ~5 s once the run is running.[/]"
-            )
-        log.clear()
-        log.write(content)
+            self._log_lines = [
+                "[#414868]No local log snapshot yet.[/]",
+                "",
+                "[#565f89]Stream live output with:[/]",
+                f"[bold #7aa2f7]  xrun logs -f {self._run_id}[/]",
+                "",
+                "[#414868]The poller writes a local snapshot every ~5 s once the run is running.[/]",
+            ]
+        self._render_log()
         status = (self._run or {}).get("status", "")
         if status in self._ACTIVE_STATUSES or status in self._TERMINAL_STATUSES:
             log.scroll_end(animate=False)
         if status in self._TERMINAL_STATUSES:
             self._stop_log_poll()
+
+    def _render_log(self, query: str = "") -> None:
+        log = self.query_one("#logs-view", RichLog)
+        log.clear()
+        q = query.lower().strip()
+        for line in self._log_lines:
+            # Strip existing markup to search plain text
+            plain = line
+            if q and q in plain.lower():
+                log.write(f"[bold #e0af68 on #2d3149]{plain}[/]")
+            else:
+                log.write(plain)
+        if q:
+            matches = sum(1 for l in self._log_lines if q in l.lower())
+            # Update search hint inline — handled by on_input_changed
 
     def _start_log_poll(self) -> None:
         if self._log_timer is None:
@@ -376,13 +410,23 @@ class RunDetailScreen(Screen):
                             metrics_table.loading = False
                 self.run_worker(_load_metrics_with_spinner())
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "log-search-input":
+            self._render_log(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "log-search-input":
+            self.query_one("#logs-view", RichLog).focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:
             case "btn-stop":      self.run_worker(self.action_stop_run())
             case "btn-rerun":     self.run_worker(self.action_rerun())
+            case "btn-patch":     self.run_worker(self.action_patch_rerun())
             case "btn-pull":      self.run_worker(self.action_pull())
             case "btn-artifacts": self.run_worker(self.action_artifacts())
             case "btn-relaunch":  self.run_worker(self._do_relaunch())
+            case "btn-error":     self.run_worker(self.action_error_detail())
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
@@ -501,6 +545,36 @@ class RunDetailScreen(Screen):
             self.notify(
                 f"Sync failed: {msg[:200]}", severity="error", timeout=10
             )
+
+    def action_toggle_search(self) -> None:
+        inp = self.query_one("#log-search-input", Input)
+        self._search_active = not self._search_active
+        inp.display = self._search_active
+        if self._search_active:
+            inp.focus()
+            inp.value = ""
+        else:
+            inp.value = ""
+            self._render_log()
+            self.query_one("#logs-view", RichLog).focus()
+
+    async def action_patch_rerun(self) -> None:
+        if not self._run:
+            return
+        from xrun_tui.screens.patch_launch import PatchLaunchScreen
+        await self.app.push_screen(PatchLaunchScreen(self._run))
+
+    async def action_error_detail(self) -> None:
+        if not self._run or self._run.get("status") != "failed":
+            self.notify("Run has not failed", severity="warning")
+            return
+        from xrun_tui.screens.error_detail import ErrorDetailScreen
+
+        async def _on_dismiss(result: str | None) -> None:
+            if result == "open_logs":
+                self.query_one(TabbedContent).active = "tab-logs"
+
+        await self.app.push_screen(ErrorDetailScreen(self._run), _on_dismiss)
 
     def action_tab_stages(self) -> None:
         self.query_one(TabbedContent).active = "tab-stages"

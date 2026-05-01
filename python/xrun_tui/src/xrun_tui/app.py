@@ -25,6 +25,9 @@ _CHORDS: dict[str, dict[str, str]] = {
         "h": "goto_doctor",
         "l": "goto_launch",
         "s": "goto_settings",
+        "w": "goto_watch",
+        "b": "goto_budget",
+        "x": "goto_sweep",
     }
 }
 
@@ -189,6 +192,9 @@ class XrunApp(App):
             "goto_doctor":     "go:doctor",
             "goto_launch":     "go:launch",
             "goto_settings":   "go:settings",
+            "goto_watch":      "go:watch",
+            "goto_budget":     "go:budget",
+            "goto_sweep":      "go:sweep",
         }
         slug = mapping.get(target)
         if slug:

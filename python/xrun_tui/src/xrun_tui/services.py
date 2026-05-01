@@ -49,6 +49,22 @@ async def rerun_run(run_id: str) -> tuple[bool, str]:
     return code == 0, (out + err).strip()
 
 
+async def rerun_with_patches(
+    run_id: str, patches: dict[str, str]
+) -> tuple[bool, str]:
+    """Rerun a run with patched args.
+
+    Patches are passed as ``--patch key=value`` pairs, mirroring
+    ``xrun rerun --patch run.args.KEY=VALUE``.  Keys are prefixed with
+    ``run.args.`` so the CLI can locate them inside the manifest.
+    """
+    args = ["rerun", run_id]
+    for key, val in patches.items():
+        args += ["--patch", f"run.args.{key}={val}"]
+    code, out, err = await _run(*args, timeout=120)
+    return code == 0, (out + err).strip()
+
+
 async def fix_status(run_id: str | None = None) -> tuple[bool, str]:
     """Reconcile stale 'running' runs against the vendor.
 

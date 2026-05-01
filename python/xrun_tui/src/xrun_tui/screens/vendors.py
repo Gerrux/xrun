@@ -112,6 +112,9 @@ class VendorsScreen(Screen):
                 f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
             )
             self.query_one("#vdot-0", Static).update("[#9ece6a]●[/]")
+            cache = getattr(self.app, "_vast_status_cache", None)
+            if isinstance(cache, dict):
+                cache.update({"credit": credit, "username": name})
         except Exception as exc:
             if not self.is_attached:
                 return

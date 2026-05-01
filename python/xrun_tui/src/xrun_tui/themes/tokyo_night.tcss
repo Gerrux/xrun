@@ -599,3 +599,20 @@ LoadingIndicator {
 
 /* ── Splash ──────────────────────────────────────────────────────────────── */
 /* (Splash uses inline DEFAULT_CSS — nothing else needed here.) */
+
+/* ── Watch / Sweep screens ───────────────────────────────────────────────── */
+
+#watch-table,
+#sweep-table {
+    height: 1fr;
+}
+
+/* ── Log search input ────────────────────────────────────────────────────── */
+
+.log-search-input {
+    display: none;
+    height: 3;
+    background: #1e2030;
+    border: tall #7aa2f7;
+    margin: 0;
+}

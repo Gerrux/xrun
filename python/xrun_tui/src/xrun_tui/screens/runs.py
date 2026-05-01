@@ -61,12 +61,19 @@ class RunsScreen(Screen):
         Binding("s",         "stop_run",       "Stop"),
         Binding("S",         "sync_status",    "Sync"),
         Binding("r",         "rerun",          "Rerun"),
+        Binding("R",         "patch_rerun",    "Patch-rerun", show=False),
         Binding("p",         "pull_run",       "Pull"),
+        Binding("space",     "toggle_select",  "Select",    show=False),
+        Binding("ctrl+s",    "bulk_stop",      "Stop sel.", show=False),
+        Binding("ctrl+p",    "bulk_pull",      "Pull sel.", show=False),
         Binding("f,slash",   "toggle_filter",  "Filter"),
         Binding("e",         "export",         "Export"),
         Binding("c",         "compare_toggle", "Compare"),
         Binding("C",         "compare_open",   "Compare ✓", show=False),
         Binding("G",         "toggle_group",   "Group",     show=False),
+        Binding("w",         "goto_watch",     "Watch"),
+        Binding("b",         "goto_budget",    "Budget",    show=False),
+        Binding("x",         "goto_sweep",     "Sweep",     show=False),
         Binding("l",         "goto_launch",    "Launch"),
         Binding("i",         "goto_instances", "Instances"),
         Binding("v",         "goto_vendors",   "Vendors"),
@@ -85,6 +92,7 @@ class RunsScreen(Screen):
         self._filter_text = ""
         self._grouped = False
         self._compare_ids: list[str] = []
+        self._selected_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -187,11 +195,17 @@ class RunsScreen(Screen):
         self._update_stats(visible, len(runs))
 
     def _add_run_row(self, table: DataTable, run: dict) -> None:
+        in_sel = run["id"] in self._selected_ids
         in_cmp = run["id"] in self._compare_ids
-        name_style = "bold #bb9af7" if in_cmp else ""
-        marker = (
-            Text("◈", style="bold #bb9af7") if in_cmp else status_dot_for(run)
-        )
+        if in_sel:
+            name_style = "bold #9ece6a"
+            marker = Text("◉", style="bold #9ece6a")
+        elif in_cmp:
+            name_style = "bold #bb9af7"
+            marker = Text("◈", style="bold #bb9af7")
+        else:
+            name_style = ""
+            marker = status_dot_for(run)
         table.add_row(
             marker,
             Text(run["id"][:12], style="#565f89"),
@@ -239,6 +253,11 @@ class RunsScreen(Screen):
         if total_cost > 0:
             summary += f"  [#e0af68]${total_cost:.2f} spent[/]"
 
+        if self._selected_ids:
+            summary += (
+                f"  [#414868]┊[/]  [#9ece6a]◉ {len(self._selected_ids)} selected[/]"
+                f" [#565f89](ctrl+s stop  ctrl+p pull  Esc clear)[/]"
+            )
         if self._compare_ids:
             summary += (
                 f"  [#414868]┊[/]  [#bb9af7]◈ {len(self._compare_ids)} selected[/]"
@@ -438,6 +457,86 @@ class RunsScreen(Screen):
         from xrun_tui.screens.compare import CompareScreen
         await self.app.push_screen(CompareScreen(run_a, run_b))
 
+    def action_toggle_select(self) -> None:
+        run_id = self._selected_run_id()
+        if not run_id:
+            return
+        if run_id in self._selected_ids:
+            self._selected_ids.discard(run_id)
+        else:
+            self._selected_ids.add(run_id)
+        self._render_table(self._runs)
+
+    async def action_bulk_stop(self) -> None:
+        if not self._selected_ids:
+            return
+        active = [
+            r for r in self._runs
+            if r["id"] in self._selected_ids
+            and r["status"] in ("running", "provisioning", "uploading")
+        ]
+        if not active:
+            self.notify("No active runs in selection", severity="warning")
+            return
+        from xrun_tui.screens.confirm import ConfirmScreen
+
+        async def _do(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            from xrun_tui import cli
+            ok_count = 0
+            for run in active:
+                ok, _ = await cli.stop_run(run["id"])
+                if ok:
+                    ok_count += 1
+            self.notify(f"Stopped {ok_count}/{len(active)} runs", severity="information")
+            self._selected_ids.clear()
+            await self._refresh()
+
+        await self.app.push_screen(
+            ConfirmScreen(f"Stop {len(active)} active runs?"), _do
+        )
+
+    async def action_bulk_pull(self) -> None:
+        if not self._selected_ids:
+            return
+        pullable = [
+            r for r in self._runs
+            if r["id"] in self._selected_ids
+            and r["status"] in ("running", "done")
+        ]
+        if not pullable:
+            self.notify("No done/running runs in selection", severity="warning")
+            return
+        from xrun_tui.screens.confirm import ConfirmScreen
+
+        async def _do(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            from xrun_tui import services
+            ok_count = 0
+            for run in pullable:
+                ok, _ = await services.pull(run["id"], ckpt="latest")
+                if ok:
+                    ok_count += 1
+            self.notify(f"Pulled {ok_count}/{len(pullable)} runs", severity="information")
+            self._selected_ids.clear()
+            self._render_table(self._runs)
+
+        await self.app.push_screen(
+            ConfirmScreen(f"Pull latest checkpoint for {len(pullable)} runs?"), _do
+        )
+
+    async def action_patch_rerun(self) -> None:
+        run_id = self._selected_run_id()
+        if not run_id:
+            return
+        run = next((r for r in self._runs if r["id"] == run_id), None)
+        if not run:
+            return
+        from xrun_tui.screens.patch_launch import PatchLaunchScreen
+        await self.app.push_screen(PatchLaunchScreen(run))
+
     def action_toggle_group(self) -> None:
         self._grouped = not self._grouped
         self._render_table(self._runs)
@@ -471,7 +570,23 @@ class RunsScreen(Screen):
     async def action_refresh(self) -> None:
         await self._refresh()
 
+    async def action_goto_watch(self) -> None:
+        from xrun_tui.screens.watch import WatchScreen
+        await self.app.push_screen(WatchScreen())
+
+    async def action_goto_budget(self) -> None:
+        from xrun_tui.screens.budget import BudgetScreen
+        await self.app.push_screen(BudgetScreen())
+
+    async def action_goto_sweep(self) -> None:
+        from xrun_tui.screens.sweep import SweepScreen
+        await self.app.push_screen(SweepScreen())
+
     def action_go_back(self) -> None:
+        if self._selected_ids:
+            self._selected_ids.clear()
+            self._render_table(self._runs)
+            return
         if len(self.app.screen_stack) > 1:
             self.app.pop_screen()
 

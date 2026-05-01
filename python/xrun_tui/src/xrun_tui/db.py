@@ -187,6 +187,60 @@ class Database:
         await self._conn.commit()
         return len(ids)
 
+    async def latest_metrics_for_runs(
+        self, run_ids: list[str]
+    ) -> dict[str, tuple[str, float]]:
+        """Return {run_id: (metric_key, latest_value)} for the most recently
+        recorded metric point per run.  Only run_ids that actually have metric
+        rows are included in the result."""
+        if not run_ids:
+            return {}
+        assert self._conn is not None
+        ph = ",".join("?" * len(run_ids))
+        # For each run pick the row with the highest step; break ties by ts.
+        q = f"""
+            SELECT m.run_id, m.key, m.value
+            FROM metrics m
+            INNER JOIN (
+                SELECT run_id, MAX(step) AS max_step
+                FROM metrics
+                WHERE run_id IN ({ph})
+                GROUP BY run_id
+            ) latest ON m.run_id = latest.run_id AND m.step = latest.max_step
+            WHERE m.run_id IN ({ph})
+            GROUP BY m.run_id
+        """
+        async with self._conn.execute(q, run_ids + run_ids) as cur:
+            rows = await cur.fetchall()
+        return {r[0]: (r[1], float(r[2])) for r in rows}
+
+    async def spend_by_day(self, days: int = 14) -> list[dict]:
+        """Return list of {day: 'YYYY-MM-DD', spend: float} for the last
+        *days* calendar days (most-recent last).  Days with no finished runs
+        are included with spend=0."""
+        assert self._conn is not None
+        # Aggregate finished runs by their creation date
+        q = """
+            SELECT DATE(created_at) AS day,
+                   SUM(COALESCE(cost_usd, cost_usd_estimate, 0.0)) AS spend
+            FROM runs
+            WHERE created_at >= DATE('now', ?)
+            GROUP BY DATE(created_at)
+        """
+        offset_arg = f"-{days} days"
+        async with self._conn.execute(q, [offset_arg]) as cur:
+            rows = await cur.fetchall()
+        # Build a dense series so every day is present
+        import datetime as _dt
+        today = _dt.date.today()
+        spend_map: dict[str, float] = {r[0]: float(r[1] or 0) for r in rows}
+        result: list[dict] = []
+        for i in range(days - 1, -1, -1):
+            d = today - _dt.timedelta(days=i)
+            day_str = d.isoformat()
+            result.append({"day": day_str, "spend": spend_map.get(day_str, 0.0)})
+        return result
+
     async def vacuum(self) -> None:
         assert self._conn is not None
         await self._conn.execute("VACUUM")
