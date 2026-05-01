@@ -69,6 +69,8 @@ pub enum Commands {
     /// Reconcile stale `running` runs against the vendor and fix their status
     #[command(name = "fix-status")]
     FixStatus(FixStatusArgs),
+    /// Materialise a Cartesian grid of manifests and (optionally) launch them
+    Sweep(SweepArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)
@@ -340,4 +342,33 @@ pub struct FixStatusArgs {
     /// Show what would change without writing to the DB
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Args)]
+pub struct SweepArgs {
+    /// Path to the base manifest YAML file
+    pub manifest: PathBuf,
+    /// Grid axis: PATH=v1,v2,...  Repeatable; multiplies the search space.
+    /// Example: --grid run.args.--lr=1e-3,5e-4,1e-4
+    #[arg(long, value_name = "PATH=V1,V2,...")]
+    pub grid: Vec<String>,
+    /// Output directory for materialised manifests.
+    /// Defaults to exp/sweep_<stem>_<timestamp>/.
+    #[arg(long, value_name = "DIR")]
+    pub out: Option<PathBuf>,
+    /// Launch each materialised manifest after writing.
+    #[arg(long)]
+    pub launch: bool,
+    /// Detach each launched run (only valid with --launch).
+    #[arg(long)]
+    pub detach: bool,
+    /// Skip the billable-action confirm (only valid with --launch).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Print the plan without writing files or launching.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output as JSON (machine-readable plan).
+    #[arg(long)]
+    pub json: bool,
 }

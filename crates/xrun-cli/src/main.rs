@@ -139,6 +139,11 @@ fn run() -> Result<()> {
             let config_dir = get_config()?;
             xrun_cli::commands::fix_status::run(&args, &ctx.db_path, &ctx.runs_dir, &config_dir)?;
         }
+        Some(Commands::Sweep(args)) => {
+            let ctx = get_data_ctx()?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::sweep::run(&args, &ctx.db_path, &ctx.runs_dir, &config_dir)?;
+        }
         Some(Commands::Tui) => {
             #[cfg(feature = "tui")]
             {

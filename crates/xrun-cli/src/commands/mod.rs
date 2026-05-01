@@ -20,3 +20,4 @@ pub mod rerun;
 pub mod shell;
 pub mod show;
 pub mod stop;
+pub mod sweep;
