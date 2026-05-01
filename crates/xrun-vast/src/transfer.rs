@@ -227,7 +227,8 @@ pub fn transfer(
             let p = std::path::Path::new(path);
             let parent = p.parent().unwrap_or(std::path::Path::new("."));
             let name = p.file_name().unwrap_or_default();
-            std::process::Command::new("tar")
+            let mut tar_src = std::process::Command::new("tar");
+            tar_src
                 .arg("-C")
                 .arg(parent)
                 .arg(tar_c_flag)
@@ -235,7 +236,14 @@ pub fn transfer(
                 .arg("--")
                 .arg(name)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
+                .stderr(Stdio::inherit());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                tar_src.creation_flags(CREATE_NO_WINDOW);
+            }
+            tar_src
                 .spawn()
                 .map_err(|e| VastError::ParseError(format!("spawn local tar src: {e}")))?
         }
@@ -264,13 +272,21 @@ pub fn transfer(
         TransferEndpoint::Local(path) => {
             std::fs::create_dir_all(path)
                 .map_err(|e| VastError::ParseError(format!("create dst dir: {e}")))?;
-            std::process::Command::new("tar")
+            let mut tar_dst = std::process::Command::new("tar");
+            tar_dst
                 .arg(tar_x_flag)
                 .arg("-")
                 .arg("-C")
                 .arg(path)
                 .stdin(Stdio::from(src_out))
-                .stderr(Stdio::inherit())
+                .stderr(Stdio::inherit());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                tar_dst.creation_flags(CREATE_NO_WINDOW);
+            }
+            tar_dst
                 .spawn()
                 .map_err(|e| VastError::ParseError(format!("spawn local tar dst: {e}")))?
         }

@@ -63,17 +63,21 @@ pub(crate) async fn run_rsync(h: &InstanceHandle, source: &DataSource) -> Result
     let remote_dst = format!("root@{}:{}", ssh_host, source.dst);
     let ssh_opt = format!("ssh -p {} -o StrictHostKeyChecking=no", ssh_port);
 
-    let status = tokio::process::Command::new("rsync")
-        .args([
-            "-avz",
-            "--partial",
-            "-e",
-            &ssh_opt,
-            &source.src,
-            &remote_dst,
-        ])
-        .status()
-        .await?;
+    let mut rsync_cmd = tokio::process::Command::new("rsync");
+    rsync_cmd.args([
+        "-avz",
+        "--partial",
+        "-e",
+        &ssh_opt,
+        &source.src,
+        &remote_dst,
+    ]);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        rsync_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let status = rsync_cmd.status().await?;
 
     if !status.success() {
         return Err(VastError::CliFailure {
@@ -256,21 +260,26 @@ async fn tar_upload(
     // Both children get `kill_on_drop(true)` so a cancelled future (e.g.
     // `tokio::time::timeout`) terminates the local processes — without this
     // the user is left with orphan tar.exe/ssh.exe writing into a closed pipe.
-    let mut tar_child = tokio::process::Command::new("tar")
+    let mut tar_cmd = tokio::process::Command::new("tar");
+    tar_cmd
         .args(&tar_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => VastError::CliFailure {
-                exit_code: 127,
-                stderr: "tar binary not found in PATH (Win10+: built-in at \
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        tar_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut tar_child = tar_cmd.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => VastError::CliFailure {
+            exit_code: 127,
+            stderr: "tar binary not found in PATH (Win10+: built-in at \
                          C:\\Windows\\System32\\tar.exe; Git Bash: included)"
-                    .to_string(),
-            },
-            _ => VastError::Io(e),
-        })?;
+                .to_string(),
+        },
+        _ => VastError::Io(e),
+    })?;
 
     let tar_stdout = tar_child
         .stdout
@@ -278,22 +287,27 @@ async fn tar_upload(
         .ok_or_else(|| VastError::ParseError("could not capture tar stdout".to_string()))?;
     let stdin_for_ssh: Stdio = tar_stdout.try_into().map_err(VastError::Io)?;
 
-    let ssh_child = tokio::process::Command::new("ssh")
+    let mut ssh_cmd = tokio::process::Command::new("ssh");
+    ssh_cmd
         .args(&ssh_args)
         .arg(&remote_cmd)
         .stdin(stdin_for_ssh)
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => VastError::CliFailure {
-                exit_code: 127,
-                stderr: "ssh binary not found in PATH (Win10+: optional feature \
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        ssh_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let ssh_child = ssh_cmd.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => VastError::CliFailure {
+            exit_code: 127,
+            stderr: "ssh binary not found in PATH (Win10+: optional feature \
                          OpenSSH.Client, or use Git for Windows)"
-                    .to_string(),
-            },
-            _ => VastError::Io(e),
-        })?;
+                .to_string(),
+        },
+        _ => VastError::Io(e),
+    })?;
 
     // Run upload with optional deadline. On timeout: drop both children
     // (kill_on_drop fires), probe the destination one last time so the error
