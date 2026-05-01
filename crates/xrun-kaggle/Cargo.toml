@@ -16,8 +16,11 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 tempfile = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "json"] }
 
 [dev-dependencies]
 xrun-core = { path = "../xrun-core" }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
+wiremock = "0.6"
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -5,11 +5,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use xrun_core::{
-    config::credentials::VastCredentials,
+    config::credentials::{KaggleCredentials, VastCredentials},
     store::{Run, RunStatus},
     vendor::InstanceHandle,
     Credentials, RunId, Store, VendorAdapter,
 };
+use xrun_kaggle::KaggleAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::StopArgs;
@@ -99,8 +100,7 @@ fn stop_one(
                         let handle: InstanceHandle = serde_json::from_str(state_json)
                             .context("failed to deserialize instance handle")?;
                         let adapter_store = Store::open(db_path)?;
-                        let creds = resolve_vast_credentials(config_dir);
-                        let adapter = build_adapter(&handle.vendor, creds, adapter_store)?;
+                        let adapter = build_adapter(&handle.vendor, config_dir, adapter_store)?;
                         adapter.set_run_id(&run.id);
                         adapter.destroy(&handle).with_context(|| {
                             format!("destroy failed for instance {}", handle.id)
@@ -131,13 +131,44 @@ fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
     VastCredentials::default()
 }
 
-fn build_adapter(
-    vendor: &str,
-    creds: VastCredentials,
-    store: Store,
-) -> Result<Box<dyn VendorAdapter>> {
+fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
+    if let Ok(creds) = Credentials::load(config_dir) {
+        if creds.kaggle.token.is_some()
+            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
+        {
+            return creds.kaggle;
+        }
+    }
+    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
+        return KaggleCredentials {
+            token: None,
+            username: Some(username),
+            key: Some(key),
+        };
+    }
+    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
+        return KaggleCredentials {
+            token: Some(token),
+            username: None,
+            key: None,
+        };
+    }
+    KaggleCredentials::default()
+}
+
+fn build_adapter(vendor: &str, config_dir: &Path, store: Store) -> Result<Box<dyn VendorAdapter>> {
     match vendor {
-        "vast" => Ok(Box::new(VastAdapter::new(creds, store))),
+        "vast" => {
+            let creds = resolve_vast_credentials(config_dir);
+            Ok(Box::new(VastAdapter::new(creds, store)))
+        }
+        "kaggle" => {
+            let creds = resolve_kaggle_credentials(config_dir);
+            // KaggleAdapter destroys via REST and doesn't need the store
+            // — drop it so we don't hold an extra connection.
+            drop(store);
+            Ok(Box::new(KaggleAdapter::new().with_credentials(creds)))
+        }
         other => anyhow::bail!("stop not implemented for vendor: {other}"),
     }
 }

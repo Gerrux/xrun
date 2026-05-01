@@ -19,6 +19,7 @@ use xrun_core::{
 use crate::cli::{KaggleCli, KaggleProcess, KernelState};
 use crate::embed;
 use crate::error::KaggleError;
+use crate::http::{self, CancelOutcome, KaggleApiClient};
 use crate::ingest::ingest_post_run;
 use crate::kernel_metadata::KernelMetadata;
 
@@ -31,6 +32,10 @@ pub struct KaggleAdapter {
     store_path: Option<PathBuf>,
     /// Tracks the last observed kernel state to emit transition events exactly once.
     last_kernel_state: Mutex<Option<KernelState>>,
+    /// Stored separately from the cli env vars so the HTTP client (used by
+    /// `destroy`) can authenticate against the REST API without going through
+    /// the kaggle subprocess.
+    credentials: KaggleCredentials,
 }
 
 impl KaggleAdapter {
@@ -40,6 +45,7 @@ impl KaggleAdapter {
             run_id: std::sync::RwLock::new(None),
             store_path: None,
             last_kernel_state: Mutex::new(None),
+            credentials: KaggleCredentials::default(),
         }
     }
 
@@ -49,6 +55,7 @@ impl KaggleAdapter {
             run_id: std::sync::RwLock::new(None),
             store_path: None,
             last_kernel_state: Mutex::new(None),
+            credentials: KaggleCredentials::default(),
         }
     }
 
@@ -61,15 +68,16 @@ impl KaggleAdapter {
     /// Sets `KAGGLE_USERNAME`/`KAGGLE_KEY` (legacy) or `KAGGLE_API_TOKEN` (new Bearer).
     pub fn with_credentials(mut self, creds: KaggleCredentials) -> Self {
         let mut env: Vec<(String, String)> = Vec::new();
-        if let Some(token) = creds.token {
-            env.push(("KAGGLE_API_TOKEN".into(), token));
-        } else if let (Some(user), Some(key)) = (creds.username, creds.key) {
-            env.push(("KAGGLE_USERNAME".into(), user));
-            env.push(("KAGGLE_KEY".into(), key));
+        if let Some(token) = &creds.token {
+            env.push(("KAGGLE_API_TOKEN".into(), token.clone()));
+        } else if let (Some(user), Some(key)) = (&creds.username, &creds.key) {
+            env.push(("KAGGLE_USERNAME".into(), user.clone()));
+            env.push(("KAGGLE_KEY".into(), key.clone()));
         }
         if !env.is_empty() {
             self.cli = self.cli.with_env(env);
         }
+        self.credentials = creds;
         self
     }
 
@@ -374,15 +382,48 @@ impl VendorAdapter for KaggleAdapter {
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {
-        // §4: Attempt to cancel the running kernel via `kaggle kernels cancel`.
+        // §4: Cancel the running kernel via the Kaggle REST API.
+        //
+        // Kaggle CLI 1.8.x removed `kaggle kernels cancel` entirely (and
+        // Kaggle's own PR #967 to add it back was closed un-merged), so we
+        // POST directly to /api/v1/kernels/cancel-session/{id}. The two-step
+        // dance (resolve session id → cancel) is unavoidable: `cancel-session`
+        // takes the integer session id, not the slug.
         let slug = h.id.strip_prefix("kaggle:").unwrap_or(&h.id);
-        match self.cli.cancel(slug) {
-            Ok(()) => {
-                tracing::info!("kaggle kernel '{slug}' cancel request sent");
+
+        let auth = match http::auth_from_credentials(&self.credentials) {
+            Some(a) => a,
+            None => {
+                tracing::warn!(
+                    "kaggle destroy: no credentials configured — cannot cancel kernel '{slug}'. \
+                     Stop the kernel via https://www.kaggle.com/code or run \
+                     `xrun config set kaggle.username/.key`."
+                );
+                return Ok(());
+            }
+        };
+
+        let client = match KaggleApiClient::new(auth) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("kaggle destroy: HTTP client init failed: {e}");
+                return Ok(());
+            }
+        };
+
+        match client.cancel_kernel(slug) {
+            Ok(CancelOutcome::Cancelled(id)) => {
+                tracing::info!("kaggle kernel '{slug}' cancelled (session {id})");
+            }
+            Ok(CancelOutcome::NoActiveSession) => {
+                tracing::info!("kaggle kernel '{slug}' already finished — nothing to cancel");
             }
             Err(e) => {
+                // Don't fail the stop: the run is marked Cancelled in the
+                // local DB either way. A surfaced warn is more useful than
+                // an opaque exit 1.
                 tracing::warn!(
-                    "could not cancel kaggle kernel '{slug}': {e}\n\
+                    "could not cancel kaggle kernel '{slug}' via REST: {e}\n\
                      The kernel will auto-terminate after its session limit (≤12 h). \
                      Local run marked as stopped."
                 );
