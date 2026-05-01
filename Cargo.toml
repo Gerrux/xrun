@@ -8,6 +8,7 @@ members = [
     "crates/xrun-mlflow",
     "crates/xrun-kaggle",
     "crates/xrun-local",
+    "crates/xrun-ssh",
 ]
 resolver = "2"
 

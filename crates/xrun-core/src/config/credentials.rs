@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,22 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct VastCredentials {
     pub api_key: Option<String>,
+}
+
+/// One named SSH host. `host_alias` (the map key in `[vendors.ssh.<alias>]`)
+/// is what the manifest references via `ssh.host_alias`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct SshHostCredentials {
+    pub host: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    /// Path to the SSH key (`~/.ssh/id_ed25519`-style; tilde expanded at use
+    /// time). When unset, ssh falls back to the system default key.
+    pub key: Option<String>,
+    /// Optional default workdir for runs from this host. Override per-manifest
+    /// via `ssh.workdir`.
+    pub default_workdir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -32,6 +49,10 @@ pub struct Credentials {
     pub vast: VastCredentials,
     pub kaggle: KaggleCredentials,
     pub mlflow: MlflowCredentials,
+    /// SSH hosts keyed by alias. Manifests reference these via
+    /// `ssh.host_alias`. Loaded from `[vendors.ssh.<alias>]` sections.
+    #[serde(rename = "ssh", default)]
+    pub ssh_hosts: HashMap<String, SshHostCredentials>,
 }
 
 impl Credentials {
@@ -41,6 +62,7 @@ impl Credentials {
             && self.kaggle.username.is_none()
             && self.kaggle.key.is_none()
             && self.mlflow.token.is_none()
+            && self.ssh_hosts.is_empty()
     }
 
     pub fn vast_native_path() -> Option<PathBuf> {

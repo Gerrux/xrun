@@ -9,6 +9,7 @@ pub enum Vendor {
     Vast,
     Kaggle,
     Local,
+    Ssh,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -16,6 +17,20 @@ pub struct LocalSpec {
     /// GPU selector hint. `auto` (or unset) → pick the first nvidia-smi GPU.
     /// `cpu` → set `CUDA_VISIBLE_DEVICES=""`. Anything else (e.g. `0`, `0,1`)
     /// is forwarded as `CUDA_VISIBLE_DEVICES`.
+    pub gpu: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SshSpec {
+    /// Looks up `[vendors.ssh.<host_alias>]` in credentials.toml for the
+    /// host/user/port/key fields. Manifests don't embed connection info
+    /// directly so they stay portable across machines.
+    pub host_alias: String,
+    /// Remote workdir root. Defaults to `/tmp/xrun` on the remote.
+    /// Per-run subdir `<workdir>/<run-id>/` is created automatically.
+    pub workdir: Option<String>,
+    /// Same `CUDA_VISIBLE_DEVICES` semantics as `LocalSpec.gpu`. `None` =
+    /// inherit (typically what the remote already exports).
     pub gpu: Option<String>,
 }
 
@@ -173,6 +188,7 @@ pub struct Manifest {
     pub vast: Option<VastSpec>,
     pub kaggle: Option<KaggleSpec>,
     pub local: Option<LocalSpec>,
+    pub ssh: Option<SshSpec>,
     pub data: Option<Vec<DataSource>>,
     pub run: RunSpec,
     pub checkpoints: Option<Checkpoints>,

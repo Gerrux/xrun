@@ -3031,6 +3031,7 @@ dependencies = [
  "xrun-local",
  "xrun-mlflow",
  "xrun-poller",
+ "xrun-ssh",
  "xrun-tui",
  "xrun-vast",
 ]
@@ -3122,6 +3123,25 @@ dependencies = [
  "wiremock",
  "xrun-core",
  "xrun-mlflow",
+]
+
+[[package]]
+name = "xrun-ssh"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "directories",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "ulid",
+ "which",
+ "xrun-core",
 ]
 
 [[package]]

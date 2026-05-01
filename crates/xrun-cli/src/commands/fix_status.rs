@@ -18,6 +18,7 @@ use xrun_core::{
 };
 use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
+use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::FixStatusArgs;
@@ -97,6 +98,48 @@ pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &P
                     LocalAdapter::with_store_and_runs_dir(adapter_store, runs_dir.to_path_buf());
                 adapter.set_run_id(run_id);
                 Box::new(adapter)
+            }
+            "ssh" => {
+                // Reconstruct conn via stored manifest copy.
+                let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");
+                let yaml = match std::fs::read_to_string(&manifest_path) {
+                    Ok(y) => y,
+                    Err(_) => {
+                        eprintln!("  {run_id}: ssh manifest unreadable, skipping");
+                        continue;
+                    }
+                };
+                let m: xrun_core::manifest::Manifest = match serde_yaml::from_str(&yaml) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        eprintln!("  {run_id}: ssh manifest unparsable, skipping");
+                        continue;
+                    }
+                };
+                let ssh_spec = m.ssh.as_ref();
+                let creds = Credentials::load(config_dir).unwrap_or_default();
+                let host_creds = ssh_spec.and_then(|s| creds.ssh_hosts.get(&s.host_alias));
+                if let (Some(spec), Some(hc)) = (ssh_spec, host_creds) {
+                    let conn = match SshAdapter::resolve_conn(&spec.host_alias, hc) {
+                        Ok(c) => c,
+                        Err(_) => {
+                            eprintln!("  {run_id}: ssh creds incomplete, skipping");
+                            continue;
+                        }
+                    };
+                    let workdir_root = spec
+                        .workdir
+                        .clone()
+                        .or_else(|| hc.default_workdir.clone())
+                        .unwrap_or_else(|| "/tmp/xrun".to_string());
+                    let adapter_store = Store::open(db_path)?;
+                    let adapter = SshAdapter::new(adapter_store, conn, workdir_root);
+                    adapter.set_run_id(run_id);
+                    Box::new(adapter)
+                } else {
+                    eprintln!("  {run_id}: ssh manifest/creds mismatch, skipping");
+                    continue;
+                }
             }
             _ => {
                 let creds = resolve_vast_credentials(config_dir);

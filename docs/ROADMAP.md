@@ -283,12 +283,51 @@ destroy).
   vendor phase 0 (memory `project_vendor_roadmap.md`).
 - RunPod / Lambda Labs / Lightning AI — в v0.6+ соответственно.
 
-## v0.6+ (backlog)
+## v0.6 — Vendor phase 0 cont'd: `xrun-ssh`
 
-- `vendor: ssh` — generic SSH-вендор для своего сервера / NAS / VPS;
-  расширение или соседний крейт `xrun-ssh`. Реюз 90% паттерна `xrun-local` +
-  SSH-обёртка вокруг spawn/tail/pull. Почти готовый шаблон в
-  `crates/xrun-vast` (там уже SSH).
+**Цель**: запускать манифест на постоянно включенной машине через SSH.
+Свой сервер, NAS, VPS. Always-on железо: provision/destroy не аллоцируют
+аппаратуру, только per-run state.
+
+### Scope
+
+- [x] Crate `crates/xrun-ssh/` с `SshAdapter`.
+- [x] `Vendor::Ssh` + `SshSpec { host_alias, workdir, gpu }` в `xrun-core`.
+- [x] `[vendors.ssh.<alias>]` секция в credentials.toml: `host`/`user`/
+      `port`/`key`/`default_workdir`. `BatchMode=yes` — ключи only, без
+      пассвордов.
+- [x] `cmd.rs` — pure command builders: `ssh_argv`, `rsync_upload_argv`,
+      `rsync_download_argv`, `remote_launch_script`, `remote_size_script`,
+      `remote_tail_script`, `shell_quote`. Все с unit-тестами.
+- [x] `ssh.rs` — subprocess wrappers `ssh_exec`/`rsync`/`remote_file_size`/
+      `remote_tail` с `BatchMode=yes`/`StrictHostKeyChecking=no` и
+      `CREATE_NO_WINDOW` на Windows.
+- [x] `provision`: `mkdir -p <workdir>/<run-id>` через ssh, insert instance row.
+      `destroy`: `kill -TERM` → `kill -KILL` PID из `<run_dir>/run.pid`.
+      `vendor_status`: nvidia-smi over ssh + `||` hostname fallback.
+      `vendor_instances`: DB filter + `kill -0 PID` per row.
+- [x] `upload`: rsync per DataSource. `pull`: rsync from glob with sha256
+      + `record_artifact`. `tail`: `wc -c` size probe + `tail -c +N`.
+- [x] Dispatch `Vendor::Ssh` в launch / poll_daemon (через стейкджед
+      `manifest.yaml` копию) / fix_status (через тот же путь) / stop (через
+      `XRUN_SSH_ALIAS` env override либо первый ssh-хост в creds).
+- [x] Docs: `docs/MANIFEST.md` секция ssh + поля `[vendors.ssh.<alias>]`.
+
+### Acceptance
+
+1. ✓ `cargo test --workspace` зелёный (286 passed, 6 ignored).
+2. ✓ `cargo clippy --workspace -- -D warnings` чистый.
+3. (требует живой ssh-машины) `xrun launch exp/ssh_smoke.yaml` запускает
+   тренировку на удалённой машине, события через `XRUN_RUN_DIR/events.jsonl`
+   тейлятся через ssh, `xrun stop <id>` убивает PID.
+
+### Не входит в v0.6
+
+- ssh-agent integration (сейчас только `key=`-файл, BatchMode=yes).
+- Password auth (out of scope — ключи only).
+- Поддержка Windows-серверов (использует bash/tail/rsync).
+
+## v0.7+ (backlog)
 - RunPod (`crates/xrun-runpod/`): REST + SSH, копия `xrun-vast` с другим API.
 - Lambda Labs (`crates/xrun-lambda/`): REST + SSH; стабильные цены, проще
   для `--max-cost`.

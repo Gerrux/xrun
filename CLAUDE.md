@@ -13,6 +13,7 @@ training → poll events/metrics → SQLite.
 | vast.ai адаптер | Rust | `crates/xrun-vast/` |
 | Kaggle адаптер | Rust | `crates/xrun-kaggle/` |
 | Local адаптер (host subprocess, без сети) | Rust | `crates/xrun-local/` |
+| SSH адаптер (свой сервер / NAS / VPS) | Rust | `crates/xrun-ssh/` |
 | Poll daemon engine | Rust | `crates/xrun-poller/` |
 | MLflow REST client | Rust | `crates/xrun-mlflow/` |
 | TUI (Python Textual) | Python | `python/xrun_tui/` |

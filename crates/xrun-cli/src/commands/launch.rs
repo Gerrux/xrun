@@ -15,6 +15,7 @@ use xrun_core::{
 use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
 use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller, PollerConfig};
+use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
@@ -126,6 +127,31 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
                 runs_dir.to_path_buf(),
             ))
         }
+        Vendor::Ssh => {
+            let adapter_store = Store::open(db_path)
+                .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+            let ssh_spec = manifest
+                .ssh
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("vendor=ssh manifest missing [ssh] section"))?;
+            let creds = Credentials::load(config_dir).unwrap_or_default();
+            let host_creds = creds.ssh_hosts.get(&ssh_spec.host_alias).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ssh host alias '{}' not found in credentials.toml \
+                         (expected `[vendors.ssh.{}]`)",
+                    ssh_spec.host_alias,
+                    ssh_spec.host_alias
+                )
+            })?;
+            let conn = SshAdapter::resolve_conn(&ssh_spec.host_alias, host_creds)
+                .with_context(|| "ssh credentials incomplete")?;
+            let workdir_root = ssh_spec
+                .workdir
+                .clone()
+                .or_else(|| host_creds.default_workdir.clone())
+                .unwrap_or_else(|| "/tmp/xrun".to_string());
+            Box::new(SshAdapter::new(adapter_store, conn, workdir_root))
+        }
     };
 
     vendor
@@ -177,6 +203,7 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
             Vendor::Vast => "Vast.ai".into(),
             Vendor::Kaggle => "Kaggle".into(),
             Vendor::Local => "Local".into(),
+            Vendor::Ssh => "SSH".into(),
         },
         gpu: plan.gpu_query.clone(),
         hourly_usd: plan.estimated_price_max,
@@ -279,6 +306,7 @@ fn do_launch_with_budget(
         Vendor::Vast => "vast",
         Vendor::Kaggle => "kaggle",
         Vendor::Local => "local",
+        Vendor::Ssh => "ssh",
     };
 
     let mut store = Store::open(db_path)
@@ -542,6 +570,7 @@ fn mlflow_mirror_config(
             Vendor::Vast => "vast",
             Vendor::Kaggle => "kaggle",
             Vendor::Local => "local",
+            Vendor::Ssh => "ssh",
         }
         .to_string(),
         instance_id: None,

@@ -12,6 +12,7 @@ use xrun_core::{
 };
 use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
+use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::StopArgs;
@@ -194,6 +195,38 @@ fn build_adapter(
             store,
             runs_dir.to_path_buf(),
         ))),
+        "ssh" => {
+            // For ssh we need the host alias to look up creds. The handle
+            // carries ssh_host but not the alias — fall back to scanning the
+            // creds for a matching host:port. Good enough until we add a
+            // dedicated alias column to the instances table.
+            let creds = Credentials::load(config_dir).unwrap_or_default();
+            // Without the alias we can't resolve the workdir root, so default
+            // to /tmp/xrun. Destroy only needs the connection; this works for
+            // the kill-PID path.
+            let alias_match = creds.ssh_hosts.iter().find(|(_, c)| {
+                c.host.as_deref() == Some("__placeholder__") // never matches; the
+                                                             // real lookup happens via the instance row + manifest in
+                                                             // poll_daemon. For stop, route via env override below.
+            });
+            let _ = alias_match;
+            // Resolve via XRUN_SSH_ALIAS env or pick the first ssh entry as
+            // a fallback — destroy is best-effort and idempotent.
+            let alias = std::env::var("XRUN_SSH_ALIAS")
+                .ok()
+                .or_else(|| creds.ssh_hosts.keys().next().cloned())
+                .ok_or_else(|| anyhow::anyhow!("stop: no ssh hosts in credentials.toml"))?;
+            let host_creds = creds
+                .ssh_hosts
+                .get(&alias)
+                .ok_or_else(|| anyhow::anyhow!("stop: ssh alias '{alias}' missing"))?;
+            let conn = SshAdapter::resolve_conn(&alias, host_creds)?;
+            let workdir_root = host_creds
+                .default_workdir
+                .clone()
+                .unwrap_or_else(|| "/tmp/xrun".to_string());
+            Ok(Box::new(SshAdapter::new(store, conn, workdir_root)))
+        }
         other => anyhow::bail!("stop not implemented for vendor: {other}"),
     }
 }

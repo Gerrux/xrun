@@ -126,6 +126,59 @@ artifacts:
   `<runs_dir>/<run-id>/run.pid`; `xrun stop <id>` посылает SIGTERM/taskkill,
   ждёт, при необходимости SIGKILL. Идемпотентно.
 
+## Минимальный пример (ssh — свой сервер / NAS / VPS)
+
+`vendor: ssh` — отправляет тренировку на машину, доступную по SSH (always-on).
+Provisioning не делает ничего (железо постоянно), `destroy` только убивает
+дочерний процесс. Полный паритет lifecycle с vast/local через `ssh` + `rsync`
+subprocess.
+
+```yaml
+name: ssh_train_v1
+vendor: ssh
+ssh:
+  host_alias: my-workstation     # см. credentials.toml ниже
+  workdir: /home/me/xrun-runs    # optional, default /tmp/xrun
+  gpu: cuda:0                    # optional CUDA_VISIBLE_DEVICES override
+
+data:
+  - src: ./datasets/tiny
+    dst: /home/me/xrun-runs/data
+run:
+  cmd: python train.py --epochs 10
+artifacts:
+  patterns: [checkpoints/best*.pt]
+```
+
+В `~/.config/xrun/credentials.toml`:
+
+```toml
+[vendors.ssh.my-workstation]
+host = "192.168.1.10"
+user = "ubuntu"
+port = 22                          # optional, default 22
+key = "~/.ssh/id_ed25519"          # optional
+default_workdir = "/home/ubuntu/xrun-runs"   # optional fallback
+```
+
+### SSH-специфичные нюансы
+
+- **Ключи только.** `ssh -o BatchMode=yes` — пароль/passphrase prompt
+  отключён, чтобы запуск не висел в ожидании ввода. Используй ssh-agent
+  или unencrypted key. (Можно поправить позже, добавив ssh-agent integration.)
+- **Зависимости на хосте.** `rsync`, `bash`, `tail`, `wc`, `nvidia-smi` —
+  обычные Unix-инструменты. Windows-серверы пока не поддерживаются.
+- **`workdir`.** Дефолт `/tmp/xrun`, перезатирается `ssh.workdir` в манифесте,
+  и тот в свою очередь — `default_workdir` из creds. Per-run subdir
+  `<workdir>/<run-id>/` создаётся автоматически в `provision()`.
+- **xrun_hook на удалёнке.** Установи `pip install xrun-hook` на сервере или
+  включи в `data:` как для vast. `XRUN_RUN_DIR=<run-dir>` подставляется в env.
+- **destroy только убивает PID,** не машину. Идемпотентно: повторный `xrun
+  stop <id>` ничего не сломает.
+- **stop без manifest copy.** `xrun stop` использует `XRUN_SSH_ALIAS` env
+  override либо первый ssh-хост из creds (best-effort, идемпотентен).
+  Когда есть стояла копия манифеста — берётся правильный alias.
+
 ## Минимальный пример (Kaggle)
 
 ```yaml
@@ -160,8 +213,8 @@ mlflow:
 | `name` | string | да | Slug; используется как experiment name в MLflow |
 | `description` | string | нет | Свободный текст |
 | `tags` | [string] | нет | Видны в `xrun ls`, фильтруются |
-| `vendor` | enum | да | `vast` \| `kaggle` \| `local` |
-| `vast` / `kaggle` / `local` | object | да | По одному в зависимости от `vendor` (`local` блок опционален) |
+| `vendor` | enum | да | `vast` \| `kaggle` \| `local` \| `ssh` |
+| `vast` / `kaggle` / `local` / `ssh` | object | да | По одному в зависимости от `vendor` (`local` блок опционален) |
 | `data` | [object] | нет | Что предзалить |
 | `run` | object | да | Команда тренировки |
 | `checkpoints` | object | нет | Watch + pull policy |
@@ -208,6 +261,14 @@ mlflow:
 | `gpu` | `auto` (default), `cpu`, `0`, `0,1`, `cuda:0` — выставляется в `CUDA_VISIBLE_DEVICES` |
 
 Блок опционален. Если опущен, `gpu` берётся как `auto` и `CUDA_VISIBLE_DEVICES` не трогается.
+
+### `ssh`
+
+| Поле | Описание |
+|------|----------|
+| `host_alias` | Ключ в `[vendors.ssh.<alias>]` credentials.toml (обязательно) |
+| `workdir` | Remote workdir root, default `/tmp/xrun` |
+| `gpu` | `CUDA_VISIBLE_DEVICES` override (`auto`/`cpu`/`0`/`cuda:0`/...) |
 
 ### `kaggle`
 

@@ -13,6 +13,7 @@ use xrun_core::{
 use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
 use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
+use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::PollDaemonArgs;
@@ -42,6 +43,7 @@ fn load_mlflow_config(
             Vendor::Vast => "vast",
             Vendor::Kaggle => "kaggle",
             Vendor::Local => "local",
+            Vendor::Ssh => "ssh",
         }
         .to_string(),
         instance_id: None,
@@ -145,6 +147,43 @@ pub fn run(
             })?;
             let adapter =
                 LocalAdapter::with_store_and_runs_dir(adapter_store, runs_dir.to_path_buf());
+            adapter.set_run_id(&run_id);
+            Box::new(adapter)
+        }
+        "ssh" => {
+            // poll-daemon reconstructs the connection from the saved manifest
+            // since the daemon doesn't have direct access to it. Best effort:
+            // read the manifest copy in the run dir and look up the host
+            // alias from credentials.
+            let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");
+            let yaml = std::fs::read_to_string(&manifest_path).with_context(|| {
+                format!(
+                    "ssh poll-daemon: cannot read manifest at {}",
+                    manifest_path.display()
+                )
+            })?;
+            let manifest: xrun_core::manifest::Manifest =
+                serde_yaml::from_str(&yaml).context("ssh poll-daemon: manifest parse failed")?;
+            let ssh_spec = manifest.ssh.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("ssh poll-daemon: manifest missing [ssh] section")
+            })?;
+            let creds = Credentials::load(config_dir).unwrap_or_default();
+            let host_creds = creds.ssh_hosts.get(&ssh_spec.host_alias).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ssh poll-daemon: alias '{}' not in credentials.toml",
+                    ssh_spec.host_alias
+                )
+            })?;
+            let conn = SshAdapter::resolve_conn(&ssh_spec.host_alias, host_creds)?;
+            let workdir_root = ssh_spec
+                .workdir
+                .clone()
+                .or_else(|| host_creds.default_workdir.clone())
+                .unwrap_or_else(|| "/tmp/xrun".to_string());
+            let adapter_store = Store::open(db_path).with_context(|| {
+                format!("failed to open adapter store at {}", db_path.display())
+            })?;
+            let adapter = SshAdapter::new(adapter_store, conn, workdir_root);
             adapter.set_run_id(&run_id);
             Box::new(adapter)
         }
