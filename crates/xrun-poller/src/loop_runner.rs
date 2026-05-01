@@ -248,6 +248,15 @@ impl Poller {
                 return Ok(RunStatus::Cancelled);
             }
 
+            // Terminal status latched from the events tail. We do NOT return
+            // immediately — we still drain metrics + stdout for this tick so
+            // a fast run that wrote `done:ok` and the final metric in the
+            // same window doesn't lose the metric. For vendors that destroy
+            // remote state on failure (vast, kaggle) the drain runs before
+            // destroy, so the remote files are still alive.
+            let mut terminal_after_drain: Option<RunStatus> = None;
+            let mut destroy_after_drain = false;
+
             // --- tail events ---
             match self
                 .vendor
@@ -308,16 +317,7 @@ impl Poller {
                     ));
 
                     if done {
-                        self.store
-                            .update_run_status(&self.run_id, RunStatus::Done)?;
-                        self.send_update(DataUpdate::RunStatusChanged(
-                            self.run_id.clone(),
-                            RunStatus::Done,
-                        ));
-                        if let Some(ref mirror) = mlflow {
-                            mirror.finish(&RunStatus::Done);
-                        }
-                        return Ok(RunStatus::Done);
+                        terminal_after_drain = Some(RunStatus::Done);
                     }
 
                     if failed && !matches!(self.config.on_stage_failed, FailPolicy::Keep) {
@@ -326,17 +326,8 @@ impl Poller {
                                 "reprovision not supported in v0.1; treating as stop_instance"
                             );
                         }
-                        let _ = self.vendor.destroy(&self.handle);
-                        self.store
-                            .update_run_status(&self.run_id, RunStatus::Failed)?;
-                        self.send_update(DataUpdate::RunStatusChanged(
-                            self.run_id.clone(),
-                            RunStatus::Failed,
-                        ));
-                        if let Some(ref mirror) = mlflow {
-                            mirror.finish(&RunStatus::Failed);
-                        }
-                        return Ok(RunStatus::Failed);
+                        terminal_after_drain = Some(RunStatus::Failed);
+                        destroy_after_drain = true;
                     }
                 }
                 Ok(_) => {}
@@ -444,6 +435,24 @@ impl Poller {
                 Err(e) => {
                     tracing::warn!("tail stdout error: {e}");
                 }
+            }
+
+            // Terminal status latched from events tail this tick: drain has
+            // completed, finalize and return.
+            if let Some(status) = terminal_after_drain {
+                if destroy_after_drain {
+                    let _ = self.vendor.destroy(&self.handle);
+                }
+                self.store
+                    .update_run_status(&self.run_id, status.clone())?;
+                self.send_update(DataUpdate::RunStatusChanged(
+                    self.run_id.clone(),
+                    status.clone(),
+                ));
+                if let Some(ref mirror) = mlflow {
+                    mirror.finish(&status);
+                }
+                return Ok(status);
             }
 
             // --- cost estimate + budget enforcement ---

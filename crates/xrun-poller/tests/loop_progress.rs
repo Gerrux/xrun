@@ -206,6 +206,56 @@ fn test_poller_run_metrics_written() {
 }
 
 #[test]
+fn test_poller_drains_metrics_in_same_tick_as_done() {
+    // Regression: a fast run (e.g. xrun-local 200ms job) writes its events
+    // and metrics in the same window. Before the fix the poller saw `done:ok`
+    // in the events tail and returned immediately, so the metric tail in the
+    // same iteration never ran. After the fix the metrics are drained first,
+    // then the terminal status returns at the end of the tick.
+    let tmp = TempDir::new().unwrap();
+    let (store, run_id) = setup_store(&tmp);
+    let runs_dir = tmp.path().join("runs");
+
+    // Both events (including done:ok) AND metrics arrive on the very first
+    // tail call.
+    let events_data = join_lines(&[
+        event_line("train_start", "ok"),
+        event_line("done", "ok"),
+    ]);
+    let metrics_data = join_lines(&[
+        metric_line("loss", 0, 1.0),
+        metric_line("loss", 1, 0.5),
+        metric_line("val_f1", 0, 0.7),
+    ]);
+
+    let mock = MockVendor::new(vec![events_data], vec![metrics_data]);
+    let cancel = CancellationToken::new();
+
+    let status = Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(mock),
+        make_handle(),
+        runs_dir,
+    )
+    .with_config(fast_config())
+    .run(cancel)
+    .unwrap();
+
+    assert_eq!(status, RunStatus::Done);
+
+    let store2 = Store::open(&tmp.path().join("runs.db")).unwrap();
+    let metrics = store2.list_metrics(&run_id, None).unwrap();
+    assert_eq!(
+        metrics.len(),
+        3,
+        "all metrics from the same-tick window must land in the store"
+    );
+    let events = store2.list_events(&run_id).unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
 fn test_poller_lock_prevents_duplicate() {
     let tmp = TempDir::new().unwrap();
     // Generate a fresh ID each run to avoid cross-test pollution in the global registry.
