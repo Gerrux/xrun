@@ -32,7 +32,9 @@ fn smoke_empty_state() {
         return;
     }
 
-    let expected = std::fs::read_to_string(&golden_path).unwrap().replace('\r', "");
+    let expected = std::fs::read_to_string(&golden_path)
+        .unwrap()
+        .replace('\r', "");
     assert_eq!(
         actual, expected,
         "snapshot mismatch — run with BLESS=1 to update"
