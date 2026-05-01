@@ -25,6 +25,7 @@ from xrun_tui.utils import (
     EVENT_STATUS_STYLE,
     cost,
     duration,
+    is_stale,
     rel_time,
 )
 
@@ -36,6 +37,7 @@ class RunDetailScreen(Screen):
     BINDINGS = [
         Binding("escape,q", "go_back",        "Back"),
         Binding("s",        "stop_run",       "Stop"),
+        Binding("S",        "sync_status",    "Sync"),
         Binding("r",        "rerun",          "Rerun"),
         Binding("p",        "pull",           "Pull"),
         Binding("a",        "artifacts",      "Artifacts"),
@@ -136,7 +138,14 @@ class RunDetailScreen(Screen):
             "failed":    ("✗ failed",    "bold #f7768e"),
             "cancelled": ("○ cancelled", "#bb9af7"),
         }.get(run["status"], (run["status"], "#c0caf5"))
-        self.query_one("#run-badge", Static).update(f"[{style}]{sym}[/]")
+        if is_stale(run):
+            badge = (
+                f"[{style}]{sym}[/]  "
+                "[bold #e0af68]⚠ stale (S to sync)[/]"
+            )
+        else:
+            badge = f"[{style}]{sym}[/]"
+        self.query_one("#run-badge", Static).update(badge)
 
         def chip(label: str, value: str, val_style: str = "#c0caf5") -> str:
             return f"[#565f89]{label}[/] [{val_style}]{value}[/]"
@@ -448,6 +457,21 @@ class RunDetailScreen(Screen):
 
     async def action_refresh(self) -> None:
         await self._load_run()
+
+    async def action_sync_status(self) -> None:
+        if not self._run:
+            return
+        from xrun_tui import services
+        self.notify(f"Reconciling {self._run_id[:8]}…", severity="information")
+        ok, msg = await services.fix_status(self._run_id)
+        if ok:
+            tail = msg.splitlines()[-1] if msg else "no change"
+            self.notify(f"Sync ok: {tail}", severity="information", timeout=6)
+            await self._load_run()
+        else:
+            self.notify(
+                f"Sync failed: {msg[:200]}", severity="error", timeout=10
+            )
 
     def action_tab_stages(self) -> None:
         self.query_one(TabbedContent).active = "tab-stages"

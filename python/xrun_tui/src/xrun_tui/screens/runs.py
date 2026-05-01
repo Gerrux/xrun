@@ -14,7 +14,14 @@ from textual.widgets import DataTable, Footer, Header, Static, Tab, Tabs
 from xrun_tui.widgets.fuzzy_filter import FilterBar
 from xrun_tui.widgets.status_bar import StatusBar
 
-from xrun_tui.utils import cost, duration, rel_time, status_dot, status_label
+from xrun_tui.utils import (
+    cost,
+    duration,
+    is_stale,
+    rel_time,
+    status_dot_for,
+    status_label_for,
+)
 
 if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
@@ -52,6 +59,7 @@ class RunsScreen(Screen):
         Binding("enter",     "open_detail",    "Detail"),
         Binding("escape",    "go_back",        "Back"),
         Binding("s",         "stop_run",       "Stop"),
+        Binding("S",         "sync_status",    "Sync"),
         Binding("r",         "rerun",          "Rerun"),
         Binding("p",         "pull_run",       "Pull"),
         Binding("f,slash",   "toggle_filter",  "Filter"),
@@ -174,13 +182,15 @@ class RunsScreen(Screen):
     def _add_run_row(self, table: DataTable, run: dict) -> None:
         in_cmp = run["id"] in self._compare_ids
         name_style = "bold #bb9af7" if in_cmp else ""
-        marker = Text("◈", style="bold #bb9af7") if in_cmp else status_dot(run["status"])
+        marker = (
+            Text("◈", style="bold #bb9af7") if in_cmp else status_dot_for(run)
+        )
         table.add_row(
             marker,
             Text(run["id"][:12], style="#565f89"),
             Text(run.get("name") or "", overflow="ellipsis", style=name_style),
             Text(run.get("vendor") or "", style="#7dcfff"),
-            status_label(run["status"]),
+            status_label_for(run),
             Text(rel_time(run.get("created_at")), style="#565f89"),
             Text(duration(run), style="#7aa2f7"),
             Text(cost(run), style="#e0af68"),
@@ -196,6 +206,7 @@ class RunsScreen(Screen):
         done    = by_status.get("done", 0)
         failed  = by_status.get("failed", 0)
         other   = sum(v for k, v in by_status.items() if k not in ("running", "done", "failed"))
+        stale   = sum(1 for r in visible if is_stale(r))
         total_cost = sum(
             (r.get("cost_usd") or r.get("cost_usd_estimate") or 0.0) for r in visible
         )
@@ -209,6 +220,8 @@ class RunsScreen(Screen):
             parts.append(f"[bold #f7768e]✗ {failed} failed[/]")
         if other:
             parts.append(f"[#e0af68]◌ {other} pending[/]")
+        if stale:
+            parts.append(f"[bold #e0af68]⚠ {stale} stale[/] [#565f89](S to sync)[/]")
 
         summary = "  ".join(parts) if parts else "[#414868]no runs[/]"
         if visible:
@@ -265,6 +278,33 @@ class RunsScreen(Screen):
         if run_id:
             from xrun_tui.screens.run_detail import RunDetailScreen
             await self.app.push_screen(RunDetailScreen(run_id))
+
+    async def action_sync_status(self) -> None:
+        """Reconcile vendor state for stale runs (`xrun fix-status`).
+
+        Without a selection: scan all running rows. With one stale row
+        selected: target that row only, so the user gets a fast "this is
+        running"/"vendor says it died" answer.
+        """
+        run_id = self._selected_run_id()
+        target = run_id if run_id and any(
+            r["id"] == run_id and is_stale(r) for r in self._runs
+        ) else None
+
+        from xrun_tui import services
+        if target:
+            self.notify(f"Reconciling {target[:8]}…", severity="information")
+        else:
+            self.notify("Reconciling stale runs…", severity="information")
+        ok, msg = await services.fix_status(target)
+        if ok:
+            tail = msg.splitlines()[-1] if msg else "no change"
+            self.notify(f"Sync ok: {tail}", severity="information", timeout=6)
+        else:
+            self.notify(
+                f"Sync failed: {msg[:200]}", severity="error", timeout=10
+            )
+        await self._refresh()
 
     async def action_stop_run(self) -> None:
         run_id = self._selected_run_id()

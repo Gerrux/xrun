@@ -11,7 +11,14 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 
-from xrun_tui.utils import cost, duration, rel_time, status_dot, status_label
+from xrun_tui.utils import (
+    cost,
+    duration,
+    is_stale,
+    rel_time,
+    status_dot_for,
+    status_label_for,
+)
 
 if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
@@ -150,11 +157,11 @@ class DashboardScreen(Screen):
             return
         for r in runs:
             t.add_row(
-                status_dot(r["status"]),
+                status_dot_for(r),
                 Text(r["id"][:10], style="#565f89"),
                 Text(r.get("name") or "", overflow="ellipsis"),
                 Text(r.get("vendor") or "", style="#7dcfff"),
-                status_label(r["status"]),
+                status_label_for(r),
                 Text(rel_time(r.get("started_at") or r.get("created_at")),
                      style="#565f89"),
                 Text(cost(r), style="#e0af68"),
@@ -166,11 +173,24 @@ class DashboardScreen(Screen):
                      if r["status"] in ("provisioning", "uploading", "running"))
         done   = sum(1 for r in runs if r["status"] == "done")
         failed = sum(1 for r in runs if r["status"] == "failed")
+        stale  = sum(1 for r in runs if is_stale(r))
         spent  = sum(
             (r.get("cost_usd") or r.get("cost_usd_estimate") or 0.0) for r in runs
         )
+
+        # When something is stale, fold it into the Active card so the user
+        # notices without us adding another column.
+        if stale:
+            active_value = f"{active}  ⚠ {stale}"
+        else:
+            active_value = str(active)
         self.query_one("#kpi-active", Static).update(
-            _kpi("Active runs", str(active), "bold #9ece6a" if active else "#414868")
+            _kpi(
+                "Active runs",
+                active_value,
+                "bold #e0af68" if stale else
+                ("bold #9ece6a" if active else "#414868"),
+            )
         )
         self.query_one("#kpi-done", Static).update(
             _kpi("Done", str(done), "#7aa2f7" if done else "#414868")

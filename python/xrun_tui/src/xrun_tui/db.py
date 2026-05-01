@@ -69,16 +69,21 @@ class Database:
     # ── Queries ──────────────────────────────────────────────────────────────
 
     async def runs(self, status: str | None = None, limit: int = 300) -> list[dict]:
-        q = "SELECT * FROM runs"
+        q = (
+            "SELECT r.*, "
+            "  (SELECT MAX(ts) FROM events e WHERE e.run_id = r.id) "
+            "    AS last_event_ts "
+            "FROM runs r"
+        )
         p: list = []
         if status == "active":
-            q += " WHERE status IN ('provisioning','uploading','running')"
+            q += " WHERE r.status IN ('provisioning','uploading','running')"
         elif status == "recent":
-            q += " WHERE status NOT IN ('provisioning','uploading','running')"
+            q += " WHERE r.status NOT IN ('provisioning','uploading','running')"
         elif status:
-            q += " WHERE status = ?"
+            q += " WHERE r.status = ?"
             p.append(status)
-        q += " ORDER BY created_at DESC LIMIT ?"
+        q += " ORDER BY r.created_at DESC LIMIT ?"
         p.append(limit)
         assert self._conn is not None
         async with self._conn.execute(q, p) as cur:
@@ -87,7 +92,13 @@ class Database:
 
     async def run(self, run_id: str) -> dict | None:
         assert self._conn is not None
-        async with self._conn.execute("SELECT * FROM runs WHERE id=?", [run_id]) as cur:
+        q = (
+            "SELECT r.*, "
+            "  (SELECT MAX(ts) FROM events e WHERE e.run_id = r.id) "
+            "    AS last_event_ts "
+            "FROM runs r WHERE r.id = ?"
+        )
+        async with self._conn.execute(q, [run_id]) as cur:
             row = await cur.fetchone()
         return dict(row) if row else None
 

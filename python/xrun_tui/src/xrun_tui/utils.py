@@ -84,3 +84,48 @@ def cost(run: dict) -> str:
     if (e := run.get("cost_usd_estimate")) is not None:
         return f"~${e:.2f}"
     return "—"
+
+
+# A run is "stale" when its DB row says it's still running but the poll-daemon
+# stopped writing events. This typically happens after a binary upgrade on
+# Windows (the OS won't let cargo replace the open .exe, so the daemon dies
+# silently). The user can recover with `xrun fix-status` — TUI surfaces this
+# directly so they don't have to discover the command from logs.
+STALE_THRESHOLD_SECS = 30 * 60
+
+
+def _parse_iso(dt_str: str | None) -> datetime | None:
+    if not dt_str:
+        return None
+    try:
+        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def is_stale(run: dict, threshold_secs: int = STALE_THRESHOLD_SECS) -> bool:
+    """A `running`/`provisioning`/`uploading` run with no recent event."""
+    if run.get("status") not in ("running", "provisioning", "uploading"):
+        return False
+    last = _parse_iso(run.get("last_event_ts")) or _parse_iso(
+        run.get("started_at")
+    ) or _parse_iso(run.get("created_at"))
+    if last is None:
+        return False
+    age = (datetime.now(timezone.utc) - last).total_seconds()
+    return age > threshold_secs
+
+
+def status_label_for(run: dict) -> Text:
+    """Status with an inline ⚠ marker for stale runs."""
+    base = status_label(run.get("status") or "")
+    if is_stale(run):
+        return Text.assemble(base, Text("  ⚠ stale", style="bold #e0af68"))
+    return base
+
+
+def status_dot_for(run: dict) -> Text:
+    """Status dot, swapped for a warning symbol on stale runs."""
+    if is_stale(run):
+        return Text("⚠", style="bold #e0af68")
+    return status_dot(run.get("status") or "")

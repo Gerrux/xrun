@@ -49,6 +49,21 @@ async def rerun_run(run_id: str) -> tuple[bool, str]:
     return code == 0, (out + err).strip()
 
 
+async def fix_status(run_id: str | None = None) -> tuple[bool, str]:
+    """Reconcile stale 'running' runs against the vendor.
+
+    Pass a run id to target one run; pass None to scan all currently-running
+    runs. The CLI returns 0 even when nothing changed, so the message is the
+    primary signal back to the user.
+    """
+    args = ["fix-status"]
+    if run_id:
+        args.append(run_id)
+    code, out, err = await _run(*args, timeout=60)
+    msg = (out + err).strip()
+    return code == 0, msg
+
+
 async def launch(
     manifest: str,
     dry_run: bool = False,
