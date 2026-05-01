@@ -83,6 +83,7 @@ Tabs {
 Tab {
     color: #565f89;
     padding: 0 3;
+    transition: background 100ms linear;
 }
 
 Tab.-active {
@@ -219,6 +220,7 @@ Button {
     color: #c0caf5;
     border: tall #414868;
     min-width: 12;
+    transition: background 100ms linear;
 }
 
 Button:hover {
@@ -416,13 +418,23 @@ ModalScreen {
     height: 3;
     align: left middle;
     border: solid #2d3149;
+    background: #1a1b26;
     padding: 0 1;
     margin-bottom: 1;
+    transition: background 150ms linear;
+}
+
+.vendor-row:hover {
+    background: #1e2030;
 }
 
 .vendor-row-active {
     border: solid #7aa2f7;
-    background: #1e2030;
+    background: #2d3149;
+}
+
+.vendor-row-active:hover {
+    background: #2d3149;
 }
 
 .vendor-dot {

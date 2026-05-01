@@ -7,6 +7,7 @@ import os
 import urllib.request
 from pathlib import Path
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -193,62 +194,92 @@ class VendorsScreen(Screen):
             if not key:
                 self.notify("vast_api_key file is empty", severity="warning")
                 return
-            creds = dict(self._creds)
-            creds.setdefault("vast", {})["api_key"] = key
-            config.write_credentials(creds)
-            self._creds = creds
-            self._refresh_row(0)
-            self.notify("vast.ai key imported from native config", severity="information")
-            self.run_worker(self._check_vast(), exclusive=False, group="probe")
+
+            async def _do_vast(confirmed: bool) -> None:
+                if not confirmed:
+                    return
+                creds = dict(self._creds)
+                creds.setdefault("vast", {})["api_key"] = key
+                config.write_credentials(creds)
+                self._creds = creds
+                self._refresh_row(0)
+                self.notify("vast.ai key imported from native config", severity="information")
+                self.run_worker(self._check_vast(), exclusive=False, group="probe")
+
+            if _vendor_configured(self._creds, "vast"):
+                from xrun_tui.screens.confirm import ConfirmScreen
+                await self.app.push_screen(
+                    ConfirmScreen("Overwrite existing vast.ai credentials?"), _do_vast
+                )
+            else:
+                await _do_vast(True)
 
         elif vid == "kaggle":
-            # 1. KAGGLE_API_TOKEN env var
+            # Determine the best available source in priority order
             env_token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
-            # 2. New-style access_token file
             access_token_path = Path.home() / ".kaggle" / "access_token"
-            # 3. Legacy kaggle.json
             legacy_path = Path.home() / ".kaggle" / "kaggle.json"
 
-            creds = dict(self._creds)
-
             if env_token:
-                creds.setdefault("kaggle", {})["token"] = env_token
-                config.write_credentials(creds)
-                self._creds = creds
-                self._refresh_row(1)
-                self.notify("Kaggle token imported from KAGGLE_API_TOKEN env var", severity="information")
+                source_desc = "KAGGLE_API_TOKEN env var"
             elif access_token_path.exists():
-                token = access_token_path.read_text(encoding="utf-8").strip()
-                if not token:
-                    self.notify("~/.kaggle/access_token is empty", severity="warning")
-                    return
-                creds.setdefault("kaggle", {})["token"] = token
-                config.write_credentials(creds)
-                self._creds = creds
-                self._refresh_row(1)
-                self.notify("Kaggle token imported from ~/.kaggle/access_token", severity="information")
+                source_desc = "~/.kaggle/access_token"
             elif legacy_path.exists():
-                try:
-                    data = json.loads(legacy_path.read_text(encoding="utf-8"))
-                    username = data.get("username", "").strip()
-                    key = data.get("key", "").strip()
-                    if not username or not key:
-                        self.notify("kaggle.json missing username or key", severity="warning")
-                        return
-                except Exception as exc:
-                    self.notify(f"Failed to parse kaggle.json: {exc}", severity="error")
-                    return
-                creds.setdefault("kaggle", {}).update({"username": username, "key": key})
-                config.write_credentials(creds)
-                self._creds = creds
-                self._refresh_row(1)
-                self.notify(f"Kaggle credentials imported ({username})", severity="information")
+                source_desc = "~/.kaggle/kaggle.json"
             else:
                 self.notify(
                     "No Kaggle credentials found. Checked: KAGGLE_API_TOKEN, "
                     "~/.kaggle/access_token, ~/.kaggle/kaggle.json",
                     severity="warning",
                 )
+                return
+
+            async def _do_kaggle(confirmed: bool) -> None:
+                if not confirmed:
+                    return
+                creds = dict(self._creds)
+                if env_token:
+                    creds.setdefault("kaggle", {})["token"] = env_token
+                    config.write_credentials(creds)
+                    self._creds = creds
+                    self._refresh_row(1)
+                    self.notify("Kaggle token imported from KAGGLE_API_TOKEN env var", severity="information")
+                elif access_token_path.exists():
+                    token = access_token_path.read_text(encoding="utf-8").strip()
+                    if not token:
+                        self.notify("~/.kaggle/access_token is empty", severity="warning")
+                        return
+                    creds.setdefault("kaggle", {})["token"] = token
+                    config.write_credentials(creds)
+                    self._creds = creds
+                    self._refresh_row(1)
+                    self.notify("Kaggle token imported from ~/.kaggle/access_token", severity="information")
+                else:
+                    try:
+                        data = json.loads(legacy_path.read_text(encoding="utf-8"))
+                        username = data.get("username", "").strip()
+                        key = data.get("key", "").strip()
+                        if not username or not key:
+                            self.notify("kaggle.json missing username or key", severity="warning")
+                            return
+                    except Exception as exc:
+                        self.notify(f"Failed to parse kaggle.json: {exc}", severity="error")
+                        return
+                    creds.setdefault("kaggle", {}).update({"username": username, "key": key})
+                    config.write_credentials(creds)
+                    self._creds = creds
+                    self._refresh_row(1)
+                    self.notify(f"Kaggle credentials imported ({username})", severity="information")
+                self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
+
+            if _vendor_configured({"kaggle": self._creds.get("kaggle", {})}, "kaggle"):
+                from xrun_tui.screens.confirm import ConfirmScreen
+                await self.app.push_screen(
+                    ConfirmScreen(f"Overwrite existing Kaggle credentials from {source_desc}?"),
+                    _do_kaggle,
+                )
+            else:
+                await _do_kaggle(True)
 
     async def action_revoke(self) -> None:
         vid, vname, _ = _VENDORS[self._cursor]
@@ -281,6 +312,23 @@ class VendorsScreen(Screen):
             "[#9ece6a]configured[/]" if configured else "[#414868]not configured[/]"
         )
         self.query_one(f"#vinfo-{idx}",   Static).update("")
+
+    def on_click(self, event: events.Click) -> None:
+        widget = event.widget
+        for _ in range(10):
+            if widget is None or widget is self:
+                break
+            wid = getattr(widget, "id", None) or ""
+            if wid.startswith("vrow-"):
+                try:
+                    idx = int(wid[5:])
+                    if self._cursor != idx:
+                        self._cursor = idx
+                        self._highlight(idx)
+                except (ValueError, IndexError):
+                    pass
+                return
+            widget = widget.parent
 
     def action_go_back(self) -> None:
         self.app.pop_screen()

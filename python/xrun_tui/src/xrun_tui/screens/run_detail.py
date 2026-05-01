@@ -118,12 +118,21 @@ class RunDetailScreen(Screen):
 
     async def _load_run(self) -> None:
         app: XrunApp = self.app  # type: ignore[assignment]
-        self._run = await app.db.run(self._run_id)
+        try:
+            self._run = await app.db.run(self._run_id)
+        except Exception as exc:
+            self.notify(f"DB error: {exc}", severity="error", timeout=8)
+            return
         if not self._run:
             self.notify("Run not found", severity="error")
             return
         self._render_header()
-        await self._load_stages()
+        table = self.query_one("#stages-table", DataTable)
+        table.loading = True
+        try:
+            await self._load_stages()
+        finally:
+            table.loading = False
 
     def _render_header(self) -> None:
         run = self._run
@@ -183,9 +192,17 @@ class RunDetailScreen(Screen):
 
     async def _load_stages(self) -> None:
         app: XrunApp = self.app  # type: ignore[assignment]
-        events = await app.db.events(self._run_id)
         table = self.query_one("#stages-table", DataTable)
         table.clear()
+        try:
+            events = await app.db.events(self._run_id)
+        except Exception as exc:
+            table.add_row(
+                Text("✗", style="#f7768e"),
+                Text(f"error: {exc}", style="#f7768e"),
+                Text(""), Text(""),
+            )
+            return
         if not events:
             table.add_row(
                 Text("—", style="#414868"),
@@ -293,7 +310,10 @@ class RunDetailScreen(Screen):
         for entry in keys:
             k     = entry.get("key") or "?"
             count = entry.get("count") or 0
-            series = await app.db.metrics_for_key(self._run_id, k)
+            try:
+                series = await app.db.metrics_for_key(self._run_id, k)
+            except Exception:
+                series = []
             latest = "—"
             spark  = ""
             if series:
@@ -346,7 +366,15 @@ class RunDetailScreen(Screen):
             if pid == "tab-manifest":
                 self.run_worker(self._load_manifest())
             elif pid == "tab-metrics":
-                self.run_worker(self._load_metrics())
+                metrics_table = self.query_one("#metrics-table", DataTable)
+                metrics_table.loading = True
+                async def _load_metrics_with_spinner() -> None:
+                    try:
+                        await self._load_metrics()
+                    finally:
+                        if self.is_mounted:
+                            metrics_table.loading = False
+                self.run_worker(_load_metrics_with_spinner())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:
@@ -393,6 +421,7 @@ class RunDetailScreen(Screen):
             ok, msg = await services.rerun_run(self._run_id)
             if ok:
                 self.notify("Rerun launched", severity="information")
+                await self._load_run()
             else:
                 self.notify(f"Rerun failed: {msg}", severity="error", timeout=8)
 

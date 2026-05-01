@@ -131,6 +131,10 @@ class RunsScreen(Screen):
 
     async def _refresh(self) -> None:
         app: XrunApp = self.app  # type: ignore[assignment]
+        table = self.query_one("#runs-table", DataTable)
+        first_load = (table.row_count == 0)
+        if first_load:
+            table.loading = True
         try:
             from xrun_tui import config as _cfg
             limit = (_cfg.get_settings() or {}).get("history_limit", 300)
@@ -141,6 +145,9 @@ class RunsScreen(Screen):
         except Exception as exc:
             self.notify(f"DB error: {exc}", severity="error", timeout=8)
             return
+        finally:
+            if first_load:
+                table.loading = False
         self._runs = runs
         self._render_table(runs)
 
