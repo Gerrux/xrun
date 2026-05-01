@@ -437,14 +437,41 @@ impl Poller {
                 }
             }
 
+            // PID liveness probe — fills the gap when bash + sshd are still
+            // alive but the python child got SIGKILL'd (host OOM, etc).
+            // Only meaningful after `train_start` has fired; before that the
+            // run is still provisioning and the PID file may legitimately
+            // not exist yet.
+            if terminal_after_drain.is_none() && self.train_started_at.is_some() {
+                if let Some(false) = self.vendor.process_alive(&self.handle) {
+                    let _ = self.store.append_event(
+                        &self.run_id,
+                        NewEvent {
+                            ts: Utc::now(),
+                            stage: "stage_failed".to_string(),
+                            status: "fail".to_string(),
+                            msg: Some(
+                                "training PID is gone but no done:ok was emitted \
+                                 (likely OOM kill or unhandled exception)"
+                                    .to_string(),
+                            ),
+                            payload_json: None,
+                        },
+                    );
+                    terminal_after_drain = Some(RunStatus::Failed);
+                    if !matches!(self.config.on_stage_failed, FailPolicy::Keep) {
+                        destroy_after_drain = true;
+                    }
+                }
+            }
+
             // Terminal status latched from events tail this tick: drain has
             // completed, finalize and return.
             if let Some(status) = terminal_after_drain {
                 if destroy_after_drain {
                     let _ = self.vendor.destroy(&self.handle);
                 }
-                self.store
-                    .update_run_status(&self.run_id, status.clone())?;
+                self.store.update_run_status(&self.run_id, status.clone())?;
                 self.send_update(DataUpdate::RunStatusChanged(
                     self.run_id.clone(),
                     status.clone(),

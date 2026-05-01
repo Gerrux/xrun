@@ -54,11 +54,13 @@ Fixed 2026-04-29:
   caps (confirmed in `launch.rs`); was not a real bug.
 
 Still open:
-- **Poll the actual launched PID** (captured by `nohup … & echo $!` shim)
-  and emit `train_failed` / `stage_failed` as soon as that PID is gone. This
-  is the root cause: poller cannot detect child-process death when bash is
-  still alive. Requires storing the PID in a remote file and periodically
-  running `kill -0 $PID` over SSH.
+- ~~**Poll the actual launched PID**~~ FIXED 2026-05-01: vast's
+  `build_launch_command` now writes `$!` to `/workspace/run/run.pid`. The
+  poller calls a new `VendorAdapter::process_alive(handle)` method each tick
+  and, once `train_start` has fired, marks the run failed when the PID is
+  gone but no `done:ok` was emitted. Synthetic `stage_failed:fail` event
+  records the cause. Same wiring on `xrun-ssh`. Regression tests in
+  `crates/xrun-poller/tests/loop_progress.rs::test_poller_pid_dead_*`.
 
 ## ~~TUI logs view stays blank in non-running statuses~~ FIXED
 

@@ -430,6 +430,23 @@ impl VendorAdapter for SshAdapter {
         Ok(())
     }
 
+    fn process_alive(&self, _h: &InstanceHandle) -> Option<bool> {
+        let run_id = self.run_id().ok()?;
+        let pid_file = format!("{}/run.pid", self.run_dir(&run_id));
+        let probe = format!(
+            "if [ -f {pf} ]; then PID=$(cat {pf}); \
+             if kill -0 \"$PID\" 2>/dev/null; then echo alive; else echo dead; fi; \
+             else echo no_pid; fi",
+            pf = cmd::shell_quote(&pid_file)
+        );
+        let bytes = ssh_exec(&self.conn, &probe).ok()?;
+        match String::from_utf8_lossy(&bytes).trim() {
+            "alive" => Some(true),
+            "dead" => Some(false),
+            _ => None,
+        }
+    }
+
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {
         // Best-effort: kill the child PID, clean its state, never the box.
         if let Ok(run_id) = self.run_id() {

@@ -23,6 +23,9 @@ use xrun_poller::{
 struct MockVendor {
     events_queue: RefCell<VecDeque<Vec<u8>>>,
     metrics_queue: RefCell<VecDeque<Vec<u8>>>,
+    /// Optional scripted answers for `process_alive`. Each call pops one;
+    /// when the queue empties, returns `None` (= adapter has no opinion).
+    alive_queue: RefCell<VecDeque<Option<bool>>>,
 }
 
 impl MockVendor {
@@ -30,7 +33,13 @@ impl MockVendor {
         Self {
             events_queue: RefCell::new(events.into()),
             metrics_queue: RefCell::new(metrics.into()),
+            alive_queue: RefCell::new(VecDeque::new()),
         }
+    }
+
+    fn with_alive(self, alive: Vec<Option<bool>>) -> Self {
+        *self.alive_queue.borrow_mut() = alive.into();
+        self
     }
 }
 
@@ -76,6 +85,13 @@ impl VendorAdapter for MockVendor {
 
     fn destroy(&self, _: &InstanceHandle) -> Result<(), VendorError> {
         Ok(())
+    }
+
+    fn process_alive(&self, _: &InstanceHandle) -> Option<bool> {
+        self.alive_queue
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(None)
     }
 }
 
@@ -218,10 +234,7 @@ fn test_poller_drains_metrics_in_same_tick_as_done() {
 
     // Both events (including done:ok) AND metrics arrive on the very first
     // tail call.
-    let events_data = join_lines(&[
-        event_line("train_start", "ok"),
-        event_line("done", "ok"),
-    ]);
+    let events_data = join_lines(&[event_line("train_start", "ok"), event_line("done", "ok")]);
     let metrics_data = join_lines(&[
         metric_line("loss", 0, 1.0),
         metric_line("loss", 1, 0.5),
@@ -253,6 +266,84 @@ fn test_poller_drains_metrics_in_same_tick_as_done() {
     );
     let events = store2.list_events(&run_id).unwrap();
     assert_eq!(events.len(), 2);
+}
+
+#[test]
+fn test_poller_pid_dead_marks_run_failed() {
+    // Regression: if the training PID is gone but no `done:ok` was emitted
+    // (host OOM, unhandled exception, the original Issue 2 incident), the
+    // poller should mark the run failed rather than waiting for the
+    // idle-timer to trip.
+    let tmp = TempDir::new().unwrap();
+    let (store, run_id) = setup_store(&tmp);
+    let runs_dir = tmp.path().join("runs");
+
+    // First tick: train_start arrives so the poller starts caring about PID
+    // liveness. No `done:ok`. The mock then reports the PID as dead.
+    let events_data = join_lines(&[event_line("train_start", "ok")]);
+    let mock = MockVendor::new(vec![events_data], vec![]).with_alive(vec![Some(false)]);
+    let cancel = CancellationToken::new();
+
+    let status = Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(mock),
+        make_handle(),
+        runs_dir,
+    )
+    .with_config(fast_config())
+    .run(cancel)
+    .unwrap();
+
+    assert_eq!(status, RunStatus::Failed);
+    let store2 = Store::open(&tmp.path().join("runs.db")).unwrap();
+    let events = store2.list_events(&run_id).unwrap();
+    let stage_failed = events
+        .iter()
+        .find(|e| e.stage == "stage_failed")
+        .expect("synthetic stage_failed event written");
+    assert_eq!(stage_failed.status, "fail");
+    assert!(
+        stage_failed
+            .msg
+            .as_deref()
+            .unwrap_or("")
+            .contains("PID is gone"),
+        "msg: {:?}",
+        stage_failed.msg
+    );
+}
+
+#[test]
+fn test_poller_pid_alive_does_not_mark_failed() {
+    // Sanity check: when train_start fired and the PID is still alive but
+    // no events are arriving (e.g. setup phase took a while), the poller
+    // does NOT prematurely mark the run failed.
+    let tmp = TempDir::new().unwrap();
+    let (store, run_id) = setup_store(&tmp);
+    let runs_dir = tmp.path().join("runs");
+
+    // Tick 1: train_start. Tick 2: done. No metrics. Alive on every check.
+    let mock = MockVendor::new(
+        vec![
+            join_lines(&[event_line("train_start", "ok")]),
+            join_lines(&[event_line("done", "ok")]),
+        ],
+        vec![],
+    )
+    .with_alive(vec![Some(true), Some(true)]);
+    let cancel = CancellationToken::new();
+    let status = Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(mock),
+        make_handle(),
+        runs_dir,
+    )
+    .with_config(fast_config())
+    .run(cancel)
+    .unwrap();
+    assert_eq!(status, RunStatus::Done);
 }
 
 #[test]

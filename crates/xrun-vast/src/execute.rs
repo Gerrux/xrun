@@ -70,11 +70,15 @@ pub fn build_launch_command(run_spec: &RunSpec) -> String {
         )
     };
 
-    // Embed in nohup so vastai execute returns immediately with the background PID.
-    // Single-quote escape: ' → '\''
+    // Embed in nohup so vastai execute returns immediately with the background
+    // PID. Single-quote escape: ' → '\''. The PID is *also* written to
+    // /workspace/run/run.pid so the poller can later run `kill -0 $(cat …)`
+    // for liveness — this closes the "child died but bash is still alive"
+    // misclassification.
     let escaped = main_cmd.replace('\'', "'\\''");
     format!(
-        "mkdir -p /workspace/run && nohup sh -c '{}' >/dev/null 2>&1 & echo $!",
+        "mkdir -p /workspace/run && (nohup sh -c '{}' >/dev/null 2>&1 & echo $!) | \
+         tee /workspace/run/run.pid",
         escaped
     )
 }

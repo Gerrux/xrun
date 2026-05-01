@@ -559,6 +559,28 @@ impl VendorAdapter for VastAdapter {
             .block_on(self.destroy_impl(h))
             .map_err(vast_to_vendor)
     }
+
+    fn process_alive(&self, h: &InstanceHandle) -> Option<bool> {
+        // `cat run.pid` over ssh, then `kill -0 $PID`. If the PID file is
+        // missing the run hasn't reached `train_start` yet — return None to
+        // mean "no opinion" rather than `Some(false)`, otherwise the poller
+        // would mark a still-provisioning run as failed.
+        let host = h.ssh_host.as_deref()?;
+        let port = h.ssh_port?;
+        let probe = "if [ -f /workspace/run/run.pid ]; then \
+                     PID=$(cat /workspace/run/run.pid); \
+                     if kill -0 \"$PID\" 2>/dev/null; then echo alive; \
+                     else echo dead; fi; \
+                     else echo no_pid; fi";
+        let bytes = get_tokio_rt()
+            .block_on(crate::transfer::ssh_exec(host, port, probe))
+            .ok()?;
+        match String::from_utf8_lossy(&bytes).trim() {
+            "alive" => Some(true),
+            "dead" => Some(false),
+            _ => None,
+        }
+    }
 }
 
 fn remote_to_generic(r: crate::rest::RemoteInstance) -> VendorRemoteInstance {

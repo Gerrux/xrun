@@ -116,4 +116,18 @@ pub trait VendorAdapter {
     fn tail(&self, h: &InstanceHandle, file: &str, offset: u64) -> Result<Vec<u8>, VendorError>;
     fn pull(&self, h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError>;
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError>;
+
+    /// Liveness probe for the actual training subprocess. Adapters that can
+    /// capture the child PID (vast and ssh do via `nohup … & echo $! > pid`)
+    /// override this to return `Some(true)` while the PID is alive,
+    /// `Some(false)` once it's gone. Returning `None` means the adapter has
+    /// no PID-tracking — the poller falls back to its idle-timer heuristic.
+    ///
+    /// This is what closes the "process death → idle_timeout misclassification"
+    /// gap from Issue 2 — when the python child gets OOM-killed but bash and
+    /// sshd are still up, idle-tracking can't tell the difference. PID
+    /// liveness can.
+    fn process_alive(&self, _h: &InstanceHandle) -> Option<bool> {
+        None
+    }
 }
