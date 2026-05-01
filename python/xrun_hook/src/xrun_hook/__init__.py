@@ -5,7 +5,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-from . import _paths, _writer
+from . import _log_streamer, _paths, _writer
 
 __all__ = ["stage", "metric", "epoch", "fail", "done"]
 
@@ -167,3 +167,6 @@ def _excepthook(exc_type: type, exc_val: BaseException, exc_tb: Any) -> None:
 
 if os.environ.get("XRUN_HOOK_INSTALL_EXCEPTHOOK", "1") != "0":
     sys.excepthook = _excepthook
+
+# Best-effort log streaming: no-op when MLflow / XRUN_RUN_ID env vars are absent.
+_log_streamer.start_if_configured()

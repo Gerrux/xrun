@@ -234,6 +234,101 @@ impl MlflowClient {
         Ok(())
     }
 
+    /// Search runs in `experiment_id` whose tag `tag_key` matches `tag_value`.
+    ///
+    /// Returns the matching run_ids (most recent first per MLflow's default
+    /// ordering). Used by the kaggle adapter to look up the streamer's run by
+    /// the `xrun_run_id` tag — there's no other way to recover the MLflow
+    /// run_id created in-kernel without a side channel.
+    pub async fn search_runs_by_tag(
+        &self,
+        experiment_id: &str,
+        tag_key: &str,
+        tag_value: &str,
+    ) -> Result<Vec<String>, MlflowError> {
+        let body = json!({
+            "experiment_ids": [experiment_id],
+            "filter": format!("tags.{} = '{}'", tag_key, tag_value),
+            "max_results": 100,
+        });
+        let resp = self.post("runs/search", body).await?;
+        let mut ids = Vec::new();
+        if let Some(arr) = resp.get("runs").and_then(|v| v.as_array()) {
+            for run in arr {
+                if let Some(id) = run
+                    .get("info")
+                    .and_then(|i| i.get("run_id"))
+                    .and_then(|s| s.as_str())
+                {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// List artifacts under `path` (or root when None) for a run.
+    /// Returns `(relative_path, file_size_bytes)` for each non-directory entry.
+    pub async fn list_artifacts(
+        &self,
+        run_id: &str,
+        path: Option<&str>,
+    ) -> Result<Vec<(String, u64)>, MlflowError> {
+        let mut query: Vec<(&str, &str)> = vec![("run_id", run_id)];
+        if let Some(p) = path {
+            query.push(("path", p));
+        }
+        let resp = self.get("artifacts/list", &query).await?;
+        let mut out = Vec::new();
+        if let Some(files) = resp.get("files").and_then(|v| v.as_array()) {
+            for f in files {
+                let is_dir = f.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                if is_dir {
+                    continue;
+                }
+                let p = match f.get("path").and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let size = f
+                    .get("file_size")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| f.get("file_size").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()))
+                    .unwrap_or(0);
+                out.push((p, size));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Download an artifact via the MLflow artifact proxy. Returns raw bytes.
+    /// Path is relative to the run's artifact root (e.g. `logs/log_000001.txt`).
+    pub async fn download_artifact(
+        &self,
+        run_id: &str,
+        artifact_path: &str,
+    ) -> Result<Vec<u8>, MlflowError> {
+        let url = format!(
+            "{}/api/2.0/mlflow-artifacts/artifacts/{}?run_id={}",
+            self.base_url,
+            artifact_path.trim_start_matches('/'),
+            run_id,
+        );
+        let builder = self.apply_auth(self.client.get(&url));
+        match builder.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let bytes = resp.bytes().await.map_err(MlflowError::Network)?;
+                Ok(bytes.to_vec())
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                Err(map_client_error(status, body))
+            }
+            Err(e) => Err(MlflowError::Network(e)),
+        }
+    }
+
     /// Upload an artifact via the MLflow artifacts REST endpoint.
     /// For local MLflow (2.x), this uses PUT to the mlflow-artifacts path.
     pub async fn log_artifact(

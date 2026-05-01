@@ -277,6 +277,137 @@ async fn test_log_param() {
     server.verify().await;
 }
 
+/// Test: search_runs_by_tag returns run_ids in order
+#[tokio::test]
+async fn test_search_runs_by_tag() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/mlflow/runs/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "runs": [
+                {"info": {"run_id": "rA", "experiment_id": "1"}},
+                {"info": {"run_id": "rB", "experiment_id": "1"}},
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let ids = client
+        .search_runs_by_tag("1", "xrun_run_id", "abc-123")
+        .await
+        .expect("search_runs_by_tag should succeed");
+
+    assert_eq!(ids, vec!["rA".to_string(), "rB".to_string()]);
+
+    let recv = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&recv[0].body).unwrap();
+    assert_eq!(body["experiment_ids"], serde_json::json!(["1"]));
+    assert_eq!(body["filter"], "tags.xrun_run_id = 'abc-123'");
+}
+
+/// Test: search_runs_by_tag returns empty vec when no matches
+#[tokio::test]
+async fn test_search_runs_by_tag_empty() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/mlflow/runs/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let ids = client
+        .search_runs_by_tag("1", "k", "v")
+        .await
+        .expect("should succeed even when runs key absent");
+    assert!(ids.is_empty());
+}
+
+/// Test: list_artifacts skips directories and parses sizes
+#[tokio::test]
+async fn test_list_artifacts_filters_directories() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/2.0/mlflow/artifacts/list"))
+        .and(query_param("run_id", "r1"))
+        .and(query_param("path", "logs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "files": [
+                {"path": "logs/log_000001.txt", "is_dir": false, "file_size": 12},
+                {"path": "logs/subdir", "is_dir": true},
+                {"path": "logs/log_000002.txt", "is_dir": false, "file_size": "34"},
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let entries = client
+        .list_artifacts("r1", Some("logs"))
+        .await
+        .expect("list_artifacts should succeed");
+
+    assert_eq!(
+        entries,
+        vec![
+            ("logs/log_000001.txt".to_string(), 12),
+            ("logs/log_000002.txt".to_string(), 34),
+        ],
+        "directories must be filtered, sizes parsed even when string-encoded"
+    );
+}
+
+/// Test: download_artifact returns raw bytes from proxy endpoint
+#[tokio::test]
+async fn test_download_artifact_returns_bytes() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/logs/log_000001.txt",
+        ))
+        .and(query_param("run_id", "r1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello world".to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let bytes = client
+        .download_artifact("r1", "logs/log_000001.txt")
+        .await
+        .expect("download_artifact should succeed");
+    assert_eq!(bytes, b"hello world");
+}
+
+/// Test: download_artifact maps 404 to NotFound
+#[tokio::test]
+async fn test_download_artifact_not_found() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/logs/missing.txt",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let err = client
+        .download_artifact("r1", "logs/missing.txt")
+        .await
+        .expect_err("missing artifact should error");
+    assert!(matches!(err, xrun_mlflow::MlflowError::NotFound(_)));
+}
+
 /// Test: params and tags are sent with log_batch
 #[tokio::test]
 async fn test_log_batch_with_params_and_tags() {

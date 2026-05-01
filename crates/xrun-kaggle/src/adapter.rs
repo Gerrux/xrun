@@ -15,6 +15,7 @@ use xrun_core::{
         VendorRemoteInstance, VendorStatus,
     },
 };
+use xrun_mlflow::{Auth as MlflowAuth, MlflowClient};
 
 use crate::cli::{KaggleCli, KaggleProcess, KernelState};
 use crate::embed;
@@ -22,9 +23,22 @@ use crate::error::KaggleError;
 use crate::http::{self, CancelOutcome, KaggleApiClient};
 use crate::ingest::ingest_post_run;
 use crate::kernel_metadata::KernelMetadata;
+use crate::log_stream::{
+    parse_chunk_seq, slice_from_offset, ARTIFACT_PREFIX, LOG_STREAM_EXPERIMENT,
+    LOG_STREAM_FILE, TAG_RUN_ID,
+};
 
 /// Wrapper script injected as `main.py` for script-mode kernels.
 pub const XRUN_KAGGLE_ENTRY_PY: &str = include_str!("../tests/data/_xrun_kaggle_entry.py");
+
+/// MLflow tracking-server config used for the live-log side channel. When
+/// present, `provision()` injects MLFLOW_* env vars into the kernel's main.py
+/// so xrun_hook can stream stdout chunks, and `tail()` pulls those chunks back.
+#[derive(Clone, Debug)]
+pub struct MlflowConfig {
+    pub url: String,
+    pub auth: Option<MlflowAuth>,
+}
 
 pub struct KaggleAdapter {
     cli: KaggleCli,
@@ -36,6 +50,13 @@ pub struct KaggleAdapter {
     /// `destroy`) can authenticate against the REST API without going through
     /// the kaggle subprocess.
     credentials: KaggleCredentials,
+    /// MLflow tracking config for live-log streaming. None disables streaming
+    /// and `tail()` returns empty (matches pre-MLflow behaviour).
+    mlflow: Option<MlflowConfig>,
+    /// Cached MLflow run_id resolved by `xrun_run_id` tag. Filled lazily on
+    /// the first `tail()` call so a kernel that's slow to start doesn't make
+    /// `set_run_id()` block.
+    mlflow_run_cache: Mutex<Option<String>>,
 }
 
 impl KaggleAdapter {
@@ -46,6 +67,8 @@ impl KaggleAdapter {
             store_path: None,
             last_kernel_state: Mutex::new(None),
             credentials: KaggleCredentials::default(),
+            mlflow: None,
+            mlflow_run_cache: Mutex::new(None),
         }
     }
 
@@ -56,7 +79,17 @@ impl KaggleAdapter {
             store_path: None,
             last_kernel_state: Mutex::new(None),
             credentials: KaggleCredentials::default(),
+            mlflow: None,
+            mlflow_run_cache: Mutex::new(None),
         }
+    }
+
+    /// Configure live-log streaming via an MLflow tracking server. The URL
+    /// gets baked into the kernel's main.py so xrun_hook can push log chunks
+    /// from inside Kaggle; `tail()` then pulls them back.
+    pub fn with_mlflow(mut self, url: String, auth: Option<MlflowAuth>) -> Self {
+        self.mlflow = Some(MlflowConfig { url, auth });
+        self
     }
 
     pub fn with_store_path(mut self, path: PathBuf) -> Self {
@@ -95,6 +128,123 @@ impl KaggleAdapter {
         let run_id = self.get_run_id()?;
         let sp = self.store_path.as_ref()?;
         Some(sp.join("runs").join(run_id.to_string()).join("artifacts"))
+    }
+
+    /// Build the `os.environ['…'] = '…'` block prepended to the kernel's
+    /// main.py. Sets the env vars xrun_hook's log streamer reads to activate
+    /// itself. Returns an empty string when MLflow is not configured — the
+    /// streamer then stays inert and `tail()` keeps returning empty.
+    fn build_env_prelude(&self) -> String {
+        let Some(cfg) = &self.mlflow else {
+            return String::new();
+        };
+        let Some(run_id) = self.get_run_id() else {
+            // Without an xrun run_id the poller can't search for the streamer's
+            // MLflow run by tag, so streaming would be useless.
+            return String::new();
+        };
+
+        let mut lines: Vec<String> = vec![
+            format!(
+                "os.environ['MLFLOW_TRACKING_URI'] = {}",
+                py_str(&cfg.url)
+            ),
+            format!(
+                "os.environ['XRUN_RUN_ID'] = {}",
+                py_str(&run_id.to_string())
+            ),
+            format!(
+                "os.environ['XRUN_LOG_STREAM_FILE'] = {}",
+                py_str(LOG_STREAM_FILE)
+            ),
+            format!(
+                "os.environ['XRUN_LOG_STREAM_EXPERIMENT'] = {}",
+                py_str(LOG_STREAM_EXPERIMENT)
+            ),
+        ];
+        match &cfg.auth {
+            Some(MlflowAuth::Bearer(token)) => {
+                lines.push(format!(
+                    "os.environ['MLFLOW_TRACKING_TOKEN'] = {}",
+                    py_str(token)
+                ));
+            }
+            Some(MlflowAuth::Basic { username, password }) => {
+                lines.push(format!(
+                    "os.environ['MLFLOW_TRACKING_USERNAME'] = {}",
+                    py_str(username)
+                ));
+                lines.push(format!(
+                    "os.environ['MLFLOW_TRACKING_PASSWORD'] = {}",
+                    py_str(password)
+                ));
+            }
+            None => {}
+        }
+        // Trailing newline keeps the prelude from glueing onto the next stmt.
+        format!("{}\n", lines.join("\n"))
+    }
+
+    /// Resolve the streamer's MLflow run_id by `xrun_run_id` tag. Cached
+    /// after the first successful lookup so subsequent `tail()` calls go
+    /// straight to artifact listing.
+    fn resolve_mlflow_run_id(
+        &self,
+        client: &MlflowClient,
+        xrun_run_id: &str,
+    ) -> Result<Option<String>, VendorError> {
+        if let Ok(guard) = self.mlflow_run_cache.lock() {
+            if let Some(id) = guard.as_ref() {
+                return Ok(Some(id.clone()));
+            }
+        }
+
+        let exp_id = match block_async(client.get_or_create_experiment(LOG_STREAM_EXPERIMENT)) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::debug!("kaggle tail: MLflow experiment lookup failed: {e}");
+                return Ok(None);
+            }
+        };
+        let runs = match block_async(client.search_runs_by_tag(&exp_id, TAG_RUN_ID, xrun_run_id)) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!("kaggle tail: MLflow runs/search failed: {e}");
+                return Ok(None);
+            }
+        };
+        // The streamer creates exactly one run per xrun launch; if there are
+        // duplicates (re-run, partial failure) the most recent one wins.
+        let mlflow_run_id = runs.into_iter().next();
+        if let (Ok(mut guard), Some(id)) = (self.mlflow_run_cache.lock(), mlflow_run_id.as_ref()) {
+            *guard = Some(id.clone());
+        }
+        Ok(mlflow_run_id)
+    }
+}
+
+/// Quote a string as a Python string literal, escaping backslashes and
+/// single quotes. Used for the env prelude.
+fn py_str(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// Block on a future regardless of whether we're already inside a tokio
+/// runtime. The poller may or may not own one; the kaggle adapter has to
+/// work in both cases.
+fn block_async<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime");
+            rt.block_on(fut)
+        }
     }
 }
 
@@ -253,7 +403,14 @@ impl VendorAdapter for KaggleAdapter {
             let cmd_block = manifest.run.cmd.as_deref().unwrap_or("").trim().to_string();
             let workdir = manifest.run.workdir.as_deref().unwrap_or("/kaggle/working");
             // §11: pass dataset slugs so main.py can probe XRUN_INPUT_DIR
-            let main_py = build_script_main(&setup_block, &cmd_block, workdir, &dataset_sources);
+            let env_prelude = self.build_env_prelude();
+            let main_py = build_script_main(
+                &env_prelude,
+                &setup_block,
+                &cmd_block,
+                workdir,
+                &dataset_sources,
+            );
             std::fs::write(staging.join("main.py"), main_py)
                 .map_err(|e| VendorError::Other(format!("failed to write entry script: {e}")))?;
             (
@@ -338,9 +495,52 @@ impl VendorAdapter for KaggleAdapter {
         Ok(())
     }
 
-    fn tail(&self, _h: &InstanceHandle, _file: &str, _offset: u64) -> Result<Vec<u8>, VendorError> {
-        // Kaggle doesn't support live tail — completion is detected via poll_completion()
-        Ok(vec![])
+    fn tail(&self, _h: &InstanceHandle, file: &str, offset: u64) -> Result<Vec<u8>, VendorError> {
+        // Live tail is supported only for stdout via the MLflow side channel
+        // populated by xrun_hook's log streamer. Events/metrics still arrive
+        // post-completion via `pull()` + `ingest_post_run`.
+        if !file.contains("stdout") {
+            return Ok(Vec::new());
+        }
+        let Some(cfg) = &self.mlflow else {
+            return Ok(Vec::new());
+        };
+        let Some(xrun_run_id) = self.get_run_id() else {
+            return Ok(Vec::new());
+        };
+
+        let client = MlflowClient::new(cfg.url.clone(), cfg.auth.clone());
+        let mlflow_run_id = match self.resolve_mlflow_run_id(&client, &xrun_run_id.to_string())? {
+            Some(id) => id,
+            // Streamer hasn't created its run yet (kernel still warming up).
+            // Returning empty keeps the poller's offset unchanged so the next
+            // tick will retry.
+            None => return Ok(Vec::new()),
+        };
+
+        let artifacts = match block_async(
+            client.list_artifacts(&mlflow_run_id, Some(ARTIFACT_PREFIX)),
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::debug!("kaggle tail: artifacts/list failed: {e}");
+                return Ok(Vec::new());
+            }
+        };
+
+        // Sort by chunk seq so reassembly order matches the in-kernel write
+        // order — even when the MLflow listing returns them out of order.
+        let mut chunks: Vec<(u32, String, u64)> = artifacts
+            .into_iter()
+            .filter_map(|(p, sz)| parse_chunk_seq(&p).map(|seq| (seq, p, sz)))
+            .collect();
+        chunks.sort_by_key(|(seq, _, _)| *seq);
+
+        slice_from_offset::<VendorError>(&chunks, offset, |idx| {
+            let path = &chunks[idx].1;
+            block_async(client.download_artifact(&mlflow_run_id, path))
+                .map_err(|e| VendorError::Other(format!("kaggle tail download failed: {e}")))
+        })
     }
 
     fn pull(&self, h: &InstanceHandle, _remote: &str, into: &Path) -> Result<(), VendorError> {
@@ -605,7 +805,13 @@ fn push_with_retry(
 ///
 /// §11: Probes both old and new dataset mount paths and sets `XRUN_INPUT_DIR`.
 /// §1: Streams subprocess output to both stdout and `__xrun_stdout.log`.
-fn build_script_main(setup: &str, cmd: &str, workdir: &str, datasets: &[String]) -> String {
+fn build_script_main(
+    env_prelude: &str,
+    setup: &str,
+    cmd: &str,
+    workdir: &str,
+    datasets: &[String],
+) -> String {
     let escape = |s: &str| s.replace('\\', "\\\\").replace("'''", r"\'\'\'");
     let setup_escaped = escape(setup);
     let cmd_escaped = escape(cmd);
@@ -623,6 +829,7 @@ fn build_script_main(setup: &str, cmd: &str, workdir: &str, datasets: &[String])
 
     format!(
         "import subprocess, sys, os\n\
+         {env_prelude}\
          \n\
          os.makedirs({workdir_repr}, exist_ok=True)\n\
          os.chdir({workdir_repr})\n\
@@ -670,6 +877,7 @@ fn build_script_main(setup: &str, cmd: &str, workdir: &str, datasets: &[String])
          _run('''{cmd_escaped}''', 'cmd')\n\
          \n\
          _LOG.close()\n",
+        env_prelude = env_prelude,
         workdir_repr = workdir_repr,
         datasets_repr = datasets_repr,
         setup_escaped = setup_escaped,

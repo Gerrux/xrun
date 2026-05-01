@@ -113,11 +113,16 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
         Vendor::Kaggle => {
             let data_dir = db_path.parent().unwrap_or(db_path);
             let kaggle_creds = resolve_kaggle_credentials(config_dir);
-            Box::new(
-                KaggleAdapter::new()
-                    .with_store_path(data_dir.to_path_buf())
-                    .with_credentials(kaggle_creds),
-            )
+            let mut adapter = KaggleAdapter::new()
+                .with_store_path(data_dir.to_path_buf())
+                .with_credentials(kaggle_creds);
+            // When MLflow is configured globally, enable the live-log side
+            // channel: provision() embeds env vars in main.py and tail()
+            // pulls log chunks back through MLflow artifacts.
+            if let Some(url) = global.mlflow.url.clone() {
+                adapter = adapter.with_mlflow(url, None);
+            }
+            Box::new(adapter)
         }
         Vendor::Local => {
             let adapter_store = Store::open(db_path)

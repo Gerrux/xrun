@@ -135,9 +135,19 @@ pub fn run(
         "kaggle" => {
             let kaggle_creds = resolve_kaggle_credentials(config_dir);
             let data_dir = db_path.parent().unwrap_or(db_path);
-            let adapter = KaggleAdapter::new()
+            let mut adapter = KaggleAdapter::new()
                 .with_store_path(data_dir.to_path_buf())
                 .with_credentials(kaggle_creds);
+            // Live tail() pulls log chunks from the same MLflow URL the
+            // launching process embedded in main.py. Loading the config here
+            // (rather than reusing `global` below) keeps the adapter setup
+            // in one branch.
+            if let Some(url) = GlobalConfig::load(config_dir)
+                .ok()
+                .and_then(|g| g.mlflow.url)
+            {
+                adapter = adapter.with_mlflow(url, None);
+            }
             adapter.set_run_id(&run_id);
             Box::new(adapter)
         }
