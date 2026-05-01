@@ -30,7 +30,9 @@ _TUI_FIELDS: list[tuple[str, str, str]] = [
 _XRUN_FIELDS: list[tuple[str, str, str, str]] = [
     ("mlflow.url",                  "MLflow URL",                  "http://…",        "text"),
     ("mlflow.experiment_default",   "MLflow default experiment",   "experiment-name", "text"),
-    ("mlflow.token",                "MLflow token",                "***",             "secret"),
+    ("mlflow.username",             "MLflow username (Basic)",     "admin",           "text"),
+    ("mlflow.password",             "MLflow password (Basic)",     "***",             "secret"),
+    ("mlflow.token",                "MLflow token (Bearer)",       "***",             "secret"),
     ("poller.interval_active_secs", "Poller interval (active)",    "30",              "int"),
     ("poller.interval_idle_secs",   "Poller interval (idle)",      "120",             "int"),
     ("defaults.vendor",             "Default vendor (xrun core)",  "vast",            "text"),

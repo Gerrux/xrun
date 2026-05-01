@@ -120,7 +120,8 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
             // channel: provision() embeds env vars in main.py and tail()
             // pulls log chunks back through MLflow artifacts.
             if let Some(url) = global.mlflow.url.clone() {
-                adapter = adapter.with_mlflow(url, None);
+                let creds = Credentials::load(config_dir).unwrap_or_default();
+                adapter = adapter.with_mlflow(url, mlflow_auth_from_creds(&creds.mlflow));
             }
             Box::new(adapter)
         }
@@ -226,6 +227,7 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
         vendor,
         global.budget,
         global.mlflow.url.clone(),
+        config_dir.to_path_buf(),
     )
 }
 
@@ -284,6 +286,7 @@ fn do_launch(
         vendor,
         xrun_core::BudgetConfig::default(),
         None, // no mlflow url in test path
+        std::path::PathBuf::new(),
     )
 }
 
@@ -296,6 +299,7 @@ fn do_launch_with_budget(
     vendor: Box<dyn VendorAdapter>,
     budget_cfg: xrun_core::BudgetConfig,
     mlflow_url: Option<String>,
+    config_dir: std::path::PathBuf,
 ) -> Result<()> {
     let hash = manifest.canonical_hash();
     let name = args.name.as_deref().unwrap_or(&manifest.name);
@@ -465,7 +469,12 @@ fn do_launch_with_budget(
 
     // Wire MLflow mirroring when manifest declares an experiment and the
     // global config has an MLflow URL. Silent if either is absent.
-    let poller = if let Some(cfg) = mlflow_mirror_config(manifest, mlflow_url.as_deref(), name) {
+    let mlflow_creds = Credentials::load(&config_dir)
+        .map(|c| c.mlflow)
+        .unwrap_or_default();
+    let poller = if let Some(cfg) =
+        mlflow_mirror_config(manifest, mlflow_url.as_deref(), &mlflow_creds, name)
+    {
         poller.with_mlflow(cfg)
     } else {
         poller
@@ -547,12 +556,13 @@ pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<(
     Ok(())
 }
 
-/// Build a `MlflowMirrorConfig` from the manifest's `mlflow` section and the
-/// global MLflow URL. Returns `None` when either is absent — poller then runs
-/// without MLflow mirroring (silent degrade).
+/// Build a `MlflowMirrorConfig` from the manifest's `mlflow` section, the
+/// global MLflow URL, and any auth credentials. Returns `None` when URL or
+/// experiment is absent — poller then runs without mirroring (silent degrade).
 fn mlflow_mirror_config(
     manifest: &Manifest,
     mlflow_url: Option<&str>,
+    mlflow_creds: &xrun_core::config::credentials::MlflowCredentials,
     run_name: &str,
 ) -> Option<MlflowMirrorConfig> {
     let url = mlflow_url?;
@@ -564,7 +574,7 @@ fn mlflow_mirror_config(
     Some(MlflowMirrorConfig {
         url: url.to_string(),
         experiment,
-        auth: None, // token-based auth can be added via `xrun config set mlflow.token`
+        auth: mlflow_auth_from_creds(mlflow_creds),
         log_args_as_params: manifest
             .mlflow
             .as_ref()
@@ -580,6 +590,24 @@ fn mlflow_mirror_config(
         .to_string(),
         instance_id: None,
     })
+}
+
+/// Translate xrun's stored MLflow credentials into an `xrun_mlflow::Auth`.
+/// Basic wins over Bearer to match xrun-mlflow's documented precedence.
+/// Public so `poll_daemon` can reuse the exact same logic.
+pub(crate) fn mlflow_auth_from_creds(
+    creds: &xrun_core::config::credentials::MlflowCredentials,
+) -> Option<xrun_mlflow::Auth> {
+    if let (Some(user), Some(pwd)) = (creds.username.as_deref(), creds.password.as_deref()) {
+        return Some(xrun_mlflow::Auth::Basic {
+            username: user.to_string(),
+            password: pwd.to_string(),
+        });
+    }
+    creds
+        .token
+        .as_deref()
+        .map(|t| xrun_mlflow::Auth::Bearer(t.to_string()))
 }
 
 /// Build a `PollerConfig` for a local run — events/metrics/stdout files live

@@ -92,6 +92,23 @@ async fn mount_search_runs(server: &MockServer, mlflow_run_id: &str, xrun_run_id
         .await;
 }
 
+/// `runs/get` is needed in the new flow to resolve the run's `artifact_uri`.
+/// The proxy treats `?run_id=` as advisory only, so the adapter must dial
+/// the storage path directly.
+async fn mount_runs_get(server: &MockServer, mlflow_run_id: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/2.0/mlflow/runs/get"))
+        .and(query_param("run_id", mlflow_run_id))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "run": {"info": {
+                "run_id": mlflow_run_id,
+                "artifact_uri": format!("mlflow-artifacts:/1/{}/artifacts", mlflow_run_id),
+            }}
+        })))
+        .mount(server)
+        .await;
+}
+
 async fn mount_get_experiment(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/api/2.0/mlflow/experiments/get-by-name"))
@@ -152,26 +169,26 @@ async fn tail_concatenates_chunks_from_offset_zero() {
     mount_get_experiment(&server).await;
     let (adapter, run_id) = adapter_with_run(&server.uri());
     mount_search_runs(&server, "mlflow-run-7", &run_id).await;
+    mount_runs_get(&server, "mlflow-run-7").await;
 
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow/artifacts/list"))
-        .and(query_param("run_id", "mlflow-run-7"))
-        .and(query_param("path", "logs"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts"))
+        .and(query_param("path", "1/mlflow-run-7/artifacts/logs"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "files": [
-                {"path": "logs/log_000002.txt", "is_dir": false, "file_size": 5},
-                {"path": "logs/log_000001.txt", "is_dir": false, "file_size": 6},
+                {"path": "log_000002.txt", "is_dir": false, "file_size": 5},
+                {"path": "log_000001.txt", "is_dir": false, "file_size": 6},
             ]
         })))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/logs/log_000001.txt"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello\n".to_vec()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/logs/log_000002.txt"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000002.txt"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"world".to_vec()))
         .mount(&server)
         .await;
@@ -189,13 +206,14 @@ async fn tail_skips_chunks_before_offset() {
     mount_get_experiment(&server).await;
     let (adapter, run_id) = adapter_with_run(&server.uri());
     mount_search_runs(&server, "mlflow-run-7", &run_id).await;
+    mount_runs_get(&server, "mlflow-run-7").await;
 
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow/artifacts/list"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "files": [
-                {"path": "logs/log_000001.txt", "is_dir": false, "file_size": 6},
-                {"path": "logs/log_000002.txt", "is_dir": false, "file_size": 5},
+                {"path": "log_000001.txt", "is_dir": false, "file_size": 6},
+                {"path": "log_000002.txt", "is_dir": false, "file_size": 5},
             ]
         })))
         .mount(&server)
@@ -204,7 +222,7 @@ async fn tail_skips_chunks_before_offset() {
     let downloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let dl_clone = downloaded.clone();
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/logs/log_000001.txt"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt"))
         .respond_with(move |_: &wiremock::Request| {
             dl_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             ResponseTemplate::new(200).set_body_bytes(b"hello\n".to_vec())
@@ -213,7 +231,7 @@ async fn tail_skips_chunks_before_offset() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/logs/log_000002.txt"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000002.txt"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"world".to_vec()))
         .mount(&server)
         .await;
@@ -234,12 +252,13 @@ async fn tail_returns_empty_when_offset_at_total_size() {
     mount_get_experiment(&server).await;
     let (adapter, run_id) = adapter_with_run(&server.uri());
     mount_search_runs(&server, "mlflow-run-7", &run_id).await;
+    mount_runs_get(&server, "mlflow-run-7").await;
 
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow/artifacts/list"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "files": [
-                {"path": "logs/log_000001.txt", "is_dir": false, "file_size": 11}
+                {"path": "log_000001.txt", "is_dir": false, "file_size": 11}
             ]
         })))
         .mount(&server)
@@ -257,18 +276,19 @@ async fn tail_handles_offset_inside_chunk() {
     mount_get_experiment(&server).await;
     let (adapter, run_id) = adapter_with_run(&server.uri());
     mount_search_runs(&server, "mlflow-run-7", &run_id).await;
+    mount_runs_get(&server, "mlflow-run-7").await;
 
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow/artifacts/list"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "files": [
-                {"path": "logs/log_000001.txt", "is_dir": false, "file_size": 10},
+                {"path": "log_000001.txt", "is_dir": false, "file_size": 10},
             ]
         })))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/logs/log_000001.txt"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"0123456789".to_vec()))
         .mount(&server)
         .await;

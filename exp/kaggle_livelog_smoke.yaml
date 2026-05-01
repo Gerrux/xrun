@@ -1,0 +1,21 @@
+name: livelog-smoke
+vendor: kaggle
+
+kaggle:
+  kernel_slug: kartaviychert/xrun-livelog-smoke
+  enable_gpu: false
+  enable_internet: true
+
+run:
+  cmd: |
+    python -c "
+    import time
+    import xrun_hook
+    print('=== livelog smoke start ===', flush=True)
+    for i in range(20):
+        print(f'tick {i:02d} t={time.time():.2f}', flush=True)
+        xrun_hook.metric('iter', float(i), step=i)
+        time.sleep(3)
+    print('=== livelog smoke done ===', flush=True)
+    xrun_hook.done()
+    "

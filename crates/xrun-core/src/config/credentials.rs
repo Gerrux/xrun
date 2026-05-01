@@ -40,7 +40,13 @@ pub struct KaggleCredentials {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct MlflowCredentials {
+    /// Bearer token. Takes precedence over username/password when set.
     pub token: Option<String>,
+    /// HTTP Basic-auth username. Used by the kaggle adapter to push log
+    /// chunks back to MLflow and by the poller to read them.
+    pub username: Option<String>,
+    /// HTTP Basic-auth password — paired with `username`.
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -62,6 +68,8 @@ impl Credentials {
             && self.kaggle.username.is_none()
             && self.kaggle.key.is_none()
             && self.mlflow.token.is_none()
+            && self.mlflow.username.is_none()
+            && self.mlflow.password.is_none()
             && self.ssh_hosts.is_empty()
     }
 

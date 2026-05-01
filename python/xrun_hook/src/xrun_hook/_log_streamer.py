@@ -143,14 +143,21 @@ class _MlflowClient:
             f"could not get/create MLflow experiment {name!r}: HTTP {status} {body!r}"
         )
 
-    def create_run(self, experiment_id: str, tags: "list[dict]") -> str:
+    def create_run(self, experiment_id: str, tags: "list[dict]") -> "tuple[str, str]":
+        """Returns (run_id, artifact_path). artifact_path is the proxy-relative
+        storage prefix (e.g. `1/<run_id>/artifacts`) parsed out of MLflow's
+        `mlflow-artifacts:/...` URI."""
         ts = int(time.time() * 1000)
         status, body = _post_json(
             f"{self.base}/api/2.0/mlflow/runs/create",
             {"experiment_id": experiment_id, "start_time": ts, "tags": tags},
         )
         if status == 200 and "run" in body:
-            return body["run"]["info"]["run_id"]
+            run_id = body["run"]["info"]["run_id"]
+            uri = body["run"]["info"].get("artifact_uri", "")
+            # `mlflow-artifacts:/1/<run_id>/artifacts` → `1/<run_id>/artifacts`
+            artifact_path = uri.split(":", 1)[1].lstrip("/") if ":" in uri else ""
+            return run_id, artifact_path
         raise RuntimeError(f"could not create MLflow run: HTTP {status} {body!r}")
 
     def update_run(self, run_id: str, status_str: str) -> None:
@@ -160,11 +167,17 @@ class _MlflowClient:
             {"run_id": run_id, "status": status_str, "end_time": end_time},
         )
 
-    def put_artifact(self, run_id: str, remote_path: str, content: bytes) -> None:
-        url = (
-            f"{self.base}/api/2.0/mlflow-artifacts/artifacts/{remote_path}"
-            f"?run_id={urllib.parse.quote(run_id)}"
+    def put_artifact(
+        self, artifact_path: str, remote_path: str, content: bytes
+    ) -> None:
+        # MLflow's artifact proxy treats `?run_id=` as advisory only — the
+        # storage location comes from the URL path. We must include the run's
+        # `<exp_id>/<run_id>/artifacts` prefix or every run shares one bucket
+        # at `/mlflow/artifacts/<remote_path>`.
+        full_path = (
+            f"{artifact_path.rstrip('/')}/{remote_path}" if artifact_path else remote_path
         )
+        url = f"{self.base}/api/2.0/mlflow-artifacts/artifacts/{full_path}"
         status, _ = _http_request(
             "PUT",
             url,
@@ -194,9 +207,11 @@ class LogStreamer:
         run_id: str,
         log_path: Path,
         interval_sec: float,
+        artifact_path: str = "",
     ) -> None:
         self._client = client
         self._run_id = run_id
+        self._artifact_path = artifact_path
         self._path = log_path
         # Tests pass tiny intervals; production callers go through
         # start_if_configured() which clamps the env-var floor at 0.5 s.
@@ -243,7 +258,7 @@ class LogStreamer:
                 return
             self._chunk_seq += 1
             remote = f"{ARTIFACT_PREFIX}/log_{self._chunk_seq:06d}.txt"
-            self._client.put_artifact(self._run_id, remote, new_bytes)
+            self._client.put_artifact(self._artifact_path, remote, new_bytes)
 
     def _read_new_bytes(self) -> bytes:
         if not self._path.exists():
@@ -305,14 +320,16 @@ def start_if_configured() -> "LogStreamer | None":
             {"key": TAG_RUN_ID, "value": run_id},
             {"key": TAG_STREAM_MARKER, "value": "true"},
         ]
-        mlflow_run_id = client.create_run(exp_id, tags)
+        mlflow_run_id, artifact_path = client.create_run(exp_id, tags)
     except Exception as e:  # noqa: BLE001 — best-effort
         sys.stderr.write(
             f"[xrun_hook] log streamer disabled: MLflow init failed ({e})\n"
         )
         return None
 
-    streamer = LogStreamer(client, mlflow_run_id, log_path, interval)
+    streamer = LogStreamer(
+        client, mlflow_run_id, log_path, interval, artifact_path=artifact_path
+    )
     streamer.start()
     atexit.register(_atexit_drain, streamer, client, mlflow_run_id)
     _streamer = streamer

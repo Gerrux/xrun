@@ -267,52 +267,109 @@ impl MlflowClient {
         Ok(ids)
     }
 
-    /// List artifacts under `path` (or root when None) for a run.
-    /// Returns `(relative_path, file_size_bytes)` for each non-directory entry.
+    /// Fetch a run's `artifact_uri` and strip the `mlflow-artifacts:` scheme,
+    /// returning the proxy-relative path prefix (e.g. `1/<run_id>/artifacts`).
+    /// MLflow's artifact proxy keys storage off the URL path, not `?run_id=`
+    /// (which it accepts but ignores), so callers must pass this prefix to
+    /// `list_artifacts` / `download_artifact` to hit the right run's bucket.
+    pub async fn get_run_artifact_path(&self, run_id: &str) -> Result<String, MlflowError> {
+        let resp = self.get("runs/get", &[("run_id", run_id)]).await?;
+        let uri = resp
+            .get("run")
+            .and_then(|r| r.get("info"))
+            .and_then(|i| i.get("artifact_uri"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MlflowError::Parse("missing artifact_uri in runs/get".into()))?;
+        let stripped = uri
+            .splitn(2, ':')
+            .nth(1)
+            .unwrap_or(uri)
+            .trim_start_matches('/');
+        Ok(stripped.to_string())
+    }
+
+    /// List artifacts under `<base_path>/<sub_path>` (or just `<base_path>`
+    /// when sub_path is None) on the proxy. Returns `(full_path_from_proxy_root,
+    /// file_size_bytes)` for each non-directory entry.
+    ///
+    /// `base_path` is the run-scoped storage prefix from `get_run_artifact_path`.
+    /// Uses MLflow's artifact-proxy endpoint (`mlflow-artifacts/artifacts`),
+    /// which is the only listing path that works with `mlflow server
+    /// --serve-artifacts`.
     pub async fn list_artifacts(
         &self,
-        run_id: &str,
-        path: Option<&str>,
+        base_path: &str,
+        sub_path: Option<&str>,
     ) -> Result<Vec<(String, u64)>, MlflowError> {
-        let mut query: Vec<(&str, &str)> = vec![("run_id", run_id)];
-        if let Some(p) = path {
-            query.push(("path", p));
-        }
-        let resp = self.get("artifacts/list", &query).await?;
+        let full_query_path = match sub_path {
+            Some(s) if !s.is_empty() => format!("{}/{}", base_path.trim_end_matches('/'), s),
+            _ => base_path.trim_end_matches('/').to_string(),
+        };
+        let url = format!("{}/api/2.0/mlflow-artifacts/artifacts", self.base_url);
+        let builder = self
+            .client
+            .get(&url)
+            .query(&[("path", full_query_path.as_str())]);
+        let builder = self.apply_auth(builder);
+
+        let resp = match builder.send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                return Err(map_client_error(status, body));
+            }
+            Err(e) => return Err(MlflowError::Network(e)),
+        };
+        let body_text = resp.text().await.map_err(MlflowError::Network)?;
+        let parsed: Value = serde_json::from_str(&body_text).unwrap_or(Value::Null);
+
+        // Re-prepend the queried sub_path so callers can re-use these paths
+        // for follow-up downloads (full_query_path → relative result paths).
+        let prefix = sub_path.map(|p| p.trim_end_matches('/'));
         let mut out = Vec::new();
-        if let Some(files) = resp.get("files").and_then(|v| v.as_array()) {
+        if let Some(files) = parsed.get("files").and_then(|v| v.as_array()) {
             for f in files {
                 let is_dir = f.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
                 if is_dir {
                     continue;
                 }
-                let p = match f.get("path").and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
+                let raw_path = match f.get("path").and_then(|v| v.as_str()) {
+                    Some(s) => s,
                     None => continue,
+                };
+                let full = match prefix {
+                    Some(pre) if !pre.is_empty() => format!("{pre}/{raw_path}"),
+                    _ => raw_path.to_string(),
                 };
                 let size = f
                     .get("file_size")
                     .and_then(|v| v.as_u64())
-                    .or_else(|| f.get("file_size").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()))
+                    .or_else(|| {
+                        f.get("file_size")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                    })
                     .unwrap_or(0);
-                out.push((p, size));
+                out.push((full, size));
             }
         }
         Ok(out)
     }
 
     /// Download an artifact via the MLflow artifact proxy. Returns raw bytes.
-    /// Path is relative to the run's artifact root (e.g. `logs/log_000001.txt`).
+    /// `base_path` is the run-scoped prefix; `file_path` is the path under it
+    /// (e.g. `logs/log_000001.txt`).
     pub async fn download_artifact(
         &self,
-        run_id: &str,
-        artifact_path: &str,
+        base_path: &str,
+        file_path: &str,
     ) -> Result<Vec<u8>, MlflowError> {
         let url = format!(
-            "{}/api/2.0/mlflow-artifacts/artifacts/{}?run_id={}",
+            "{}/api/2.0/mlflow-artifacts/artifacts/{}/{}",
             self.base_url,
-            artifact_path.trim_start_matches('/'),
-            run_id,
+            base_path.trim_matches('/'),
+            file_path.trim_start_matches('/'),
         );
         let builder = self.apply_auth(self.client.get(&url));
         match builder.send().await {

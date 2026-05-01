@@ -328,20 +328,43 @@ async fn test_search_runs_by_tag_empty() {
     assert!(ids.is_empty());
 }
 
-/// Test: list_artifacts skips directories and parses sizes
+/// Test: get_run_artifact_path strips `mlflow-artifacts:` scheme prefix
+#[tokio::test]
+async fn test_get_run_artifact_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/2.0/mlflow/runs/get"))
+        .and(query_param("run_id", "r1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "run": {"info": {
+                "run_id": "r1",
+                "artifact_uri": "mlflow-artifacts:/1/r1/artifacts"
+            }}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let p = client
+        .get_run_artifact_path("r1")
+        .await
+        .expect("get_run_artifact_path should succeed");
+    assert_eq!(p, "1/r1/artifacts");
+}
+
+/// Test: list_artifacts uses base_path/sub_path in `?path=` and re-prepends
 #[tokio::test]
 async fn test_list_artifacts_filters_directories() {
     let server = MockServer::start().await;
-
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow/artifacts/list"))
-        .and(query_param("run_id", "r1"))
-        .and(query_param("path", "logs"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts"))
+        .and(query_param("path", "1/r1/artifacts/logs"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "files": [
-                {"path": "logs/log_000001.txt", "is_dir": false, "file_size": 12},
-                {"path": "logs/subdir", "is_dir": true},
-                {"path": "logs/log_000002.txt", "is_dir": false, "file_size": "34"},
+                {"path": "log_000001.txt", "is_dir": false, "file_size": 12},
+                {"path": "subdir", "is_dir": true},
+                {"path": "log_000002.txt", "is_dir": false, "file_size": "34"},
             ]
         })))
         .expect(1)
@@ -350,7 +373,7 @@ async fn test_list_artifacts_filters_directories() {
 
     let client = make_client(&server.uri());
     let entries = client
-        .list_artifacts("r1", Some("logs"))
+        .list_artifacts("1/r1/artifacts", Some("logs"))
         .await
         .expect("list_artifacts should succeed");
 
@@ -360,20 +383,42 @@ async fn test_list_artifacts_filters_directories() {
             ("logs/log_000001.txt".to_string(), 12),
             ("logs/log_000002.txt".to_string(), 34),
         ],
-        "directories must be filtered, sizes parsed even when string-encoded"
     );
 }
 
-/// Test: download_artifact returns raw bytes from proxy endpoint
+/// Test: list_artifacts at base_path only when sub_path is None
+#[tokio::test]
+async fn test_list_artifacts_no_sub_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/2.0/mlflow-artifacts/artifacts"))
+        .and(query_param("path", "1/r1/artifacts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "files": [
+                {"path": "logs", "is_dir": true},
+                {"path": "stdout.log", "is_dir": false, "file_size": 7},
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri());
+    let entries = client
+        .list_artifacts("1/r1/artifacts", None)
+        .await
+        .expect("list_artifacts should succeed");
+    assert_eq!(entries, vec![("stdout.log".to_string(), 7)]);
+}
+
+/// Test: download_artifact prepends base_path to URL path, no run_id query
 #[tokio::test]
 async fn test_download_artifact_returns_bytes() {
     let server = MockServer::start().await;
-
     Mock::given(method("GET"))
         .and(path(
-            "/api/2.0/mlflow-artifacts/artifacts/logs/log_000001.txt",
+            "/api/2.0/mlflow-artifacts/artifacts/1/r1/artifacts/logs/log_000001.txt",
         ))
-        .and(query_param("run_id", "r1"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello world".to_vec()))
         .expect(1)
         .mount(&server)
@@ -381,7 +426,7 @@ async fn test_download_artifact_returns_bytes() {
 
     let client = make_client(&server.uri());
     let bytes = client
-        .download_artifact("r1", "logs/log_000001.txt")
+        .download_artifact("1/r1/artifacts", "logs/log_000001.txt")
         .await
         .expect("download_artifact should succeed");
     assert_eq!(bytes, b"hello world");
@@ -391,10 +436,9 @@ async fn test_download_artifact_returns_bytes() {
 #[tokio::test]
 async fn test_download_artifact_not_found() {
     let server = MockServer::start().await;
-
     Mock::given(method("GET"))
         .and(path(
-            "/api/2.0/mlflow-artifacts/artifacts/logs/missing.txt",
+            "/api/2.0/mlflow-artifacts/artifacts/1/r1/artifacts/logs/missing.txt",
         ))
         .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
         .mount(&server)
@@ -402,7 +446,7 @@ async fn test_download_artifact_not_found() {
 
     let client = make_client(&server.uri());
     let err = client
-        .download_artifact("r1", "logs/missing.txt")
+        .download_artifact("1/r1/artifacts", "logs/missing.txt")
         .await
         .expect_err("missing artifact should error");
     assert!(matches!(err, xrun_mlflow::MlflowError::NotFound(_)));

@@ -70,6 +70,8 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                     "kaggle.username": creds.kaggle.username.is_some(),
                     "kaggle.key": creds.kaggle.key.is_some(),
                     "mlflow.token": creds.mlflow.token.is_some(),
+                    "mlflow.username": creds.mlflow.username.is_some(),
+                    "mlflow.password": creds.mlflow.password.is_some(),
                 }),
             );
             if secrets {
@@ -81,6 +83,8 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                         "kaggle.username": creds.kaggle.username.as_deref().map(tail6),
                         "kaggle.key": creds.kaggle.key.as_deref().map(tail6),
                         "mlflow.token": creds.mlflow.token.as_deref().map(tail6),
+                        "mlflow.username": creds.mlflow.username.as_deref().map(tail6),
+                        "mlflow.password": creds.mlflow.password.as_deref().map(tail6),
                     }),
                 );
             }
@@ -96,6 +100,8 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
     print_cred("kaggle.username", creds.kaggle.username.as_deref(), secrets);
     print_cred("kaggle.key", creds.kaggle.key.as_deref(), secrets);
     print_cred("mlflow.token", creds.mlflow.token.as_deref(), secrets);
+    print_cred("mlflow.username", creds.mlflow.username.as_deref(), secrets);
+    print_cred("mlflow.password", creds.mlflow.password.as_deref(), secrets);
     Ok(())
 }
 
@@ -121,7 +127,13 @@ fn tail6(s: &str) -> String {
 fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
     let is_credential = matches!(
         key,
-        "vast.api_key" | "kaggle.token" | "kaggle.key" | "kaggle.username" | "mlflow.token"
+        "vast.api_key"
+            | "kaggle.token"
+            | "kaggle.key"
+            | "kaggle.username"
+            | "mlflow.token"
+            | "mlflow.username"
+            | "mlflow.password"
     );
 
     if is_credential {
@@ -132,6 +144,8 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
             "kaggle.key" => creds.kaggle.key = Some(value.to_string()),
             "kaggle.username" => creds.kaggle.username = Some(value.to_string()),
             "mlflow.token" => creds.mlflow.token = Some(value.to_string()),
+            "mlflow.username" => creds.mlflow.username = Some(value.to_string()),
+            "mlflow.password" => creds.mlflow.password = Some(value.to_string()),
             _ => {
                 bail!("unknown config key: {key}");
             }

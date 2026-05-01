@@ -139,14 +139,15 @@ pub fn run(
                 .with_store_path(data_dir.to_path_buf())
                 .with_credentials(kaggle_creds);
             // Live tail() pulls log chunks from the same MLflow URL the
-            // launching process embedded in main.py. Loading the config here
-            // (rather than reusing `global` below) keeps the adapter setup
-            // in one branch.
-            if let Some(url) = GlobalConfig::load(config_dir)
-                .ok()
-                .and_then(|g| g.mlflow.url)
-            {
-                adapter = adapter.with_mlflow(url, None);
+            // launching process embedded in main.py. Auth must match what
+            // the launcher injected into main.py — read both from the same
+            // config so the kernel and poller agree.
+            if let Ok(g) = GlobalConfig::load(config_dir) {
+                if let Some(url) = g.mlflow.url.clone() {
+                    let creds = xrun_core::Credentials::load(config_dir).unwrap_or_default();
+                    let auth = crate::commands::launch::mlflow_auth_from_creds(&creds.mlflow);
+                    adapter = adapter.with_mlflow(url, auth);
+                }
             }
             adapter.set_run_id(&run_id);
             Box::new(adapter)

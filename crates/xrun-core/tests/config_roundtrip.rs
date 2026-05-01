@@ -31,6 +31,24 @@ fn credentials_roundtrip() {
 }
 
 #[test]
+fn mlflow_basic_auth_credentials_roundtrip() {
+    // Username/password were added to support kaggle live-log streaming
+    // through an MLflow tracking server protected by HTTP Basic auth.
+    let dir = tempdir().unwrap();
+    let mut creds = Credentials::default();
+    creds.mlflow.username = Some("xrun".to_string());
+    creds.mlflow.password = Some("hunter2".to_string());
+
+    assert!(!creds.is_empty(), "auth fields must count toward is_empty");
+
+    creds.save(dir.path()).unwrap();
+    let loaded = Credentials::load(dir.path()).unwrap();
+    assert_eq!(creds, loaded);
+    assert_eq!(loaded.mlflow.username.as_deref(), Some("xrun"));
+    assert_eq!(loaded.mlflow.password.as_deref(), Some("hunter2"));
+}
+
+#[test]
 fn config_store_init_creates_files() {
     let dir = tempdir().unwrap();
     let result = ConfigStore::init(dir.path()).unwrap();

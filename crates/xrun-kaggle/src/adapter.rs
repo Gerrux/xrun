@@ -53,10 +53,10 @@ pub struct KaggleAdapter {
     /// MLflow tracking config for live-log streaming. None disables streaming
     /// and `tail()` returns empty (matches pre-MLflow behaviour).
     mlflow: Option<MlflowConfig>,
-    /// Cached MLflow run_id resolved by `xrun_run_id` tag. Filled lazily on
-    /// the first `tail()` call so a kernel that's slow to start doesn't make
-    /// `set_run_id()` block.
-    mlflow_run_cache: Mutex<Option<String>>,
+    /// Cached MLflow run_id + artifact storage prefix, resolved by
+    /// `xrun_run_id` tag. Filled lazily on the first `tail()` call so a
+    /// kernel that's slow to start doesn't make `set_run_id()` block.
+    mlflow_run_cache: Mutex<Option<(String, String)>>,
 }
 
 impl KaggleAdapter {
@@ -185,17 +185,17 @@ impl KaggleAdapter {
         format!("{}\n", lines.join("\n"))
     }
 
-    /// Resolve the streamer's MLflow run_id by `xrun_run_id` tag. Cached
-    /// after the first successful lookup so subsequent `tail()` calls go
-    /// straight to artifact listing.
-    fn resolve_mlflow_run_id(
+    /// Resolve the streamer's MLflow run_id and artifact storage prefix by
+    /// `xrun_run_id` tag. Cached after the first successful lookup so
+    /// subsequent `tail()` calls go straight to artifact listing.
+    fn resolve_mlflow_run(
         &self,
         client: &MlflowClient,
         xrun_run_id: &str,
-    ) -> Result<Option<String>, VendorError> {
+    ) -> Result<Option<(String, String)>, VendorError> {
         if let Ok(guard) = self.mlflow_run_cache.lock() {
-            if let Some(id) = guard.as_ref() {
-                return Ok(Some(id.clone()));
+            if let Some(pair) = guard.as_ref() {
+                return Ok(Some(pair.clone()));
             }
         }
 
@@ -215,11 +215,22 @@ impl KaggleAdapter {
         };
         // The streamer creates exactly one run per xrun launch; if there are
         // duplicates (re-run, partial failure) the most recent one wins.
-        let mlflow_run_id = runs.into_iter().next();
-        if let (Ok(mut guard), Some(id)) = (self.mlflow_run_cache.lock(), mlflow_run_id.as_ref()) {
-            *guard = Some(id.clone());
+        let mlflow_run_id = match runs.into_iter().next() {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+        let artifact_path = match block_async(client.get_run_artifact_path(&mlflow_run_id)) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("kaggle tail: artifact_uri lookup failed: {e}");
+                return Ok(None);
+            }
+        };
+        let pair = (mlflow_run_id, artifact_path);
+        if let Ok(mut guard) = self.mlflow_run_cache.lock() {
+            *guard = Some(pair.clone());
         }
-        Ok(mlflow_run_id)
+        Ok(Some(pair))
     }
 }
 
@@ -404,8 +415,18 @@ impl VendorAdapter for KaggleAdapter {
             let workdir = manifest.run.workdir.as_deref().unwrap_or("/kaggle/working");
             // §11: pass dataset slugs so main.py can probe XRUN_INPUT_DIR
             let env_prelude = self.build_env_prelude();
+            // Kaggle script-mode kernels only upload the single `code_file`,
+            // dropping every sibling we put in staging. To get xrun_hook into
+            // the kernel we base64-embed the wheel directly into main.py and
+            // pip-install it before user setup runs.
+            let wheel_b64 = if !embed::XRUN_HOOK_WHEEL.is_empty() {
+                Some(base64_encode(embed::XRUN_HOOK_WHEEL))
+            } else {
+                None
+            };
             let main_py = build_script_main(
                 &env_prelude,
+                wheel_b64.as_deref(),
                 &setup_block,
                 &cmd_block,
                 workdir,
@@ -451,14 +472,11 @@ impl VendorAdapter for KaggleAdapter {
             }
         }
 
-        // Embed wheel if available
-        if !embed::XRUN_HOOK_WHEEL.is_empty() {
-            std::fs::write(
-                staging.join("xrun_hook-latest-py3-none-any.whl"),
-                embed::XRUN_HOOK_WHEEL,
-            )
-            .map_err(|e| VendorError::Other(format!("failed to write wheel: {e}")))?;
-        } else {
+        // Wheel is base64-embedded directly into main.py for script kernels
+        // (script-mode strips sibling files). For notebook-mode the user is
+        // expected to install xrun_hook via their notebook's own setup cells —
+        // we still warn at build time when the wheel is missing.
+        if embed::XRUN_HOOK_WHEEL.is_empty() {
             tracing::warn!(
                 "xrun_hook wheel not embedded — Kaggle kernel will run without xrun_hook"
             );
@@ -510,16 +528,17 @@ impl VendorAdapter for KaggleAdapter {
         };
 
         let client = MlflowClient::new(cfg.url.clone(), cfg.auth.clone());
-        let mlflow_run_id = match self.resolve_mlflow_run_id(&client, &xrun_run_id.to_string())? {
-            Some(id) => id,
-            // Streamer hasn't created its run yet (kernel still warming up).
-            // Returning empty keeps the poller's offset unchanged so the next
-            // tick will retry.
-            None => return Ok(Vec::new()),
-        };
+        let (_mlflow_run_id, artifact_path) =
+            match self.resolve_mlflow_run(&client, &xrun_run_id.to_string())? {
+                Some(pair) => pair,
+                // Streamer hasn't created its run yet (kernel still warming
+                // up). Returning empty keeps the poller's offset unchanged
+                // so the next tick will retry.
+                None => return Ok(Vec::new()),
+            };
 
         let artifacts = match block_async(
-            client.list_artifacts(&mlflow_run_id, Some(ARTIFACT_PREFIX)),
+            client.list_artifacts(&artifact_path, Some(ARTIFACT_PREFIX)),
         ) {
             Ok(a) => a,
             Err(e) => {
@@ -538,7 +557,7 @@ impl VendorAdapter for KaggleAdapter {
 
         slice_from_offset::<VendorError>(&chunks, offset, |idx| {
             let path = &chunks[idx].1;
-            block_async(client.download_artifact(&mlflow_run_id, path))
+            block_async(client.download_artifact(&artifact_path, path))
                 .map_err(|e| VendorError::Other(format!("kaggle tail download failed: {e}")))
         })
     }
@@ -805,8 +824,13 @@ fn push_with_retry(
 ///
 /// §11: Probes both old and new dataset mount paths and sets `XRUN_INPUT_DIR`.
 /// §1: Streams subprocess output to both stdout and `__xrun_stdout.log`.
+///
+/// `wheel_b64` is the base64-encoded xrun_hook wheel, embedded directly into
+/// main.py because Kaggle script-mode strips sibling files from kernel pushes.
+/// When None, the wheel-bootstrap block is omitted entirely.
 fn build_script_main(
     env_prelude: &str,
+    wheel_b64: Option<&str>,
     setup: &str,
     cmd: &str,
     workdir: &str,
@@ -826,6 +850,40 @@ fn build_script_main(
             .collect::<Vec<_>>()
             .join(", ")
     );
+
+    // Wheel-bootstrap block: decode base64 → write /tmp file → pip install →
+    // import. Runs once after env setup so xrun_hook's log streamer starts
+    // before _run() emits anything (we still capture later writes via the
+    // tailed log file, but starting early keeps the streamer-run creation
+    // off the critical path of the user's first command).
+    let wheel_block = match wheel_b64 {
+        Some(b64) => format!(
+            "_WHEEL_B64 = '''{b64}'''\n\
+             import base64 as _b64, tempfile as _tf, subprocess as _sp\n\
+             # pip rejects wheels whose filename doesn't match the\n\
+             # `<pkg>-<ver>-<py>-<abi>-<plat>.whl` convention, so write into\n\
+             # a temp dir under the canonical name rather than mktemp's random one.\n\
+             _whl_dir = _tf.mkdtemp(prefix='xrun_hook_')\n\
+             _whl_path = os.path.join(_whl_dir, 'xrun_hook-0.0.0-py3-none-any.whl')\n\
+             with open(_whl_path, 'wb') as _f:\n\
+             \x20\x20\x20\x20_f.write(_b64.b64decode(_WHEEL_B64))\n\
+             _r = _sp.run([sys.executable, '-m', 'pip', 'install', '--quiet', \
+             '--no-deps', _whl_path], capture_output=True, text=True)\n\
+             if _r.returncode != 0:\n\
+             \x20\x20\x20\x20print('xrun_hook bootstrap failed:', _r.stderr, flush=True)\n\
+             else:\n\
+             \x20\x20\x20\x20try:\n\
+             \x20\x20\x20\x20    import xrun_hook  # noqa: F401  starts streamer in main.py\n\
+             \x20\x20\x20\x20except Exception as _e:\n\
+             \x20\x20\x20\x20    print('xrun_hook import failed:', _e, flush=True)\n\
+             # Block subprocess re-imports of xrun_hook from creating a second\n\
+             # streamer (which would push duplicate chunks to a separate MLflow\n\
+             # run). User code can still call xrun_hook.metric/.epoch/.done — only\n\
+             # the log streamer is suppressed downstream.\n\
+             os.environ['XRUN_LOG_STREAM_DISABLE'] = '1'\n",
+        ),
+        None => String::new(),
+    };
 
     format!(
         "import subprocess, sys, os\n\
@@ -851,6 +909,7 @@ fn build_script_main(
          _DATASETS = {datasets_repr}\n\
          os.environ['XRUN_INPUT_DIR'] = _find_input_dir(_DATASETS)\n\
          \n\
+         {wheel_block}\
          _LOG = open('__xrun_stdout.log', 'w')\n\
          \n\
          def _run(script, label):\n\
@@ -880,9 +939,43 @@ fn build_script_main(
         env_prelude = env_prelude,
         workdir_repr = workdir_repr,
         datasets_repr = datasets_repr,
+        wheel_block = wheel_block,
         setup_escaped = setup_escaped,
         cmd_escaped = cmd_escaped
     )
+}
+
+/// Standard base64 (RFC 4648) encoder used for the embedded wheel. We avoid
+/// pulling the `base64` crate in just for this — Python's `base64.b64decode`
+/// accepts the same alphabet on the receive side.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPH: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let b = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
+        out.push(ALPH[((b >> 18) & 0x3f) as usize] as char);
+        out.push(ALPH[((b >> 12) & 0x3f) as usize] as char);
+        out.push(ALPH[((b >> 6) & 0x3f) as usize] as char);
+        out.push(ALPH[(b & 0x3f) as usize] as char);
+        i += 3;
+    }
+    let rem = bytes.len() - i;
+    if rem == 1 {
+        let b = (bytes[i] as u32) << 16;
+        out.push(ALPH[((b >> 18) & 0x3f) as usize] as char);
+        out.push(ALPH[((b >> 12) & 0x3f) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rem == 2 {
+        let b = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8);
+        out.push(ALPH[((b >> 18) & 0x3f) as usize] as char);
+        out.push(ALPH[((b >> 12) & 0x3f) as usize] as char);
+        out.push(ALPH[((b >> 6) & 0x3f) as usize] as char);
+        out.push('=');
+    }
+    out
 }
 
 /// Poll Kaggle kernel status until completion. Returns final RunId status.
