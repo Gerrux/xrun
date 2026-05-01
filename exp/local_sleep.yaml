@@ -1,0 +1,9 @@
+name: local_sleep
+description: long-running local test for xrun stop
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python -c "import time; print('looping'); [time.sleep(1) for _ in range(60)]"

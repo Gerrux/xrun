@@ -4,6 +4,27 @@ Pruned 2026-04-29. Pre-v0.3.0 sections (A-E, Open #-1..#6) were resolved by
 the v0.2/v0.3 lifecycle/manifest/upload PRs and removed. Items below are the
 ones still hitting us in real runs after the v0.3.0 release.
 
+## Poller: short runs lose metrics — `done:ok` returns before metric tail
+
+Surfaced 2026-05-01 by `xrun-local` smoke test (`exp/local_smoke.yaml`).
+Run finishes within a single poll tick (~200ms). The events tail picks up
+all five events including `done:ok`, the poller returns `RunStatus::Done`
+*immediately*, and the metrics tail (next branch in the loop) never runs.
+metrics.jsonl on disk has 6 entries; DB has 0.
+
+For vast/kaggle the symptom is rare because training takes longer than one
+tick. For local-fast jobs (and CI smoke tests) it bites every time.
+
+Fix candidates:
+- After `done` is observed, do one more pass over `metrics_file` (and
+  `stdout_file` for tail) before returning. Keeps the loop simple, fixes
+  the symptom.
+- Or: ingest events and metrics from the same `tail` window into a single
+  transaction.
+
+`crates/xrun-poller/src/loop_runner.rs:310-321` is where the early return
+happens. Same logic exists for `failed`.
+
 ## ~~BLOCKER — `last_active_at` is never written → idle guard always anchors on `created_at`~~ FIXED
 
 Fixed 2026-04-29 in `loop_runner.rs`:

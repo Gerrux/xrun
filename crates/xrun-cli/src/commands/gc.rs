@@ -25,7 +25,15 @@ pub fn run(args: &GcArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
     let store = Store::open(db_path)
         .with_context(|| format!("failed to open store at {}", db_path.display()))?;
 
-    let local_active = store.list_active_instances()?;
+    // gc currently reconciles only vast instances. Local PIDs are reaped via
+    // `xrun stop` / `xrun fix-status`; including them here would mark every
+    // local row destroyed on every gc run because they don't appear in vast's
+    // remote list.
+    let local_active: Vec<_> = store
+        .list_active_instances()?
+        .into_iter()
+        .filter(|i| i.vendor == "vast")
+        .collect();
     drop(store);
 
     let creds = resolve_vast_credentials(config_dir);

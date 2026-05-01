@@ -76,6 +76,56 @@ policy:
   on_done: stop_instance
 ```
 
+## Минимальный пример (local — отладка на хосте)
+
+Локальный вендор запускает `run.cmd` как subprocess на текущей машине — без
+SSH, без сети, без оплаты. Идеально для отладки манифеста перед запуском в
+облако.
+
+```yaml
+name: smoke_local
+vendor: local
+
+local:
+  gpu: auto      # или "0", "0,1", "cuda:0", "cpu"; default = auto
+
+data:
+  - src: ./datasets/tiny       # путь на хосте
+    dst: ./staging/data        # тоже на хосте — fs::copy
+
+run:
+  workdir: ./staging           # default = <runs_dir>/<run-id>/work/
+  cmd: python train.py --epochs 1
+  args: { lr: 5e-4 }
+
+artifacts:
+  patterns: [checkpoints/best*.pt, metrics.json]
+```
+
+### Local-специфичные нюансы
+
+- **Shell.** На Unix `run.cmd` исполняется через `bash -c` (fallback `sh -c`).
+  На Windows — через `pwsh -NoProfile -NonInteractive -Command` (PowerShell 7,
+  поддерживает `&&`/`||`); если `pwsh` не установлен, используется
+  `powershell.exe` (5.1, без chain operators — пиши `; if ($?) { ... }`).
+  Манифесты, использующие bash-идиомы (`&&`, heredoc, `>>`), нуждаются в
+  правках под PowerShell на Windows-хосте — либо ставь `pwsh` через
+  winget/scoop.
+- **GPU.** `gpu: auto` (default) ничего не выставляет — `CUDA_VISIBLE_DEVICES`
+  наследуется. `gpu: cpu` обнуляет его. `gpu: 0` или `cuda:0` ставит в
+  `CUDA_VISIBLE_DEVICES`. Реальный список GPU виден в TUI Vendors-экране
+  через `nvidia-smi` best-effort.
+- **`data: dst`** на local интерпретируется как нативный путь хоста: можно
+  относительный, можно абсолютный (Windows: `C:\...`), `/` не требуется —
+  именно для local-вендора ослаблено.
+- **MVP scope upload.** Только `mode: copy` (файл или рекурсивно директория).
+  `mode: rsync`, `unpack`, `exclude`, `compress` — пока игнорируются с
+  warn-event `upload:progress`. Добавим в следующих релизах при
+  необходимости.
+- **Завершение и cleanup.** PID живущего процесса лежит в
+  `<runs_dir>/<run-id>/run.pid`; `xrun stop <id>` посылает SIGTERM/taskkill,
+  ждёт, при необходимости SIGKILL. Идемпотентно.
+
 ## Минимальный пример (Kaggle)
 
 ```yaml
@@ -110,8 +160,8 @@ mlflow:
 | `name` | string | да | Slug; используется как experiment name в MLflow |
 | `description` | string | нет | Свободный текст |
 | `tags` | [string] | нет | Видны в `xrun ls`, фильтруются |
-| `vendor` | enum | да | `vast` \| `kaggle` |
-| `vast` / `kaggle` | object | да | По одному из них в зависимости от `vendor` |
+| `vendor` | enum | да | `vast` \| `kaggle` \| `local` |
+| `vast` / `kaggle` / `local` | object | да | По одному в зависимости от `vendor` (`local` блок опционален) |
 | `data` | [object] | нет | Что предзалить |
 | `run` | object | да | Команда тренировки |
 | `checkpoints` | object | нет | Watch + pull policy |
@@ -150,6 +200,14 @@ mlflow:
 | `order` | `score-desc` | Сортировка по vast score |
 
 Если вы получаете «no offers available», попробуйте ослабить `price.max_per_hour` или убрать `gpu.type`.
+
+### `local`
+
+| Поле | Описание |
+|------|----------|
+| `gpu` | `auto` (default), `cpu`, `0`, `0,1`, `cuda:0` — выставляется в `CUDA_VISIBLE_DEVICES` |
+
+Блок опционален. Если опущен, `gpu` берётся как `auto` и `CUDA_VISIBLE_DEVICES` не трогается.
 
 ### `kaggle`
 

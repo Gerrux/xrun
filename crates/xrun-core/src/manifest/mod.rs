@@ -6,8 +6,8 @@ pub mod validate;
 
 pub use types::{
     Artifacts, CheckpointPull, Checkpoints, DataCompress, DataMode, DataSource, GpuSpec,
-    KaggleSpec, KeepBest, Manifest, MlflowSpec, Policy, PriceSpec, RunSpec, UnpackSpec, VastSpec,
-    Vendor,
+    KaggleSpec, KeepBest, LocalSpec, Manifest, MlflowSpec, Policy, PriceSpec, RunSpec, UnpackSpec,
+    VastSpec, Vendor,
 };
 pub use validate::validate;
 

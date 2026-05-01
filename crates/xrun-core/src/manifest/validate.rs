@@ -6,9 +6,13 @@ use crate::error::ManifestError;
 pub fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
     validate_name(&manifest.name)?;
     validate_vendor_sections(manifest)?;
+    let is_local = matches!(manifest.vendor, Vendor::Local);
     if let Some(data) = &manifest.data {
         for source in data {
-            if !source.dst.starts_with('/') {
+            // Local accepts host-native paths (Windows `C:\...`, Unix `/...`,
+            // or relative). Cloud vendors place files into a Linux container
+            // so the dst is required to be absolute.
+            if !is_local && !source.dst.starts_with('/') {
                 return Err(ManifestError::Validation(format!(
                     "data dst must start with '/': {}",
                     source.dst
@@ -62,6 +66,11 @@ fn validate_vendor_sections(manifest: &Manifest) -> Result<(), ManifestError> {
                     "vendor=vast must not have a [kaggle] section".to_string(),
                 ));
             }
+            if manifest.local.is_some() {
+                return Err(ManifestError::Validation(
+                    "vendor=vast must not have a [local] section".to_string(),
+                ));
+            }
             if vast.gpu.count < 1 {
                 return Err(ManifestError::Validation(
                     "vast.gpu.count must be >= 1".to_string(),
@@ -79,6 +88,24 @@ fn validate_vendor_sections(manifest: &Manifest) -> Result<(), ManifestError> {
                     "vendor=kaggle must not have a [vast] section".to_string(),
                 ));
             }
+            if manifest.local.is_some() {
+                return Err(ManifestError::Validation(
+                    "vendor=kaggle must not have a [local] section".to_string(),
+                ));
+            }
+        }
+        Vendor::Local => {
+            if manifest.vast.is_some() {
+                return Err(ManifestError::Validation(
+                    "vendor=local must not have a [vast] section".to_string(),
+                ));
+            }
+            if manifest.kaggle.is_some() {
+                return Err(ManifestError::Validation(
+                    "vendor=local must not have a [kaggle] section".to_string(),
+                ));
+            }
+            // [local] section is optional — defaults are sane.
         }
     }
     Ok(())

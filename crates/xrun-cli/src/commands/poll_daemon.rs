@@ -11,6 +11,7 @@ use xrun_core::{
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_kaggle::KaggleAdapter;
+use xrun_local::LocalAdapter;
 use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
 use xrun_vast::VastAdapter;
 
@@ -40,6 +41,7 @@ fn load_mlflow_config(
         vendor: match manifest.vendor {
             Vendor::Vast => "vast",
             Vendor::Kaggle => "kaggle",
+            Vendor::Local => "local",
         }
         .to_string(),
         instance_id: None,
@@ -137,6 +139,15 @@ pub fn run(
             adapter.set_run_id(&run_id);
             Box::new(adapter)
         }
+        "local" => {
+            let adapter_store = Store::open(db_path).with_context(|| {
+                format!("failed to open adapter store at {}", db_path.display())
+            })?;
+            let adapter =
+                LocalAdapter::with_store_and_runs_dir(adapter_store, runs_dir.to_path_buf());
+            adapter.set_run_id(&run_id);
+            Box::new(adapter)
+        }
         _ => {
             let adapter_store = Store::open(db_path).with_context(|| {
                 format!("failed to open adapter store at {}", db_path.display())
@@ -159,6 +170,11 @@ pub fn run(
         runs_dir.to_path_buf(),
     )
     .with_budget(budget_cfg);
+
+    if run.vendor == "local" {
+        let run_dir = runs_dir.join(run_id.to_string());
+        poller = poller.with_config(crate::commands::launch::local_poller_config(&run_dir));
+    }
 
     // Wire MLflow mirror from saved manifest (if available and mlflow is configured).
     let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");

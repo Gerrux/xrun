@@ -8,6 +8,15 @@ use std::collections::HashMap;
 pub enum Vendor {
     Vast,
     Kaggle,
+    Local,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LocalSpec {
+    /// GPU selector hint. `auto` (or unset) → pick the first nvidia-smi GPU.
+    /// `cpu` → set `CUDA_VISIBLE_DEVICES=""`. Anything else (e.g. `0`, `0,1`)
+    /// is forwarded as `CUDA_VISIBLE_DEVICES`.
+    pub gpu: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -163,6 +172,7 @@ pub struct Manifest {
     pub vendor: Vendor,
     pub vast: Option<VastSpec>,
     pub kaggle: Option<KaggleSpec>,
+    pub local: Option<LocalSpec>,
     pub data: Option<Vec<DataSource>>,
     pub run: RunSpec,
     pub checkpoints: Option<Checkpoints>,

@@ -1,0 +1,26 @@
+[package]
+name = "xrun-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+mock = []
+
+[dependencies]
+xrun-core = { path = "../xrun-core" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+glob = { workspace = true }
+
+[dev-dependencies]
+xrun-core = { path = "../xrun-core" }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+serde_yaml = { workspace = true }
+ulid = { workspace = true }

@@ -1,7 +1,8 @@
 # xrun — ML experiment runner
 
-Rust CLI + Python Textual TUI для запуска ML-экспериментов на vast.ai и Kaggle.
-Один YAML-манифест → provision GPU → upload data → run training → poll events/metrics → SQLite.
+Rust CLI + Python Textual TUI для запуска ML-экспериментов на vast.ai, Kaggle
+и локальной машине. Один YAML-манифест → provision GPU → upload data → run
+training → poll events/metrics → SQLite.
 
 ## Стек
 
@@ -11,6 +12,7 @@ Rust CLI + Python Textual TUI для запуска ML-эксперименто�
 | Core (manifest, db, vendor trait) | Rust | `crates/xrun-core/` |
 | vast.ai адаптер | Rust | `crates/xrun-vast/` |
 | Kaggle адаптер | Rust | `crates/xrun-kaggle/` |
+| Local адаптер (host subprocess, без сети) | Rust | `crates/xrun-local/` |
 | Poll daemon engine | Rust | `crates/xrun-poller/` |
 | MLflow REST client | Rust | `crates/xrun-mlflow/` |
 | TUI (Python Textual) | Python | `python/xrun_tui/` |

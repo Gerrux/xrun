@@ -731,6 +731,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3022,6 +3028,7 @@ dependencies = [
  "tracing-subscriber",
  "xrun-core",
  "xrun-kaggle",
+ "xrun-local",
  "xrun-mlflow",
  "xrun-poller",
  "xrun-tui",
@@ -3063,6 +3070,25 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+ "xrun-core",
+]
+
+[[package]]
+name = "xrun-local"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "glob",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "ulid",
+ "which",
  "xrun-core",
 ]
 

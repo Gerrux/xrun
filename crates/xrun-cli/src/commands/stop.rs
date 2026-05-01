@@ -11,16 +11,17 @@ use xrun_core::{
     Credentials, RunId, Store, VendorAdapter,
 };
 use xrun_kaggle::KaggleAdapter;
+use xrun_local::LocalAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::StopArgs;
 
-pub fn run(args: &StopArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
+pub fn run(args: &StopArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
     let store = Store::open(db_path)
         .with_context(|| format!("failed to open store at {}", db_path.display()))?;
 
     if args.all {
-        return stop_all(store, config_dir, args.keep_instance, db_path);
+        return stop_all(store, runs_dir, config_dir, args.keep_instance, db_path);
     }
 
     let id_owned;
@@ -52,12 +53,25 @@ pub fn run(args: &StopArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
         .get_run(&parsed)?
         .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
 
-    stop_one(&run, store, config_dir, args.keep_instance, db_path)?;
+    stop_one(
+        &run,
+        store,
+        runs_dir,
+        config_dir,
+        args.keep_instance,
+        db_path,
+    )?;
     println!("stopped {}", run.id);
     Ok(())
 }
 
-fn stop_all(store: Store, config_dir: &Path, keep_instance: bool, db_path: &Path) -> Result<()> {
+fn stop_all(
+    store: Store,
+    runs_dir: &Path,
+    config_dir: &Path,
+    keep_instance: bool,
+    db_path: &Path,
+) -> Result<()> {
     let active = store.list_active_runs()?;
     if active.is_empty() {
         println!("no active runs");
@@ -70,7 +84,7 @@ fn stop_all(store: Store, config_dir: &Path, keep_instance: bool, db_path: &Path
     let mut errors = 0usize;
     for run in active {
         let s = Store::open(db_path)?;
-        match stop_one(&run, s, config_dir, keep_instance, db_path) {
+        match stop_one(&run, s, runs_dir, config_dir, keep_instance, db_path) {
             Ok(()) => println!("stopped {}", run.id),
             Err(e) => {
                 eprintln!("error: failed to stop {}: {e:#}", run.id);
@@ -88,6 +102,7 @@ fn stop_all(store: Store, config_dir: &Path, keep_instance: bool, db_path: &Path
 fn stop_one(
     run: &Run,
     mut store: Store,
+    runs_dir: &Path,
     config_dir: &Path,
     keep_instance: bool,
     db_path: &Path,
@@ -100,7 +115,8 @@ fn stop_one(
                         let handle: InstanceHandle = serde_json::from_str(state_json)
                             .context("failed to deserialize instance handle")?;
                         let adapter_store = Store::open(db_path)?;
-                        let adapter = build_adapter(&handle.vendor, config_dir, adapter_store)?;
+                        let adapter =
+                            build_adapter(&handle.vendor, runs_dir, config_dir, adapter_store)?;
                         adapter.set_run_id(&run.id);
                         adapter.destroy(&handle).with_context(|| {
                             format!("destroy failed for instance {}", handle.id)
@@ -156,7 +172,12 @@ fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
     KaggleCredentials::default()
 }
 
-fn build_adapter(vendor: &str, config_dir: &Path, store: Store) -> Result<Box<dyn VendorAdapter>> {
+fn build_adapter(
+    vendor: &str,
+    runs_dir: &Path,
+    config_dir: &Path,
+    store: Store,
+) -> Result<Box<dyn VendorAdapter>> {
     match vendor {
         "vast" => {
             let creds = resolve_vast_credentials(config_dir);
@@ -169,6 +190,10 @@ fn build_adapter(vendor: &str, config_dir: &Path, store: Store) -> Result<Box<dy
             drop(store);
             Ok(Box::new(KaggleAdapter::new().with_credentials(creds)))
         }
+        "local" => Ok(Box::new(LocalAdapter::with_store_and_runs_dir(
+            store,
+            runs_dir.to_path_buf(),
+        ))),
         other => anyhow::bail!("stop not implemented for vendor: {other}"),
     }
 }

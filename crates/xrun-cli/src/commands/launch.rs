@@ -13,7 +13,8 @@ use xrun_core::{
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_kaggle::KaggleAdapter;
-use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
+use xrun_local::LocalAdapter;
+use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller, PollerConfig};
 use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
@@ -117,6 +118,14 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
                     .with_credentials(kaggle_creds),
             )
         }
+        Vendor::Local => {
+            let adapter_store = Store::open(db_path)
+                .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+            Box::new(LocalAdapter::with_store_and_runs_dir(
+                adapter_store,
+                runs_dir.to_path_buf(),
+            ))
+        }
     };
 
     vendor
@@ -167,6 +176,7 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
         vendor: match manifest.vendor {
             Vendor::Vast => "Vast.ai".into(),
             Vendor::Kaggle => "Kaggle".into(),
+            Vendor::Local => "Local".into(),
         },
         gpu: plan.gpu_query.clone(),
         hourly_usd: plan.estimated_price_max,
@@ -268,6 +278,7 @@ fn do_launch_with_budget(
     let vendor_str = match manifest.vendor {
         Vendor::Vast => "vast",
         Vendor::Kaggle => "kaggle",
+        Vendor::Local => "local",
     };
 
     let mut store = Store::open(db_path)
@@ -405,7 +416,7 @@ fn do_launch_with_budget(
 
     // Foreground poller: blocks until done/failed/cancelled
     let cancel = CancellationToken::new();
-    let poller = Poller::new(
+    let mut poller = Poller::new(
         run_id.clone(),
         store,
         vendor,
@@ -413,6 +424,11 @@ fn do_launch_with_budget(
         runs_dir.to_path_buf(),
     )
     .with_budget(budget_cfg);
+
+    if vendor_str == "local" {
+        poller = poller.with_config(local_poller_config(&run_dir));
+    }
+    let poller = poller;
 
     // Wire MLflow mirroring when manifest declares an experiment and the
     // global config has an MLflow URL. Silent if either is absent.
@@ -525,8 +541,20 @@ fn mlflow_mirror_config(
         vendor: match manifest.vendor {
             Vendor::Vast => "vast",
             Vendor::Kaggle => "kaggle",
+            Vendor::Local => "local",
         }
         .to_string(),
         instance_id: None,
     })
+}
+
+/// Build a `PollerConfig` for a local run — events/metrics/stdout files live
+/// in the per-run directory on the host filesystem instead of `/workspace/run`.
+pub(crate) fn local_poller_config(run_dir: &Path) -> PollerConfig {
+    PollerConfig {
+        events_file: run_dir.join("events.jsonl").display().to_string(),
+        metrics_file: run_dir.join("metrics.jsonl").display().to_string(),
+        stdout_file: run_dir.join("stdout.log").display().to_string(),
+        ..Default::default()
+    }
 }

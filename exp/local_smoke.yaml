@@ -1,0 +1,9 @@
+name: local_smoke
+description: smoke test for vendor=local — runs a tiny xrun_hook training script
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/local_smoke.py

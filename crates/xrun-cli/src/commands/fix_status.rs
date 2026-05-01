@@ -17,6 +17,7 @@ use xrun_core::{
     Credentials, Store, VendorAdapter,
 };
 use xrun_kaggle::KaggleAdapter;
+use xrun_local::LocalAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::FixStatusArgs;
@@ -87,6 +88,13 @@ pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &P
                 let adapter = KaggleAdapter::new()
                     .with_store_path(data_dir.to_path_buf())
                     .with_credentials(creds);
+                adapter.set_run_id(run_id);
+                Box::new(adapter)
+            }
+            "local" => {
+                let adapter_store = Store::open(db_path)?;
+                let adapter =
+                    LocalAdapter::with_store_and_runs_dir(adapter_store, runs_dir.to_path_buf());
                 adapter.set_run_id(run_id);
                 Box::new(adapter)
             }

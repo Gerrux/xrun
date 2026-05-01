@@ -224,8 +224,76 @@ xrun. И всё это видно из TUI, не только из CLI.
 
 ---
 
-## v0.5+ (backlog)
+## v0.5 — Vendor phase 0: `xrun-local`
 
+**Цель**: запускать манифесты прямо на хосте — отладка без оплаты cloud-времени,
+паритет с vast по lifecycle (provision → upload → execute → tail → pull →
+destroy).
+
+### Scope
+
+- [x] Crate `crates/xrun-local/` с `LocalAdapter`.
+- [x] `Vendor::Local` и `LocalSpec { gpu: Option<String> }` в `xrun-core`;
+      валидация запрещает `vast`/`kaggle` блоки в local-манифесте, разрешает
+      нативные пути в `data[].dst` (Windows: `C:\...`).
+- [x] Shell resolver: bash → sh на Unix, pwsh → powershell.exe на Windows
+      (`-NoProfile -NonInteractive -Command`).
+- [x] `provision` (no-op + insert instance row), `execute` (sync setup,
+      detached main subprocess, stdout/stderr → `<run-dir>/stdout.log`,
+      env: `XRUN_RUN_DIR`/`XRUN_RUN_ID`/`CUDA_VISIBLE_DEVICES`, PID в
+      `<run-dir>/run.pid`).
+- [x] `tail` — прямое чтение локального файла с offset, missing-file = empty.
+- [x] `upload` — `fs::copy` для файлов, рекурсивная копия для директорий.
+      `mode: rsync`, `unpack`, `exclude`, `compress` — warn и skip.
+- [x] `pull` — glob по `artifacts.patterns` относительно workdir, fs::copy в
+      `--into` директорию, sha256, `record_artifact` в DB.
+- [x] `destroy` — `kill -TERM` → wait → `kill -KILL` (Unix) / `taskkill /F /T
+      /PID` (Windows). Идемпотентно. Удаляет `run.pid`, помечает `destroyed_at`.
+- [x] `vendor_status` — best-effort `nvidia-smi --query-gpu=name,memory.free`,
+      hostname в `account`. `connected=true`, balance=0.
+- [x] `vendor_instances` — DB-запрос `vendor='local' AND destroyed_at IS NULL`
+      + проверка PID alive через `kill -0` / `tasklist`.
+- [x] PollerConfig override: для local пути `events_file`/`metrics_file`/
+      `stdout_file` берутся в `<runs_dir>/<run-id>/`.
+- [x] Dispatch `Vendor::Local` в `launch.rs`, `poll_daemon.rs`,
+      `fix_status.rs`, `stop.rs`. `gc.rs` отфильтровывает не-vast рекорды
+      (local cleanup делает `xrun stop`).
+- [x] `xrun_hook` использует `XRUN_RUN_DIR` env и пишет events.jsonl там же,
+      где их тейлит поллер (без изменений в самом хуке — он уже
+      кросс-платформенный).
+- [x] Тесты: 29 unit + integration в `xrun-local`, включая e2e (manifest →
+      provision → execute → events.jsonl через `XRUN_RUN_DIR` → tail →
+      destroy убивает PID).
+
+### Acceptance
+
+1. ✓ `cargo test --workspace` зелёный (271/277 тестов; 6 ignored — не
+   связанные с local).
+2. ✓ `cargo clippy --workspace -- -D warnings` чистый.
+3. (нужно проверить на живом манифесте) `xrun launch exp/local-smoke.yaml`
+   запускает `python train.py` локально, события и метрики через
+   `xrun_hook` попадают в SQLite, `xrun pull <id> --ckpt best` копирует
+   артефакт в `--into`.
+4. ✓ `xrun stop <id>` убивает локальный subprocess через PID-файл,
+   идемпотентно.
+
+### Не входит в v0.5
+
+- `vendor: ssh` (свой сервер / NAS / VPS) — попадает в v0.6 как продолжение
+  vendor phase 0 (memory `project_vendor_roadmap.md`).
+- RunPod / Lambda Labs / Lightning AI — в v0.6+ соответственно.
+
+## v0.6+ (backlog)
+
+- `vendor: ssh` — generic SSH-вендор для своего сервера / NAS / VPS;
+  расширение или соседний крейт `xrun-ssh`. Реюз 90% паттерна `xrun-local` +
+  SSH-обёртка вокруг spawn/tail/pull. Почти готовый шаблон в
+  `crates/xrun-vast` (там уже SSH).
+- RunPod (`crates/xrun-runpod/`): REST + SSH, копия `xrun-vast` с другим API.
+- Lambda Labs (`crates/xrun-lambda/`): REST + SSH; стабильные цены, проще
+  для `--max-cost`.
+- Lightning AI (`crates/xrun-lightning/`): poll-стиль (как Kaggle), 80
+  GPU-ч/мес бесплатно — нужна проверка REST.
 - `xrun diff <run-a> <run-b>` — манифесты + метрики side-by-side.
 - Anomaly detection в poller (loss взлетел → notification).
 - Cost forecasting (по средней стоимости похожих ранов).
