@@ -140,8 +140,10 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn status(&self, slug: &str) -> Result<String, KaggleError> {
+        // Kaggle CLI 1.8.x dropped the `-m` (machine-readable JSON) flag from
+        // `kernels status`; only plain text is available now.
         let output = self
-            .cmd(&["kernels", "status", slug, "-m"])
+            .cmd(&["kernels", "status", slug])
             .output()
             .map_err(|e| KaggleError::NotFound(e.to_string()))?;
 
@@ -151,7 +153,9 @@ impl KaggleProcess for KaggleProcessReal {
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        tracing::debug!("kaggle kernels status {slug} raw output: {raw:?}");
+        Ok(raw)
     }
 
     fn output(&self, slug: &str, into_dir: &Path) -> Result<String, KaggleError> {
@@ -448,16 +452,83 @@ fn extract_slug_from_line(line: &str) -> Option<String> {
 }
 
 fn parse_status(stdout: &str) -> Result<KernelStatus, KaggleError> {
-    // kaggle kernels status -m returns JSON
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return Err(KaggleError::ParseError("empty status output".to_string()));
     }
-    serde_json::from_str(trimmed).map_err(|e| {
-        KaggleError::ParseError(format!(
-            "failed to parse kernel status JSON: {e}\nInput: {trimmed}"
-        ))
+
+    // Older Kaggle CLI versions emitted JSON via `-m`. Tolerate that path
+    // first so callers built against an old kaggle-api still work.
+    if trimmed.starts_with('{') {
+        if let Ok(parsed) = serde_json::from_str::<KernelStatus>(trimmed) {
+            return Ok(parsed);
+        }
+    }
+
+    // Kaggle CLI 1.8.x text format. Examples:
+    //   "<slug> has status \"KernelWorkerStatus.RUNNING\""
+    //   "<slug> has status \"KernelWorkerStatus.COMPLETE\""
+    //   "<slug> has status \"KernelWorkerStatus.ERROR\"
+    //    Failure message: \"Your notebook tried to allocate more memory than is available.\""
+    //   "<slug> has status \"KernelWorkerStatus.QUEUED\""
+    //   "<slug> has status \"KernelWorkerStatus.CANCEL_ACKNOWLEDGED\""
+    //
+    // Older versions emitted "Kernel is currently running" or short tokens
+    // like "complete" / "error" — we still tolerate those for forward-compat.
+    let lower = trimmed.to_lowercase();
+    let state = if lower.contains("kernelworkerstatus.running")
+        || lower.contains("currently running")
+        || lower.contains("\"running\"")
+    {
+        KernelState::Running
+    } else if lower.contains("kernelworkerstatus.complete")
+        || lower.contains("\"complete\"")
+        || lower.contains("has completed")
+    {
+        KernelState::Complete
+    } else if lower.contains("kernelworkerstatus.error")
+        || lower.contains("\"error\"")
+        || lower.contains("\"failed\"")
+    {
+        KernelState::Error
+    } else if lower.contains("kernelworkerstatus.queued")
+        || lower.contains("\"queued\"")
+        || lower.contains("is queued")
+    {
+        KernelState::Queued
+    } else if lower.contains("kernelworkerstatus.cancel") || lower.contains("\"cancel") {
+        // Cancelled by user / cancel acknowledged → terminal failure so the
+        // run doesn't sit in `running` forever.
+        KernelState::Error
+    } else {
+        KernelState::Unknown
+    };
+
+    let is_error = matches!(state, KernelState::Error);
+    Ok(KernelStatus {
+        status: state,
+        error_message: if is_error {
+            Some(extract_failure_message(trimmed).unwrap_or_else(|| trimmed.to_string()))
+        } else {
+            None
+        },
+        run_seconds: None,
     })
+}
+
+/// Pull the quoted Failure message: line out of the kaggle status text so the
+/// stored `auto_destroyed_reason` / event message stays short and readable.
+fn extract_failure_message(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Failure message:") {
+            let trimmed = rest.trim().trim_matches('"');
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn parse_kernel_list(stdout: &str) -> Result<Vec<KernelListItem>, KaggleError> {

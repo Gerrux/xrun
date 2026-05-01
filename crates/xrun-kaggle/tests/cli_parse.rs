@@ -179,3 +179,82 @@ fn test_cli_status_parses_error() {
     assert_eq!(status.status, KernelState::Error);
     assert_eq!(status.error_message.as_deref(), Some("GPU OOM"));
 }
+
+// Kaggle CLI 1.8.x dropped JSON-mode for `kernels status` — only plain text
+// with the `KernelWorkerStatus.<STATE>` enum is available now. The cli
+// parser must keep working against both formats.
+
+#[test]
+fn test_cli_status_parses_kernelworkerstatus_complete() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.COMPLETE\"\n".to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli.status("user/slug").expect("should parse text format");
+    assert_eq!(status.status, KernelState::Complete);
+    assert!(status.error_message.is_none());
+}
+
+#[test]
+fn test_cli_status_parses_kernelworkerstatus_running() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.RUNNING\"\n".to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli.status("user/slug").expect("should parse text format");
+    assert_eq!(status.status, KernelState::Running);
+}
+
+#[test]
+fn test_cli_status_parses_kernelworkerstatus_queued() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.QUEUED\"\n".to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli.status("user/slug").expect("should parse text format");
+    assert_eq!(status.status, KernelState::Queued);
+}
+
+#[test]
+fn test_cli_status_parses_kernelworkerstatus_error_with_failure_message() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.ERROR\"\n\
+                      Failure message: \"Your notebook tried to allocate \
+                      more memory than is available.\"\n"
+            .to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli.status("user/slug").expect("should parse text format");
+    assert_eq!(status.status, KernelState::Error);
+    assert_eq!(
+        status.error_message.as_deref(),
+        Some("Your notebook tried to allocate more memory than is available.")
+    );
+}
+
+#[test]
+fn test_cli_status_parses_with_outdated_warning_prefix() {
+    // The kaggle CLI prints a self-update warning above the actual status
+    // when an upgrade is available — must not confuse the parser.
+    let mock = Box::new(MockStatusProcess {
+        status_json: "Warning: Looks like you're using an outdated `kaggle` \
+                      version (installed: x), please consider upgrading...\n\
+                      user/slug has status \"KernelWorkerStatus.COMPLETE\"\n"
+            .to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli
+        .status("user/slug")
+        .expect("should ignore warning prefix");
+    assert_eq!(status.status, KernelState::Complete);
+}
+
+#[test]
+fn test_cli_status_parses_cancel_acknowledged_as_error() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.CANCEL_ACKNOWLEDGED\"".to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli.status("user/slug").expect("should parse text format");
+    assert_eq!(status.status, KernelState::Error);
+}

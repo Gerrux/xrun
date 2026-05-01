@@ -448,6 +448,11 @@ impl VendorAdapter for KaggleAdapter {
                 return None;
             }
         };
+        tracing::debug!(
+            "kaggle poll_completion {slug} → state={:?} msg={:?}",
+            status.status,
+            status.error_message
+        );
 
         let mut last_guard = self
             .last_kernel_state
