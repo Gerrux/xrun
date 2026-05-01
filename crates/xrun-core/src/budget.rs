@@ -43,7 +43,18 @@ pub fn accumulate_cost(inst: &Instance, now: DateTime<Utc>) -> f64 {
 /// idle). Cost cap uses the *projected* cost at `now`, not the stored
 /// `accumulated_cost`, so the daemon catches breaches even between cost-update
 /// ticks.
-pub fn evaluate_caps(inst: &Instance, now: DateTime<Utc>) -> Option<DestroyReason> {
+///
+/// `train_started_at` is the timestamp of the `train_start` event (when
+/// available). It's used as the idle-timer anchor when no metric activity has
+/// been observed yet, so a freshly-provisioned instance that hasn't begun
+/// training isn't subject to the same idle threshold as one whose script has
+/// gone silent for 30 minutes. Pass `None` if no train_start event is in the
+/// store yet — the function then falls back to `created_at`.
+pub fn evaluate_caps(
+    inst: &Instance,
+    train_started_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Option<DestroyReason> {
     if let (Some(created), Some(max_secs)) = (inst.created_at, inst.max_lifetime_secs) {
         if (now - created).num_seconds() >= max_secs {
             return Some(DestroyReason::LifetimeCap);
@@ -59,10 +70,7 @@ pub fn evaluate_caps(inst: &Instance, now: DateTime<Utc>) -> Option<DestroyReaso
 
     if let Some(idle_secs) = inst.idle_timeout_secs {
         if idle_secs > 0 {
-            // Fall back to created_at when we never observed activity — a brand
-            // new instance with no activity is still subject to the idle cap.
-            let anchor = inst.last_active_at.or(inst.created_at);
-            if let Some(anchor) = anchor {
+            if let Some(anchor) = idle_anchor(inst, train_started_at) {
                 if (now - anchor).num_seconds() >= idle_secs {
                     return Some(DestroyReason::IdleTimeout);
                 }
@@ -71,6 +79,23 @@ pub fn evaluate_caps(inst: &Instance, now: DateTime<Utc>) -> Option<DestroyReaso
     }
 
     None
+}
+
+/// Pick the timestamp the idle timer counts from.
+///
+/// Priority: most recent activity → train_start → instance created_at.
+/// `last_active_at` fires once any heartbeat or stdout block lands, so for a
+/// running training script it dominates. While the script is still being set
+/// up (provision/upload/compile), `train_started_at` keeps the timer from
+/// firing on a freshly-created instance that legitimately needs minutes to
+/// boot. The final fallback to `created_at` preserves the original behaviour
+/// when no events have been written yet (defensive — short timeouts on a
+/// brand-new instance are usually a misconfiguration).
+pub fn idle_anchor(
+    inst: &Instance,
+    train_started_at: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    inst.last_active_at.or(train_started_at).or(inst.created_at)
 }
 
 /// Total spend on a UTC date: completed runs (`runs.cost_usd_estimate`) +
@@ -232,7 +257,10 @@ mod tests {
         let mut inst = make_instance();
         inst.max_lifetime_secs = Some(3600);
         let now = inst.created_at.unwrap() + chrono::Duration::seconds(3601);
-        assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::LifetimeCap));
+        assert_eq!(
+            evaluate_caps(&inst, None, now),
+            Some(DestroyReason::LifetimeCap)
+        );
     }
 
     #[test]
@@ -241,7 +269,10 @@ mod tests {
         inst.max_cost_usd = Some(0.5);
         // 31 minutes at $1/hr ≈ $0.516; no stored accumulated_cost yet.
         let now = inst.created_at.unwrap() + chrono::Duration::minutes(31);
-        assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::CostCap));
+        assert_eq!(
+            evaluate_caps(&inst, None, now),
+            Some(DestroyReason::CostCap)
+        );
     }
 
     #[test]
@@ -251,7 +282,10 @@ mod tests {
         inst.accumulated_cost = 5.5;
         // Recent creation, but stored cost already exceeds — still fires.
         let now = inst.created_at.unwrap() + chrono::Duration::minutes(1);
-        assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::CostCap));
+        assert_eq!(
+            evaluate_caps(&inst, None, now),
+            Some(DestroyReason::CostCap)
+        );
     }
 
     #[test]
@@ -260,16 +294,77 @@ mod tests {
         inst.idle_timeout_secs = Some(600);
         inst.last_active_at = Some(inst.created_at.unwrap() + chrono::Duration::minutes(5));
         let now = inst.last_active_at.unwrap() + chrono::Duration::minutes(11);
-        assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::IdleTimeout));
+        assert_eq!(
+            evaluate_caps(&inst, None, now),
+            Some(DestroyReason::IdleTimeout)
+        );
     }
 
     #[test]
     fn cap_idle_falls_back_to_created_at() {
         let mut inst = make_instance();
         inst.idle_timeout_secs = Some(600);
-        // No last_active_at — fall back to created_at.
+        // No last_active_at, no train_start — fall back to created_at.
         let now = inst.created_at.unwrap() + chrono::Duration::minutes(11);
-        assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::IdleTimeout));
+        assert_eq!(
+            evaluate_caps(&inst, None, now),
+            Some(DestroyReason::IdleTimeout)
+        );
+    }
+
+    #[test]
+    fn cap_idle_anchors_on_train_start_when_no_last_active() {
+        let mut inst = make_instance();
+        inst.idle_timeout_secs = Some(600);
+        // train_start fired 5 min after provision, no metric activity since.
+        // The idle clock should count from train_start, not created_at,
+        // so 5 + 9 = 14 min after creation we're still under the 10-min idle
+        // threshold relative to train_start.
+        let train_start = inst.created_at.unwrap() + chrono::Duration::minutes(5);
+        let now = train_start + chrono::Duration::minutes(9);
+        assert_eq!(evaluate_caps(&inst, Some(train_start), now), None);
+    }
+
+    #[test]
+    fn cap_idle_fires_after_train_start_threshold() {
+        let mut inst = make_instance();
+        inst.idle_timeout_secs = Some(600);
+        let train_start = inst.created_at.unwrap() + chrono::Duration::minutes(5);
+        let now = train_start + chrono::Duration::minutes(11);
+        assert_eq!(
+            evaluate_caps(&inst, Some(train_start), now),
+            Some(DestroyReason::IdleTimeout)
+        );
+    }
+
+    #[test]
+    fn cap_idle_last_active_dominates_train_start() {
+        let mut inst = make_instance();
+        inst.idle_timeout_secs = Some(600);
+        let train_start = inst.created_at.unwrap() + chrono::Duration::minutes(5);
+        // Heartbeat 20 min after train_start — last_active_at wins, idle
+        // clock counts from there.
+        inst.last_active_at = Some(train_start + chrono::Duration::minutes(20));
+        let now = inst.last_active_at.unwrap() + chrono::Duration::minutes(9);
+        assert_eq!(evaluate_caps(&inst, Some(train_start), now), None);
+    }
+
+    #[test]
+    fn idle_anchor_priority_chain() {
+        let mut inst = make_instance();
+        let train_start = inst.created_at.unwrap() + chrono::Duration::minutes(5);
+        let last_active = inst.created_at.unwrap() + chrono::Duration::minutes(20);
+
+        // 1. last_active wins when present.
+        inst.last_active_at = Some(last_active);
+        assert_eq!(idle_anchor(&inst, Some(train_start)), Some(last_active));
+
+        // 2. train_start fills in when last_active is absent.
+        inst.last_active_at = None;
+        assert_eq!(idle_anchor(&inst, Some(train_start)), Some(train_start));
+
+        // 3. created_at is the final fallback.
+        assert_eq!(idle_anchor(&inst, None), inst.created_at);
     }
 
     #[test]
@@ -277,14 +372,14 @@ mod tests {
         let mut inst = make_instance();
         inst.idle_timeout_secs = Some(0);
         let now = inst.created_at.unwrap() + chrono::Duration::hours(99);
-        assert_eq!(evaluate_caps(&inst, now), None);
+        assert_eq!(evaluate_caps(&inst, None, now), None);
     }
 
     #[test]
     fn no_caps_no_destroy() {
         let inst = make_instance();
         let now = inst.created_at.unwrap() + chrono::Duration::hours(99);
-        assert_eq!(evaluate_caps(&inst, now), None);
+        assert_eq!(evaluate_caps(&inst, None, now), None);
     }
 
     #[test]
@@ -294,7 +389,10 @@ mod tests {
         inst.max_cost_usd = Some(0.001);
         let now = inst.created_at.unwrap() + chrono::Duration::seconds(120);
         // Both would fire, but lifetime is checked first.
-        assert_eq!(evaluate_caps(&inst, now), Some(DestroyReason::LifetimeCap));
+        assert_eq!(
+            evaluate_caps(&inst, None, now),
+            Some(DestroyReason::LifetimeCap)
+        );
     }
 
     #[test]

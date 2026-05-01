@@ -168,6 +168,25 @@ async fn tar_upload(
         }
     }
 
+    if compress == DataCompress::Gzip {
+        // Single-threaded gzip caps decompression at ~10% of one core, which
+        // turns a 14-minute upload+extract into a 2-hour one on multi-GB
+        // datasets. pigz is a drop-in parallel replacement; the remote tar
+        // command already prefers it when present. Install once per
+        // instance, before the upload starts; idempotent via `command -v`.
+        // Quiet on failure so a base image without apt (e.g. alpine) still
+        // succeeds — gzip just stays single-threaded in that case.
+        let _ = crate::transfer::ssh_exec(
+            host,
+            port,
+            "command -v pigz >/dev/null 2>&1 || \
+             (export DEBIAN_FRONTEND=noninteractive; \
+              apt-get update -qq && apt-get install -y -qq pigz) \
+             >/dev/null 2>&1 || true",
+        )
+        .await;
+    }
+
     let (compress_flag, remote_compress_flag): (Option<&str>, Option<&str>) = match compress {
         DataCompress::None => (None, None),
         // Remote side: prefer pigz (parallel gzip) when installed; fall back

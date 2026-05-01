@@ -138,6 +138,11 @@ pub struct Poller {
     /// Optional MLflow mirror config. Set if both manifest.mlflow.experiment
     /// and GlobalConfig.mlflow.url are present.
     mlflow_config: Option<MlflowMirrorConfig>,
+    /// Cached timestamp of the `train_start` event, set the first tick we
+    /// observe one. Used as the idle-timer anchor when no metric activity has
+    /// fired yet, so a long-but-still-progressing setup phase doesn't trip
+    /// the idle cap. Stays `None` until the run actually starts training.
+    train_started_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Poller {
@@ -159,6 +164,7 @@ impl Poller {
             budget: BudgetConfig::default(),
             daily_alert_date: None,
             mlflow_config: None,
+            train_started_at: None,
         }
     }
 
@@ -211,6 +217,18 @@ impl Poller {
             .unwrap_or(0);
         let mut offset_s: u64 = 0;
 
+        // Hydrate train_started_at from already-stored events so a restarted
+        // daemon (e.g. after `cargo install --force` replaced xrun.exe on
+        // Windows) doesn't lose the idle anchor.
+        if self.train_started_at.is_none() {
+            if let Ok(events) = self.store.list_events(&self.run_id) {
+                self.train_started_at = events
+                    .iter()
+                    .find(|e| e.stage == "train_start")
+                    .map(|e| e.ts);
+            }
+        }
+
         let mut last_progress = Instant::now();
         let mut last_offset_e = offset_e;
 
@@ -260,6 +278,14 @@ impl Poller {
 
                         if ev.status == EventStatus::Fail {
                             failed = true;
+                        }
+
+                        // Anchor for the idle-timer fallback (see
+                        // budget::idle_anchor): once training has started,
+                        // the idle clock counts from there until the first
+                        // heartbeat lands.
+                        if self.train_started_at.is_none() && ev.stage == "train_start" {
+                            self.train_started_at = Some(ev.ts);
                         }
                     }
 
@@ -449,7 +475,9 @@ impl Poller {
                         // the latest accumulated_cost / last_active_at.
                         if let Ok(Some(updated)) = self.store.get_instance(&self.handle.id) {
                             if updated.auto_destroyed_reason.is_none() {
-                                if let Some(reason) = budget::evaluate_caps(&updated, now_wall) {
+                                if let Some(reason) =
+                                    budget::evaluate_caps(&updated, self.train_started_at, now_wall)
+                                {
                                     // Record reason BEFORE destroying so a
                                     // daemon restart doesn't double-destroy.
                                     let _ = self.store.set_auto_destroyed_reason(
