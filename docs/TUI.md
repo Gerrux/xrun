@@ -28,6 +28,13 @@ Python Textual. Single-window app с chord-навигацией, command palette
 
 Dashboard cards сверху: текущий burn `$/hr`, `cap-left $X.XX`, `today $spent`.
 
+**Stale runs** — `running`-записи без событий ≥30 минут получают `⚠ stale` в
+колонке Status и в счётчике дашборда. `S` зовёт `xrun fix-status <id>` (или
+все running-runs если ни один stale не выбран) и обновляет статус в БД из
+ответа вендора. Лечит ситуацию когда поллер умер посередине (Windows: после
+`cargo install --force` исполняемый файл подменён, дочерний процесс
+поллера упал молча).
+
 ### 2. Run detail (Enter из Runs)
 
 Вкладки: **Stages** | **Logs** | **Metrics** | **Artifacts** | **Manifest**
@@ -118,7 +125,8 @@ Picker по `exp/`. Превью манифеста справа. Enter → conf
 | `V` | Vendors |
 | `Enter` | Открыть run detail |
 | `L` | Launch picker |
-| `S` | Stop выбранного run |
+| `s` | Stop выбранного run |
+| `S` | Sync — `xrun fix-status` для stale-runs |
 | `P` | Pull чекпоинт |
 | `R` | Rerun |
 | `/` | Фильтр |
@@ -128,9 +136,14 @@ Picker по `exp/`. Превью манифеста справа. Enter → conf
 | Key | Action |
 |-----|--------|
 | `tab` / `shift-tab` | Переключение вкладок |
+| `s` | Stop run |
+| `S` | Sync — `xrun fix-status <id>` для stale runs |
+| `r` | Rerun |
+| `p` | Pull последний чекпоинт |
+| `a` | Открыть Artifacts |
 | `o` | Открыть MLflow run в браузере |
 | `e` | Открыть manifest в $EDITOR |
-| `P` | Pull артефакты |
+| `1`–`4` | Stages / Logs / Manifest / Metrics |
 
 ## Command palette
 

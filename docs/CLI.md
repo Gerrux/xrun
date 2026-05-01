@@ -73,10 +73,75 @@ stdout/stderr.
 ### `xrun rerun <run-id> [--patch key=val ...]`
 Повтор запуска. Без --patch — точная копия. С --patch — модифицирует args/гиперпараметры (значение лезет внутрь run.args, обозначается через jq-style путь: `--patch run.args.--lr=5e-4`).
 
-### `xrun sweep <manifest> --grid <spec>`
-Генерит N манифестов из decart-произведения и лончит. Spec пример:
+### `xrun sweep <manifest> --grid <spec>...`
+Декартово произведение гиперпараметров. Каждый `--grid` — отдельная ось,
+повторяемый. Материализует N манифестов в `exp/sweep_<stem>_<ts>/` и
+опционально лончит каждый.
+
 ```
---grid run.args.--lr=1e-3,1e-4 run.args.--batch-size=4,8
+--grid PATH=v1,v2,...        ось перебора (повторяемый)
+--out <dir>                  переопределить выходную директорию
+--launch                     сразу запустить каждый
+--detach                     детачить запуски (только с --launch)
+-y / --yes                   skip billable confirm (только с --launch)
+--dry-run                    показать план, ничего не писать
+--json                       машинно-читаемый план
+```
+
+Примеры:
+
+```bash
+# 6 манифестов: 3×2 (lr × batch), просто записать
+xrun sweep exp/base.yaml \
+  --grid run.args.--lr=1e-3,5e-4,1e-4 \
+  --grid run.args.--batch-size=4,8
+
+# Запустить всю сетку детачнутыми ранами
+xrun sweep exp/base.yaml \
+  --grid run.args.--lr=1e-3,5e-4,1e-4 \
+  --launch --detach --yes
+```
+
+Имя каждого варианта — `<base.name>_<leaf>-<value>_...`. Patch-семантика
+такая же как у `xrun launch --override` / `xrun rerun --patch`.
+
+### `xrun fix-status [<run-id>]`
+Сверяет «застрявшие» в `running` записи с реальным статусом у вендора и
+выравнивает БД. Нужно когда поллер умер посередине (Windows: нельзя заменить
+открытый `xrun.exe`, поллер умирает молча).
+
+```
+<run-id>      проверить только этот run; без аргумента — все running
+--dry-run     показать что бы изменилось, без записи
+```
+
+Для Kaggle делает один-shot `kaggle kernels status` и переводит в
+`done`/`failed`. Для vast.ai проверяет, что инстанс ещё «жив» в
+`vastai show instances`; если исчез — помечает run как `failed`.
+
+### `xrun dataset push|status|list`
+Управление Kaggle-датасетами: push (create или новая версия), polling
+готовности, list собственных датасетов.
+
+```bash
+xrun dataset push <local-dir> --slug <owner>/<name> [-m "msg"] [--wait]
+xrun dataset status <owner>/<name> [--json]
+xrun dataset list [--json]
+```
+
+Используется для подготовки данных перед `xrun launch` с
+`vendor: kaggle` + `kaggle.datasets: [<slug>]`. `xrun doctor --manifest`
+проверит что слаг существует и `ready` ещё до запуска.
+
+### `xrun doctor [--manifest <path>...]`
+Проверки окружения. `--manifest` валидирует один или несколько yaml-файлов
+до запуска (схема + Kaggle: kernel slug, креды, существование датасетов).
+Падает с exit 1 если хоть одна проверка-required зафейлилась.
+
+```bash
+xrun doctor                                # быстрый health-check
+xrun doctor --manifest exp/foo.yaml        # pre-flight перед launch
+xrun doctor --manifest exp/a.yaml --manifest exp/b.yaml --json
 ```
 
 ### `xrun tui`
@@ -160,7 +225,10 @@ xrun __poll-daemon <run-id>   # вручную из терминала, foregrou
 | `xrun doctor` | ✅ | Проверяет конфиг, vastai/kaggle в PATH, ssh key, xrun_hook |
 | `xrun config init/show/set` | ✅ | |
 | `xrun tui` | ✅ | Запускает Python Textual TUI (`xrun-tui`) |
-| `xrun sweep` | ⏳ | v0.4 backlog (декартово произведение гиперпараметров) |
+| `xrun sweep` | ✅ | Декартово произведение гиперпараметров; `--launch` опционально |
+| `xrun fix-status [id]` | ✅ | Сверка БД с вендором для зависших running-ранов |
+| `xrun dataset push/status/list` | ✅ | Kaggle datasets через xrun-креды |
+| `xrun doctor --manifest` | ✅ | Pre-flight: схема + Kaggle dataset readiness |
 
 ### TUI
 

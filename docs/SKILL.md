@@ -29,7 +29,9 @@
 - Создавать/редактировать манифесты в `exp/`.
 - Звать `xrun launch / ls / show / metrics / pull / stop / rerun / sweep`.
 - Парсить `xrun ... --json` вывод и принимать решения (например: «возьми чекпоинт ранa с наибольшим val_f1 за последние сутки»).
-- Запускать `xrun doctor` при подозрении на сломанные креды.
+- `xrun doctor --manifest exp/foo.yaml` — pre-flight перед запуском (схема + Kaggle dataset readiness).
+- `xrun fix-status [<id>]` — починить «зависшие» в `running` записи если поллер умер.
+- `xrun dataset push/status/list` — Kaggle datasets без `kaggle` CLI напрямую.
 - Запускать `xrun config show` (без секретов) при необходимости.
 
 ## Что скилл НЕ ДЕЛАЕТ
@@ -76,6 +78,29 @@ Claude:
 2. `xrun metrics <id1> --key val_f1,val_loss --json`
 3. `xrun metrics <id2> --key val_f1,val_loss --json`
 4. Сравнить, дать таблицу + рекомендацию.
+
+### Hyperparameter sweep
+
+User: «Прогони arborust по lr 1e-3, 5e-4, 1e-4 и batch 4, 8»
+
+Claude:
+1. `xrun sweep exp/arborust_v8.yaml \
+     --grid run.args.--lr=1e-3,5e-4,1e-4 \
+     --grid run.args.--batch-size=4,8 \
+     --launch --detach --yes --json`
+2. Запомнить путь к материализованным манифестам (под `exp/sweep_*/`) и
+   `run id` каждого детачнутого ранa из stdout.
+3. Доложить таблицу: 6 ранов запущено, ID и параметры.
+
+### Зависший run
+
+User: «Уже час `xrun ls` показывает arborust running, а в Kaggle UI он
+давно done».
+
+Claude:
+1. `xrun fix-status <id>` (или просто `xrun fix-status` для всех).
+2. Сообщить новый статус из вывода.
+3. Если стал `done` — `xrun pull <id> --ckpt best`.
 ````
 
 ## Anti-pattern в SKILL.md

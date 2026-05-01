@@ -185,9 +185,47 @@ billable-confirm перед launch, видимость трат.
 
 ---
 
-## v0.4+ (backlog)
+## v0.4 — Recovery, sweeps, dataset workflow ✅ done
 
-- `xrun sweep <manifest> --grid lr=1e-3,1e-4 batch=4,8` — декартово произведение; генерит N материализованных манифестов.
+**Цель**: убрать ручную возню при падении поллера на Windows, дать
+hyperparameter sweep одной командой, привести Kaggle dataset workflow внутрь
+xrun. И всё это видно из TUI, не только из CLI.
+
+### Scope
+
+- [x] `xrun fix-status [<id>] [--dry-run]` — сверяет stale-running записи с
+      вендором (Kaggle: `poll_completion`, vast: `vendor_instances`) и
+      выравнивает store. Закрывает Issue 2 #13b.
+- [x] `xrun doctor --manifest <path>...` — pre-flight: парсинг + схема +
+      Kaggle (kernel slug, dataset readiness, креды). Закрывает Issue 2 #12.
+- [x] `xrun dataset push|status|list` — обёртка над `kaggle datasets`,
+      использует xrun-креды. Закрывает Issue 2 #7.
+- [x] `xrun sweep <manifest> --grid PATH=v1,v2 [--launch] [--detach]` —
+      декартово произведение, материализация N манифестов в
+      `exp/sweep_<stem>_<ts>/`, опциональный батч-лонч.
+- [x] xrun_hook wheel embed в `xrun-kaggle/build.rs`: best-effort find →
+      опциональный auto-build (`XRUN_KAGGLE_AUTO_BUILD_WHEEL=1`) → strict
+      mode (`XRUN_KAGGLE_EMBED_WHEEL=strict`). Закрывает Issue 2 #3b.
+- [x] TUI surfacing stale runs: `last_event_ts` через subquery в
+      `runs()`/`run()`, ⚠ маркер в Runs/Dashboard, `S` биндинг на
+      `Runs`/`RunDetail` дёргает `xrun fix-status`.
+
+### Acceptance
+
+1. ✓ `cargo test --workspace` зелёный (включая 7 новых sweep-тестов).
+2. ✓ `cargo clippy --workspace -- -D warnings` чистый.
+3. ✓ `xrun sweep exp/base.yaml --grid lr=1e-3,5e-4 --grid batch=4,8 --dry-run`
+   печатает 4 комбинации, JSON через `--json`.
+4. ✓ После убитого поллера: `xrun fix-status` или `S` в TUI приводит run в
+   терминальный статус без ручного редактирования SQLite.
+5. ✓ Wheel автоматически вшивается, когда лежит под
+   `python/xrun_hook/dist/`; компиляция без wheel'а не падает, только
+   warn'ит и Kaggle-runs работают без live-метрик.
+
+---
+
+## v0.5+ (backlog)
+
 - `xrun diff <run-a> <run-b>` — манифесты + метрики side-by-side.
 - Anomaly detection в poller (loss взлетел → notification).
 - Cost forecasting (по средней стоимости похожих ранов).
@@ -195,6 +233,8 @@ billable-confirm перед launch, видимость трат.
 - Web UI рядом с TUI (тот же state, для шаринга по сети).
 - Kaggle live-tail workaround через `[xrun-event]` stdout-маркер (best-effort).
 - Скилл-плагин в формате Claude Code marketplace.
+- Sweep aggregations: общий `sweep_id` в DB, агрегированные метрики
+  (best run, parallel coordinates) в Compare-экране.
 
 ## Что НЕ в roadmap
 
