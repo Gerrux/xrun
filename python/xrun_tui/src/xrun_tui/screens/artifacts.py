@@ -7,8 +7,9 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
@@ -34,7 +35,7 @@ class ArtifactsScreen(Screen):
         self._entries: list[dict] = []
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("artifacts")
         yield Static(
             f"[bold #c0caf5]Artifacts[/]  [#565f89]run:[/] [#7aa2f7]{self._run_name}[/]",
             classes="screen-title",

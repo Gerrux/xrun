@@ -6,8 +6,9 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui.utils import (
     cost,
@@ -57,7 +58,7 @@ class WatchScreen(Screen):
         self._run_ids: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("watch")
         yield Static("Watch — active runs", classes="screen-title")
         yield Static("", id="watch-summary", classes="stats-bar")
         yield DataTable(id="watch-table", cursor_type="row", zebra_stripes=True)

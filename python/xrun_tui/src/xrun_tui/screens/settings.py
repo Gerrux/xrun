@@ -8,8 +8,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
+from textual.widgets import Button, Footer, Input, Label, Select, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui import config
 
@@ -47,7 +48,7 @@ class SettingsScreen(Screen):
     def compose(self) -> ComposeResult:
         settings = config.get_settings()
         current_theme = settings.get("theme", "tokyo-night")
-        yield Header(show_clock=True)
+        yield TitleBar("settings")
         yield Static("Settings", classes="screen-title")
         with VerticalScroll(id="settings-scroll"):
             with Vertical(id="settings-form"):

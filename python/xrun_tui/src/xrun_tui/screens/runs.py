@@ -10,9 +10,10 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static, Tab, Tabs
+from textual.widgets import DataTable, Footer, Static, Tab, Tabs
 from xrun_tui.widgets.fuzzy_filter import FilterBar
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui.utils import (
     cost,
@@ -95,7 +96,7 @@ class RunsScreen(Screen):
         self._selected_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("runs")
         yield Tabs(
             Tab("All",    id="tab-all"),
             Tab("Active", id="tab-active"),

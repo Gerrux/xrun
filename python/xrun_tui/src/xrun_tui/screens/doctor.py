@@ -7,8 +7,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 
 class DoctorScreen(Screen):
@@ -21,7 +22,7 @@ class DoctorScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("doctor")
         yield Static("System health", classes="screen-title")
         yield Static("", id="doctor-summary", classes="stats-bar")
         with Vertical(id="doctor-body"):

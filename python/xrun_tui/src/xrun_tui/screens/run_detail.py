@@ -12,7 +12,6 @@ from textual.widgets import (
     Button,
     DataTable,
     Footer,
-    Header,
     Input,
     RichLog,
     Rule,
@@ -21,6 +20,7 @@ from textual.widgets import (
     TabPane,
 )
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui.utils import (
     EVENT_STATUS_STYLE,
@@ -62,7 +62,7 @@ class RunDetailScreen(Screen):
         self._search_active = False
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("run detail")
         with Vertical(id="detail-header"):
             with Horizontal(id="detail-title-row"):
                 yield Static("", id="run-name",  classes="detail-name")

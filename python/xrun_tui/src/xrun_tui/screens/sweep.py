@@ -8,8 +8,9 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui.utils import (
     cost,
@@ -54,7 +55,7 @@ class SweepScreen(Screen):
         self._run_ids: list[str | None] = []
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("sweep")
         yield Static("Sweep results", classes="screen-title")
         yield Static("", id="sweep-summary", classes="stats-bar")
         yield DataTable(id="sweep-table", cursor_type="row", zebra_stripes=True)

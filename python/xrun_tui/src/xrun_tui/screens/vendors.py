@@ -12,8 +12,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, Label, Rule, Static
+from textual.widgets import Button, Footer, Input, Label, Rule, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui import config
 
@@ -59,7 +60,7 @@ class VendorsScreen(Screen):
         self._creds  = config.read_credentials()
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("vendors")
         yield Static("Vendors & Credentials", classes="screen-title")
         with Vertical(id="vendor-overview"):
             for i, (vid, vname, vdesc) in enumerate(_VENDORS):
@@ -365,7 +366,7 @@ class VendorEditScreen(Screen):
 
     def compose(self) -> ComposeResult:
         v = self._creds.get(self._vid, {})
-        yield Header(show_clock=True)
+        yield TitleBar("edit credentials")
         yield Static(f"Edit credentials — {self._vname}", classes="screen-title")
         with Vertical(id="vendor-form"):
             if self._vid == "kaggle":

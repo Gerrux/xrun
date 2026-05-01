@@ -11,12 +11,12 @@ from textual.screen import Screen
 from textual.widgets import (
     DataTable,
     Footer,
-    Header,
     Static,
     TabbedContent,
     TabPane,
 )
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui import config
 from xrun_tui.utils import rel_time
@@ -40,7 +40,7 @@ class InstancesScreen(Screen):
         self._remote_instances: list[dict] = []
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("instances")
         yield Static("Instances", classes="screen-title", id="inst-title")
         yield Static("", id="inst-summary", classes="stats-bar")
         with TabbedContent(id="inst-tabs"):

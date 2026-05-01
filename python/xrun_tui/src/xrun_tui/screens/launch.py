@@ -13,13 +13,13 @@ from textual.widgets import (
     Button,
     DataTable,
     Footer,
-    Header,
     Input,
     Label,
     RichLog,
     Static,
 )
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 
 class LaunchScreen(Screen):
@@ -42,7 +42,7 @@ class LaunchScreen(Screen):
         self._selected: Path | None = None
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("launch")
         yield Static("Launch a manifest", classes="screen-title")
         yield Static("", id="launch-summary", classes="stats-bar")
         with Horizontal(id="launch-cols"):

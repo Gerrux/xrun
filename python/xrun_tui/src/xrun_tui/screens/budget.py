@@ -8,8 +8,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
+from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui.utils import (
     cost,
@@ -65,7 +66,7 @@ class BudgetScreen(Screen):
         self._run_ids: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TitleBar("budget")
         yield Static("Budget & Spend", classes="screen-title")
         with Vertical(id="budget-root"):
             with Grid(id="budget-kpi"):
