@@ -281,8 +281,8 @@ impl MlflowClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| MlflowError::Parse("missing artifact_uri in runs/get".into()))?;
         let stripped = uri
-            .splitn(2, ':')
-            .nth(1)
+            .split_once(':')
+            .map(|x| x.1)
             .unwrap_or(uri)
             .trim_start_matches('/');
         Ok(stripped.to_string())
