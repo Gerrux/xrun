@@ -21,7 +21,7 @@ use crate::shell::ResolvedShell;
 pub fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        Command::new("kill")
+        let exists = Command::new("kill")
             .arg("-0")
             .arg(pid.to_string())
             .stdin(Stdio::null())
@@ -29,7 +29,28 @@ pub fn process_alive(pid: u32) -> bool {
             .stderr(Stdio::null())
             .status()
             .map(|s| s.success())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if !exists {
+            return false;
+        }
+        // `kill -0` succeeds for zombie PIDs — the kernel keeps the entry
+        // until the parent reaps. spawn_main returns the PID and drops the
+        // `Child`, so nothing ever wait()s our subprocess; without this
+        // check, a SIGKILL'd child stays "alive" until the test process exits.
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+                for line in status.lines() {
+                    if let Some(rest) = line.strip_prefix("State:") {
+                        let st = rest.trim();
+                        if st.starts_with('Z') || st.starts_with('X') {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
     }
     #[cfg(windows)]
     {
