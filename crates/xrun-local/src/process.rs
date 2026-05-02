@@ -50,6 +50,22 @@ pub fn process_alive(pid: u32) -> bool {
                 }
             }
         }
+        // macOS has no /proc — fall back to `ps -o stat=` which prints the
+        // single-letter state column ('Z' for zombie).
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(out) = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+            {
+                if out.status.success() {
+                    let st = String::from_utf8_lossy(&out.stdout);
+                    if st.trim().starts_with('Z') {
+                        return false;
+                    }
+                }
+            }
+        }
         true
     }
     #[cfg(windows)]
