@@ -88,10 +88,7 @@ impl VendorAdapter for MockVendor {
     }
 
     fn process_alive(&self, _: &InstanceHandle) -> Option<bool> {
-        self.alive_queue
-            .borrow_mut()
-            .pop_front()
-            .unwrap_or(None)
+        self.alive_queue.borrow_mut().pop_front().unwrap_or(None)
     }
 }
 

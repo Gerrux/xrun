@@ -24,8 +24,8 @@ use crate::http::{self, CancelOutcome, KaggleApiClient};
 use crate::ingest::ingest_post_run;
 use crate::kernel_metadata::KernelMetadata;
 use crate::log_stream::{
-    parse_chunk_seq, slice_from_offset, ARTIFACT_PREFIX, LOG_STREAM_EXPERIMENT,
-    LOG_STREAM_FILE, TAG_RUN_ID,
+    parse_chunk_seq, slice_from_offset, ARTIFACT_PREFIX, LOG_STREAM_EXPERIMENT, LOG_STREAM_FILE,
+    TAG_RUN_ID,
 };
 
 /// Wrapper script injected as `main.py` for script-mode kernels.
@@ -145,10 +145,7 @@ impl KaggleAdapter {
         };
 
         let mut lines: Vec<String> = vec![
-            format!(
-                "os.environ['MLFLOW_TRACKING_URI'] = {}",
-                py_str(&cfg.url)
-            ),
+            format!("os.environ['MLFLOW_TRACKING_URI'] = {}", py_str(&cfg.url)),
             format!(
                 "os.environ['XRUN_RUN_ID'] = {}",
                 py_str(&run_id.to_string())
@@ -537,15 +534,14 @@ impl VendorAdapter for KaggleAdapter {
                 None => return Ok(Vec::new()),
             };
 
-        let artifacts = match block_async(
-            client.list_artifacts(&artifact_path, Some(ARTIFACT_PREFIX)),
-        ) {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::debug!("kaggle tail: artifacts/list failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
+        let artifacts =
+            match block_async(client.list_artifacts(&artifact_path, Some(ARTIFACT_PREFIX))) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::debug!("kaggle tail: artifacts/list failed: {e}");
+                    return Ok(Vec::new());
+                }
+            };
 
         // Sort by chunk seq so reassembly order matches the in-kernel write
         // order — even when the MLflow listing returns them out of order.
@@ -949,8 +945,7 @@ fn build_script_main(
 /// pulling the `base64` crate in just for this — Python's `base64.b64decode`
 /// accepts the same alphabet on the receive side.
 fn base64_encode(bytes: &[u8]) -> String {
-    const ALPH: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     let mut i = 0;
     while i + 3 <= bytes.len() {

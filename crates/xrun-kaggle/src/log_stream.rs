@@ -167,8 +167,7 @@ mod tests {
     #[test]
     fn slice_propagates_download_error() {
         let chunks = fake_chunks(&[5]);
-        let result: Result<Vec<u8>, &'static str> =
-            slice_from_offset(&chunks, 0, |_| Err("boom"));
+        let result: Result<Vec<u8>, &'static str> = slice_from_offset(&chunks, 0, |_| Err("boom"));
         assert_eq!(result, Err("boom"));
     }
 }

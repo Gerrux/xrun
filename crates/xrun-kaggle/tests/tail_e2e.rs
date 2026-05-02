@@ -67,11 +67,7 @@ impl KaggleProcess for PanicKaggleProcess {
     fn datasets_create(&self, _: &std::path::Path) -> Result<String, KaggleError> {
         panic!("tail() must not call kaggle datasets_create")
     }
-    fn datasets_version(
-        &self,
-        _: &std::path::Path,
-        _: &str,
-    ) -> Result<String, KaggleError> {
+    fn datasets_version(&self, _: &std::path::Path, _: &str) -> Result<String, KaggleError> {
         panic!("tail() must not call kaggle datasets_version")
     }
     fn datasets_list_mine(&self) -> Result<String, KaggleError> {
@@ -183,12 +179,16 @@ async fn tail_concatenates_chunks_from_offset_zero() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello\n".to_vec()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000002.txt"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000002.txt",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"world".to_vec()))
         .mount(&server)
         .await;
@@ -222,7 +222,9 @@ async fn tail_skips_chunks_before_offset() {
     let downloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let dl_clone = downloaded.clone();
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt",
+        ))
         .respond_with(move |_: &wiremock::Request| {
             dl_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             ResponseTemplate::new(200).set_body_bytes(b"hello\n".to_vec())
@@ -231,7 +233,9 @@ async fn tail_skips_chunks_before_offset() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000002.txt"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000002.txt",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"world".to_vec()))
         .mount(&server)
         .await;
@@ -288,7 +292,9 @@ async fn tail_handles_offset_inside_chunk() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt"))
+        .and(path(
+            "/api/2.0/mlflow-artifacts/artifacts/1/mlflow-run-7/artifacts/logs/log_000001.txt",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"0123456789".to_vec()))
         .mount(&server)
         .await;
