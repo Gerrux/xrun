@@ -542,7 +542,17 @@ pub(crate) async fn upload_sources(
         verify_upload(h, &source.dst).await?;
 
         for cmd in unpack_commands(source)? {
-            crate::cli::execute(instance_id, &cmd).await?;
+            let host = h.ssh_host.as_deref().ok_or_else(|| {
+                VastError::ParseError(format!(
+                    "instance {instance_id} has no ssh_host for unpack"
+                ))
+            })?;
+            let port = h.ssh_port.ok_or_else(|| {
+                VastError::ParseError(format!(
+                    "instance {instance_id} has no ssh_port for unpack"
+                ))
+            })?;
+            crate::transfer::ssh_exec(host, port, &cmd).await?;
         }
     }
     Ok(())

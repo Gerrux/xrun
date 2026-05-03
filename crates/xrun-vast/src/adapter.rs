@@ -375,10 +375,14 @@ impl VastAdapter {
         file: &str,
         offset: u64,
     ) -> Result<Vec<u8>, VastError> {
-        let instance_id: u64 =
-            h.id.parse()
-                .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
-        tail::tail_file(instance_id, file, offset).await
+        let host = h
+            .ssh_host
+            .as_deref()
+            .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_host", h.id)))?;
+        let port = h
+            .ssh_port
+            .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_port", h.id)))?;
+        tail::tail_file(host, port, file, offset).await
     }
 
     async fn pull_impl(
@@ -390,8 +394,15 @@ impl VastAdapter {
         let instance_id: u64 =
             h.id.parse()
                 .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
+        let host = h
+            .ssh_host
+            .as_deref()
+            .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_host", h.id)))?;
+        let port = h
+            .ssh_port
+            .ok_or_else(|| VastError::ParseError(format!("instance {} has no ssh_port", h.id)))?;
 
-        let pulled = pull::pull_files(instance_id, remote, into).await?;
+        let pulled = pull::pull_files(host, port, instance_id, remote, into).await?;
 
         {
             let run_id_opt = self.run_id.borrow().clone();

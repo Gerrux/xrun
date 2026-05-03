@@ -1,9 +1,6 @@
 #![deny(unsafe_code)]
 
-use crate::{
-    cli::{self, InstanceId},
-    error::VastError,
-};
+use crate::{error::VastError, transfer::ssh_exec};
 
 /// Decision made by comparing the remote file size to the current read offset.
 pub enum TailDecision {
@@ -46,13 +43,14 @@ fn shell_quote(s: &str) -> String {
 /// Returns an empty vec if the file hasn't grown. Returns `FileTruncated` when
 /// the file shrank (pre-emption restart). Otherwise returns the new bytes.
 pub async fn tail_file(
-    instance_id: InstanceId,
+    host: &str,
+    port: u16,
     file: &str,
     offset: u64,
 ) -> Result<Vec<u8>, VastError> {
     let quoted = shell_quote(file);
     let wc_cmd = format!("wc -c < {}", quoted);
-    let wc_out = cli::execute(instance_id, &wc_cmd).await?;
+    let wc_out = ssh_exec(host, port, &wc_cmd).await?;
     let size = parse_wc_output(&wc_out)
         .ok_or_else(|| VastError::ParseError(format!("unexpected wc output: {:?}", wc_out)))?;
 
@@ -65,7 +63,7 @@ pub async fn tail_file(
         }),
         TailDecision::Read { start_byte } => {
             let tail_cmd = format!("tail -c +{} {}", start_byte, quoted);
-            cli::execute(instance_id, &tail_cmd).await
+            ssh_exec(host, port, &tail_cmd).await
         }
     }
 }

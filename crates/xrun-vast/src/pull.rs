@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    cli::{self, CopyEndpoint, InstanceId},
+    cli::{CopyEndpoint, InstanceId},
     error::VastError,
+    transfer::ssh_exec,
 };
 
 /// Classify an artifact kind from the file extension.
@@ -69,6 +70,8 @@ pub struct PulledFile {
 /// When `remote_glob` contains wildcards, `ls -1 <glob>` is run first to
 /// enumerate matching paths, then each file is copied individually.
 pub async fn pull_files(
+    host: &str,
+    port: u16,
     instance_id: InstanceId,
     remote_glob: &str,
     into: &Path,
@@ -77,7 +80,7 @@ pub async fn pull_files(
 
     let remote_paths: Vec<String> = if has_wildcard(remote_glob) {
         let ls_cmd = format!("ls -1 {}", remote_glob);
-        let ls_out = cli::execute(instance_id, &ls_cmd).await?;
+        let ls_out = ssh_exec(host, port, &ls_cmd).await?;
         parse_ls_output(&ls_out)
     } else {
         vec![remote_glob.to_string()]
@@ -91,7 +94,7 @@ pub async fn pull_files(
             .unwrap_or_else(|| remote_path.clone());
         let local_path = into.join(&filename);
 
-        cli::copy(
+        crate::cli::copy(
             &CopyEndpoint::Remote {
                 instance: instance_id,
                 path: remote_path.clone(),
