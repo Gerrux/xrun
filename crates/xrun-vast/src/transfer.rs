@@ -173,6 +173,47 @@ pub async fn ssh_exec(host: &str, port: u16, cmd: &str) -> Result<Vec<u8>, VastE
     Ok(output.stdout)
 }
 
+/// Copy a single file from a remote vast.ai instance to a local path via scp.
+/// Replaces `vastai copy <id>:<remote> <local>` with a direct call to scp,
+/// dropping the dependency on the vastai Python CLI.
+pub async fn scp_pull(
+    host: &str,
+    port: u16,
+    remote_path: &str,
+    local_path: &std::path::Path,
+) -> Result<(), VastError> {
+    let port_str = port.to_string();
+    let remote_arg = format!("root@{}:{}", host, remote_path);
+    let local_arg = local_path.to_string_lossy().to_string();
+    let mut scp = tokio::process::Command::new("scp");
+    scp.args([
+        "-P",
+        &port_str,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=30",
+        &remote_arg,
+        &local_arg,
+    ]);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        scp.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = scp.output().await.map_err(VastError::Io)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(VastError::CliFailure {
+            exit_code: output.status.code().unwrap_or(-1),
+            stderr: format!("scp {} → {}: {}", remote_arg, local_arg, stderr),
+        });
+    }
+    Ok(())
+}
+
 fn ssh_cmd(conn: &SshConn) -> std::process::Command {
     let mut cmd = std::process::Command::new("ssh");
     cmd.args([

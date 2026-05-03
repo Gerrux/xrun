@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    cli::{CopyEndpoint, InstanceId},
+    cli::InstanceId,
     error::VastError,
-    transfer::ssh_exec,
+    transfer::{scp_pull, ssh_exec},
 };
 
 /// Classify an artifact kind from the file extension.
@@ -72,7 +72,7 @@ pub struct PulledFile {
 pub async fn pull_files(
     host: &str,
     port: u16,
-    instance_id: InstanceId,
+    _instance_id: InstanceId,
     remote_glob: &str,
     into: &Path,
 ) -> Result<Vec<PulledFile>, VastError> {
@@ -94,14 +94,7 @@ pub async fn pull_files(
             .unwrap_or_else(|| remote_path.clone());
         let local_path = into.join(&filename);
 
-        crate::cli::copy(
-            &CopyEndpoint::Remote {
-                instance: instance_id,
-                path: remote_path.clone(),
-            },
-            &CopyEndpoint::Local(local_path.clone()),
-        )
-        .await?;
+        scp_pull(host, port, &remote_path, &local_path).await?;
 
         let size_bytes = local_path.metadata().map(|m| m.len() as i64).ok();
         let sha256 = sha256_of_file(&local_path).ok();
