@@ -226,10 +226,7 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     // Only relevant when training runs in-process on this host (vendor: local).
     // For vast/ssh/kaggle the hook is bootstrapped on the remote instance, so
     // a local import-check is noise. `--all` still surfaces it on demand.
-    let hook_relevant = active_vendors
-        .iter()
-        .any(|v| matches!(v, Vendor::Local))
-        || args.all;
+    let hook_relevant = active_vendors.iter().any(|v| matches!(v, Vendor::Local)) || args.all;
     if hook_relevant {
         let hook_ok = check_python_hook();
         checks.push(Check {
