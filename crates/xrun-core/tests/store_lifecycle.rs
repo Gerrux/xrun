@@ -230,8 +230,10 @@ fn migration_004_applies_on_top_of_003_without_data_loss() {
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(include_str!("../src/store/migrations/001_initial.sql"))
             .unwrap();
-        conn.execute_batch(include_str!("../src/store/migrations/002_cost_estimate.sql"))
-            .unwrap();
+        conn.execute_batch(include_str!(
+            "../src/store/migrations/002_cost_estimate.sql"
+        ))
+        .unwrap();
         conn.execute_batch(include_str!("../src/store/migrations/003_budget.sql"))
             .unwrap();
         conn.execute(
@@ -250,9 +252,7 @@ fn migration_004_applies_on_top_of_003_without_data_loss() {
     assert_eq!(runs[0].poller_pid, None);
 
     // The column is writable post-migration.
-    store
-        .update_run_poller_pid(&runs[0].id, Some(42))
-        .unwrap();
+    store.update_run_poller_pid(&runs[0].id, Some(42)).unwrap();
     let r = store.get_run(&runs[0].id).unwrap().unwrap();
     assert_eq!(r.poller_pid, Some(42));
 }
