@@ -1,0 +1,22 @@
+# Big-metrics stress test — для прокликивания нового MetricsView.
+#
+# Что покрывает:
+#   - master-scroll: 20+ ключей, не помещаются в высоту экрана → проверка scroll
+#   - filter (/): попробуйте `loss`, `iou`, `f1`, `final`
+#   - group toggle (g): группы loss/val_loss/test_loss, acc/val_acc/test_acc,
+#                       f1/val_f1, iou_* (одиночки склеит по стему)
+#   - log-y (L): loss идёт от 5.0 до 0.01 — линейная шкала плющится у нуля,
+#                на лог-Y видно начало
+#   - smooth (M): grad_norm и loss заметно дрожат, EMA сглаживает
+#   - lower-better detection: loss/mae/rmse — Δ зелёный, acc/f1/iou — Δ зелёный
+#                              в свою сторону
+name: test_metrics_big
+description: 20 keys × 150 steps — stress test for MetricsView
+tags: [test, metrics, stress]
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/tests/local_metrics_big.py

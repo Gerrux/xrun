@@ -192,8 +192,10 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
     // Sanity: kaggle_username and kaggle_key are a pair (legacy auth).
     match (&kaggle_username, &kaggle_key) {
         (Some(_), None) => bail!("--kaggle-username requires --kaggle-key"),
-        (None, Some(_)) => bail!("--kaggle-key (legacy) requires --kaggle-username; \
-                                 use --kaggle-token for token auth"),
+        (None, Some(_)) => bail!(
+            "--kaggle-key (legacy) requires --kaggle-username; \
+                                 use --kaggle-token for token auth"
+        ),
         _ => {}
     }
 

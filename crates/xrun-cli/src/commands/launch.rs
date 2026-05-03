@@ -311,12 +311,7 @@ fn do_launch_with_budget(
         .unwrap_or_else(|_| args.manifest.clone())
         .display()
         .to_string();
-    let vendor_str = match manifest.vendor {
-        Vendor::Vast => "vast",
-        Vendor::Kaggle => "kaggle",
-        Vendor::Local => "local",
-        Vendor::Ssh => "ssh",
-    };
+    let vendor_str = manifest.vendor.as_str();
 
     let mut store = Store::open(db_path)
         .with_context(|| format!("failed to open store at {}", db_path.display()))?;
@@ -581,13 +576,7 @@ fn mlflow_mirror_config(
             .and_then(|m| m.log_args_as_params)
             .unwrap_or(true),
         run_name: Some(run_name.to_string()),
-        vendor: match manifest.vendor {
-            Vendor::Vast => "vast",
-            Vendor::Kaggle => "kaggle",
-            Vendor::Local => "local",
-            Vendor::Ssh => "ssh",
-        }
-        .to_string(),
+        vendor: manifest.vendor.as_str().to_string(),
         instance_id: None,
     })
 }

@@ -85,6 +85,57 @@ fn credentials_is_empty_detects_unset() {
     assert!(!creds.is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn credentials_file_is_owner_readable_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let mut creds = Credentials::default();
+    creds.vast.api_key = Some("test-key-abc".to_string());
+    creds.save(dir.path()).unwrap();
+
+    let meta = std::fs::metadata(dir.path().join("credentials.toml")).unwrap();
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "credentials.toml must be 0600, got {:o}", mode);
+}
+
+#[cfg(windows)]
+#[test]
+fn credentials_file_dacl_is_locked_down_on_windows() {
+    // Verifies that `Credentials::save` invokes icacls and the resulting
+    // DACL has no inherited ACEs (inheritance was stripped) and grants
+    // access only to the current user. We shell out to `icacls` to read
+    // back the ACL because parsing raw security descriptors would require
+    // unsafe Win32 calls, which the crate forbids.
+    let dir = tempdir().unwrap();
+    let mut creds = Credentials::default();
+    creds.vast.api_key = Some("test-key-abc".to_string());
+    creds.save(dir.path()).unwrap();
+
+    let path = dir.path().join("credentials.toml");
+    let output = std::process::Command::new("icacls")
+        .arg(&path)
+        .output()
+        .expect("icacls must be available on Windows");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        !stdout.contains("BUILTIN\\Users")
+            && !stdout.contains("Everyone")
+            && !stdout.contains("Authenticated Users"),
+        "credentials.toml DACL must not grant access to broad groups, got:\n{}",
+        stdout
+    );
+
+    let username = std::env::var("USERNAME").unwrap_or_default();
+    assert!(
+        stdout.contains(&username),
+        "credentials.toml DACL must grant access to current user '{}', got:\n{}",
+        username,
+        stdout
+    );
+}
+
 #[test]
 fn global_config_loads_with_defaults_when_missing() {
     let dir = tempdir().unwrap();

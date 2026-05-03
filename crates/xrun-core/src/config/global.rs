@@ -2,6 +2,7 @@
 
 use crate::manifest::types::Vendor;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
@@ -119,6 +120,30 @@ impl Default for MetricsConfig {
     }
 }
 
+/// Per-vendor adapter defaults. The TOML key under `[vendors.<name>]` matches
+/// `Vendor::as_str()`. Fields here are *defaults* — manifests override
+/// per-experiment. Adding a field requires no per-vendor branching: each
+/// adapter reads the values it understands and ignores the rest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct VendorDefaults {
+    /// Default GPU class string (e.g. `RTX_4090`, `A100_PCIE_40`). Adapter-
+    /// specific syntax — not validated here, only forwarded.
+    pub default_gpu: Option<String>,
+    /// Default container image (Vast/RunPod-style adapters).
+    pub default_image: Option<String>,
+    /// Default region / datacenter / cloud zone hint.
+    pub default_region: Option<String>,
+    /// Default disk size in GB.
+    pub default_disk_gb: Option<u32>,
+    /// Hard cap on hourly price the adapter will accept when picking offers.
+    pub max_per_hour_usd: Option<f64>,
+    /// Free-form adapter-specific knobs that don't deserve their own typed
+    /// field. Anything in here is passed through verbatim to the adapter.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct GlobalConfig {
@@ -130,4 +155,9 @@ pub struct GlobalConfig {
     pub budget: BudgetConfig,
     pub ui: UiConfig,
     pub metrics: MetricsConfig,
+    /// Per-vendor adapter defaults keyed by `Vendor::as_str()`. Empty entries
+    /// behave the same as a missing entry — adapters fall back to their own
+    /// hard-coded defaults.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vendors: HashMap<String, VendorDefaults>,
 }

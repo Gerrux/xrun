@@ -1,0 +1,22 @@
+# Покрывает: парсинг vast-блока, поиск офферов, оценку стоимости.
+# Использовать ТОЛЬКО с --dry-run, иначе создаст реальный платный инстанс.
+#
+#   xrun launch exp/tests/vast_dryrun.yaml --dry-run
+#
+# Должен напечатать: подходящие офферы, max_per_hour, расчёт budget caps.
+name: test_vast_dryrun
+description: dry-run only — verifies offer search and cost plan
+tags: [test, vast, dry-run]
+vendor: vast
+
+vast:
+  image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
+  gpu: { type: "RTX 4090", count: 1, vram_min_gb: 24 }
+  disk_gb: 40
+  price:
+    max_per_hour: 0.45
+    bid: false
+  ssh: true
+
+run:
+  cmd: python -c "import xrun_hook; xrun_hook.metric('ok', 1.0, step=0); xrun_hook.done()"

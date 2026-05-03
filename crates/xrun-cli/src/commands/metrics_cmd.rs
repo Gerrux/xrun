@@ -64,8 +64,12 @@ pub fn run(args: &MetricsArgs, db_path: &Path, config_dir: &Path) -> Result<()> 
             None => all_keys.iter().map(|(k, _)| k.clone()).collect(),
         };
 
-        render_png(&store, &id, &keys_to_plot, png_path)
-            .with_context(|| format!("failed to render PNG to {}", png_path.display()))?;
+        if args.per_key {
+            render_png_grid(&store, &id, &keys_to_plot, png_path)
+        } else {
+            render_png(&store, &id, &keys_to_plot, png_path)
+        }
+        .with_context(|| format!("failed to render PNG to {}", png_path.display()))?;
 
         eprintln!("metrics chart saved to {}", png_path.display());
         return Ok(());
@@ -191,7 +195,7 @@ fn render_png(store: &Store, run_id: &RunId, keys: &[String], path: &Path) -> Re
     let mut chart = ChartBuilder::on(&root)
         .caption(
             format!("run {}", &run_id.to_string()[..8]),
-            ("sans-serif", 22).into_font().color(&WHITE),
+            ("Arial", 22).into_font().color(&WHITE),
         )
         .margin(20)
         .x_label_area_size(40)
@@ -202,7 +206,7 @@ fn render_png(store: &Store, run_id: &RunId, keys: &[String], path: &Path) -> Re
         .configure_mesh()
         .x_desc("step")
         .axis_style(RGBColor(86, 95, 137))
-        .label_style(("sans-serif", 14).into_font().color(&WHITE))
+        .label_style(("Arial", 14).into_font().color(&WHITE))
         .draw()?;
 
     for (i, (key, data)) in series.iter().enumerate() {
@@ -222,8 +226,117 @@ fn render_png(store: &Store, run_id: &RunId, keys: &[String], path: &Path) -> Re
         .configure_series_labels()
         .background_style(RGBColor(36, 40, 59).filled())
         .border_style(RGBColor(86, 95, 137))
-        .label_font(("sans-serif", 14).into_font().color(&WHITE))
+        .label_font(("Arial", 14).into_font().color(&WHITE))
         .draw()?;
+
+    root.present()?;
+    Ok(())
+}
+
+/// Render one subplot per key in an auto-grid layout (each chart has its own
+/// y-axis, so wildly different scales don't squash each other). PNG size grows
+/// with key count: ~360×260 px per cell + margins.
+fn render_png_grid(store: &Store, run_id: &RunId, keys: &[String], path: &Path) -> Result<()> {
+    use plotters::prelude::*;
+
+    // Tokyo-Night-friendly palette; index by the position of the key in the
+    // input list so neighbouring cells get different colours.
+    const PALETTE: &[RGBColor] = &[
+        RGBColor(122, 162, 247),
+        RGBColor(158, 206, 106),
+        RGBColor(247, 118, 142),
+        RGBColor(224, 175, 104),
+        RGBColor(187, 154, 247),
+        RGBColor(125, 207, 255),
+        RGBColor(255, 158, 100),
+        RGBColor(150, 150, 150),
+    ];
+
+    // Collect series, drop empty ones.
+    let mut series: Vec<(String, Vec<(i64, f64)>)> = Vec::new();
+    for key in keys {
+        let pts = store
+            .list_metrics(run_id, Some(std::slice::from_ref(key)))
+            .context("failed to list metrics")?;
+        if pts.is_empty() {
+            continue;
+        }
+        series.push((key.clone(), pts.iter().map(|m| (m.step, m.value)).collect()));
+    }
+    if series.is_empty() {
+        bail!("no data points for the requested keys");
+    }
+
+    let n = series.len();
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+
+    const CELL_W: u32 = 360;
+    const CELL_H: u32 = 260;
+    const HEADER_H: u32 = 40;
+    let width = (cols as u32) * CELL_W;
+    let height = HEADER_H + (rows as u32) * CELL_H;
+
+    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
+    root.fill(&RGBColor(26, 27, 38))?;
+
+    // Title strip at the top.
+    let (title_area, body_area) = root.split_vertically(HEADER_H);
+    title_area.titled(
+        &format!("run {} — {} metrics", &run_id.to_string()[..8], n),
+        ("Arial", 22).into_font().color(&WHITE),
+    )?;
+
+    let cells = body_area.split_evenly((rows, cols));
+    for (i, ((key, data), area)) in series.iter().zip(cells.iter()).enumerate() {
+        let colour = PALETTE[i % PALETTE.len()];
+
+        let (x_min, x_max) = data
+            .iter()
+            .map(|(x, _)| *x)
+            .fold((i64::MAX, i64::MIN), |(mn, mx), v| (mn.min(v), mx.max(v)));
+        let x_max = if x_max == x_min { x_max + 1 } else { x_max };
+
+        let (y_min, y_max) = data
+            .iter()
+            .map(|(_, y)| *y)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
+                (mn.min(v), mx.max(v))
+            });
+        let y_range = (y_max - y_min).max(1e-9);
+        let y_lo = y_min - y_range * 0.05;
+        let y_hi = y_max + y_range * 0.05;
+
+        let mut chart = ChartBuilder::on(area)
+            .caption(key.as_str(), ("Arial", 14).into_font().color(&WHITE))
+            .margin(8)
+            .x_label_area_size(28)
+            .y_label_area_size(48)
+            .build_cartesian_2d(x_min..x_max, y_lo..y_hi)?;
+
+        chart
+            .configure_mesh()
+            .axis_style(RGBColor(86, 95, 137))
+            .label_style(("Arial", 11).into_font().color(&RGBColor(192, 202, 245)))
+            .x_labels(4)
+            .y_labels(4)
+            .draw()?;
+
+        chart.draw_series(LineSeries::new(
+            data.iter().copied(),
+            colour.stroke_width(2),
+        ))?;
+
+        // Last value as a small annotation in the top-right corner.
+        if let Some((_, last)) = data.last() {
+            let label = format!("last={last:.4}  n={}", data.len());
+            chart.plotting_area().draw(&Text::new(
+                label,
+                (x_min + (x_max - x_min) / 25, y_hi - y_range * 0.08),
+                ("Arial", 11).into_font().color(&RGBColor(86, 95, 137)),
+            ))?;
+        }
+    }
 
     root.present()?;
     Ok(())

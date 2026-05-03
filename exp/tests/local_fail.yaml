@@ -1,0 +1,15 @@
+# Покрывает: failed-stage event, exit_code != 0, FAILED badge в TUI,
+# error_detail screen, on_stage_failed=stop_instance policy (no-op для local).
+name: test_fail
+description: training fails inside eval stage with exit 1
+tags: [test, failure]
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/tests/local_fail.py
+
+policy:
+  on_stage_failed: stop_instance

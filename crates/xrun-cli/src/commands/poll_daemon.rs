@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use xrun_core::{
     config::credentials::{KaggleCredentials, VastCredentials},
-    manifest::{Manifest, Vendor},
+    manifest::Manifest,
     store::{RunId, RunStatus},
     vendor::InstanceHandle,
     Credentials, GlobalConfig, Store, VendorAdapter,
@@ -39,13 +39,7 @@ fn load_mlflow_config(
             .and_then(|m| m.log_args_as_params)
             .unwrap_or(true),
         run_name: Some(manifest.name.clone()),
-        vendor: match manifest.vendor {
-            Vendor::Vast => "vast",
-            Vendor::Kaggle => "kaggle",
-            Vendor::Local => "local",
-            Vendor::Ssh => "ssh",
-        }
-        .to_string(),
+        vendor: manifest.vendor.as_str().to_string(),
         instance_id: None,
     })
 }

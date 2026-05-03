@@ -1,0 +1,28 @@
+# Покрывает: artifact patterns, checkpoint watcher (best by val_f1, max),
+# Artifacts tab + `xrun pull --ckpt best`.
+name: test_artifacts
+description: writes fake checkpoints + plots + metrics.json
+tags: [test, artifacts]
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/tests/local_artifacts.py
+
+checkpoints:
+  watch: checkpoints/best_f1_*.pt
+  pull:
+    on: [done]
+    keep_last: 3
+    keep_best:
+      metric: val_f1
+      mode: max
+
+artifacts:
+  patterns:
+    - "checkpoints/best_*.pt"
+    - "output/*.png"
+    - "output/metrics.json"
+  pull_on: done

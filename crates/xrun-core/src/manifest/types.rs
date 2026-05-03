@@ -2,14 +2,61 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Vendor {
     Vast,
     Kaggle,
     Local,
     Ssh,
+}
+
+impl Vendor {
+    /// Canonical lowercase name used in TOML/JSON, on the wire, and as DB key.
+    /// Mirrors `#[serde(rename_all = "lowercase")]` so the two stay in sync.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Vendor::Vast => "vast",
+            Vendor::Kaggle => "kaggle",
+            Vendor::Local => "local",
+            Vendor::Ssh => "ssh",
+        }
+    }
+
+    /// All variants. Single source of truth — extend by adding the variant
+    /// here when wiring up a new adapter.
+    pub const fn all() -> &'static [Vendor] {
+        &[Vendor::Vast, Vendor::Kaggle, Vendor::Local, Vendor::Ssh]
+    }
+}
+
+impl fmt::Display for Vendor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Vendor {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "vast" => Ok(Vendor::Vast),
+            "kaggle" => Ok(Vendor::Kaggle),
+            "local" => Ok(Vendor::Local),
+            "ssh" => Ok(Vendor::Ssh),
+            other => Err(format!(
+                "unknown vendor `{other}` (expected one of: {})",
+                Vendor::all()
+                    .iter()
+                    .map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

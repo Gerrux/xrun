@@ -1,0 +1,21 @@
+# Покрывает: mirror sink. Метрики уходят в MLflow tracking server.
+# Требует:
+#   xrun config set mlflow.url http://localhost:5000   (или ваш URL)
+#   xrun config set metrics.sinks mlflow
+# или прохождения визарда с выбором Mirror + MLflow.
+#
+# Скрипт переиспользован из local_metrics_rich (богатый набор ключей).
+name: test_mlflow_mirror
+description: same as metrics_rich but pushes metrics to MLflow
+tags: [test, mlflow, mirror]
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/tests/local_metrics_rich.py
+
+mlflow:
+  experiment: xrun-mlflow-test
+  log_args_as_params: true

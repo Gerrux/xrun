@@ -1,0 +1,12 @@
+# Покрывает: Run detail → Metrics tab (таблица final + grid sparklines),
+# stages timeline, epoch markers. Без сети, без артефактов.
+name: test_metrics_rich
+description: 6 metric keys × 5 epochs across 3 stages — exercises Metrics tab
+tags: [test, metrics]
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/tests/local_metrics_rich.py

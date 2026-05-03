@@ -1,0 +1,29 @@
+# Покрывает: Report tab — комбинация скаляров + plot-артефактов.
+#
+# Тренирует логрегрессию на синтетических данных, в eval-стадии рисует:
+#   output/confusion_matrix.png
+#   output/pr_curve.png
+#   output/roc_curve.png
+#   output/per_class_metrics.json
+# и логирует скалярами: roc_auc_macro, pr_auc_classN, roc_auc_classN, final_*.
+#
+# После запуска:
+#   xrun pull <id>            # копирует output/* в run-dir/artifacts/
+#   xrun-tui  → run → 5       # Report tab: таблица скаляров + грид кривых +
+#                              # список файлов; Enter на PNG откроет внешне.
+name: test_classification_eval
+description: scalars + CM/PR/ROC plots demo for the Report tab
+tags: [test, report, classification]
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/tests/local_classification_eval.py
+
+artifacts:
+  patterns:
+    - "output/*.png"
+    - "output/per_class_metrics.json"
+  pull_on: done

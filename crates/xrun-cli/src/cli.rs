@@ -213,6 +213,11 @@ pub struct MetricsArgs {
     /// Render metrics as a PNG chart and save to this path
     #[arg(long, value_name = "PATH")]
     pub png: Option<PathBuf>,
+    /// With --png: render one subplot per key in a grid layout (one chart
+    /// per metric, auto-grid columns) instead of overlaying everything on a
+    /// single shared axis. Recommended when scales differ wildly.
+    #[arg(long)]
+    pub per_key: bool,
     /// Print the MLflow run URL and exit (requires mlflow.url in config)
     #[arg(long)]
     pub mlflow_url: bool,
@@ -298,6 +303,10 @@ pub struct DoctorArgs {
     /// Failures here are fatal exit 1 even with --json.
     #[arg(long = "manifest", value_name = "PATH")]
     pub manifests: Vec<PathBuf>,
+    /// Run every check, including those normally skipped because the relevant
+    /// vendor / feature is not configured in this environment.
+    #[arg(long)]
+    pub all: bool,
 }
 
 // ---------------------------------------------------------------------------

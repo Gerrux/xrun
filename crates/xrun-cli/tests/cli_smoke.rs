@@ -149,12 +149,7 @@ fn init_rejects_kaggle_username_without_key() {
         .unwrap()
         .env("XRUN_CONFIG_DIR", dir.path())
         .env("XRUN_DATA_DIR", dir.path().join("data"))
-        .args([
-            "init",
-            "--non-interactive",
-            "--kaggle-username",
-            "alice",
-        ])
+        .args(["init", "--non-interactive", "--kaggle-username", "alice"])
         .assert()
         .failure()
         .stderr(contains("--kaggle-username requires --kaggle-key"));
@@ -223,6 +218,173 @@ fn config_set_ssh_rejects_bad_alias() {
         .assert()
         .failure()
         .stderr(contains("invalid SSH alias"));
+}
+
+// ── Schema-driven `config set` ─────────────────────────────────────────────
+//
+// The dotted-path setter walks GlobalConfig/Credentials via serde_json. These
+// tests exercise paths the old hand-rolled match couldn't reach (budget.*,
+// defaults.exp_dir, vendors.<name>.<field>) plus the type-coercion edges.
+
+fn init_dir() -> tempfile::TempDir {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["config", "init"])
+        .assert()
+        .success();
+    dir
+}
+
+fn set(dir: &tempfile::TempDir, key: &str, value: &str) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["config", "set", key, value])
+        .assert()
+}
+
+#[test]
+fn config_set_budget_float_field() {
+    let dir = init_dir();
+    set(&dir, "budget.max_lifetime_hours", "12").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        toml.contains("max_lifetime_hours = 12"),
+        "missing budget.max_lifetime_hours:\n{toml}"
+    );
+}
+
+#[test]
+fn config_set_budget_nullable_numeric_via_hint_path() {
+    // budget.daily_budget_usd is Option<f64>, defaults to null. Without the
+    // NUMERIC_HINT_PATHS table the setter would coerce the input as a string
+    // and fail to deserialize back into Option<f64>.
+    let dir = init_dir();
+    set(&dir, "budget.daily_budget_usd", "50").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        toml.contains("daily_budget_usd = 50"),
+        "expected numeric daily_budget_usd:\n{toml}"
+    );
+}
+
+#[test]
+fn config_set_budget_bool_field() {
+    let dir = init_dir();
+    set(&dir, "budget.daily_budget_hard", "true").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(toml.contains("daily_budget_hard = true"), "{toml}");
+
+    set(&dir, "budget.daily_budget_hard", "off").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(toml.contains("daily_budget_hard = false"), "{toml}");
+}
+
+#[test]
+fn config_set_rejects_non_numeric_for_numeric_field() {
+    let dir = init_dir();
+    set(&dir, "budget.max_lifetime_hours", "not-a-number").failure();
+}
+
+#[test]
+fn config_set_rejects_non_bool_for_bool_field() {
+    let dir = init_dir();
+    set(&dir, "budget.daily_budget_hard", "maybe").failure();
+}
+
+#[test]
+fn config_set_defaults_exp_dir() {
+    // String field that the old hand-rolled match didn't support.
+    let dir = init_dir();
+    set(&dir, "defaults.exp_dir", "exp/").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(toml.contains("exp_dir = \"exp/\""), "{toml}");
+}
+
+#[test]
+fn config_set_defaults_vendor_accepts_all_variants() {
+    for v in ["vast", "kaggle", "local", "ssh"] {
+        let dir = init_dir();
+        set(&dir, "defaults.vendor", v).success();
+        let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(
+            toml.contains(&format!("vendor = \"{v}\"")),
+            "vendor {v} not stored:\n{toml}"
+        );
+    }
+}
+
+#[test]
+fn config_set_defaults_vendor_rejects_unknown_with_listing() {
+    let dir = init_dir();
+    set(&dir, "defaults.vendor", "runpod")
+        .failure()
+        .stderr(contains("unknown vendor"))
+        .stderr(contains("vast"))
+        .stderr(contains("kaggle"));
+}
+
+#[test]
+fn config_set_vendors_namespace_auto_vivifies() {
+    let dir = init_dir();
+    set(&dir, "vendors.vast.default_gpu", "RTX_5090").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        toml.contains("[vendors.vast]") && toml.contains("default_gpu = \"RTX_5090\""),
+        "{toml}"
+    );
+}
+
+#[test]
+fn config_set_vendors_extra_auto_vivifies() {
+    let dir = init_dir();
+    set(&dir, "vendors.kaggle.extra.region", "us-east-1").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        toml.contains("[vendors.kaggle.extra]") && toml.contains("region = \"us-east-1\""),
+        "{toml}"
+    );
+}
+
+#[test]
+fn config_set_vendors_rejects_unknown_vendor() {
+    let dir = init_dir();
+    set(&dir, "vendors.runpod.default_gpu", "H100")
+        .failure()
+        .stderr(contains("unknown vendor"));
+}
+
+#[test]
+fn config_set_unknown_key_fails() {
+    let dir = init_dir();
+    set(&dir, "nonsense.key", "x")
+        .failure()
+        .stderr(contains("unknown config key"));
+}
+
+#[test]
+fn config_set_credential_via_schema() {
+    // vast.api_key now goes through the schema-driven path; verify it lands
+    // in credentials.toml the same way the old hand-rolled match did.
+    let dir = init_dir();
+    set(&dir, "vast.api_key", "test-key-xyz").success();
+    let creds = std::fs::read_to_string(dir.path().join("credentials.toml")).unwrap();
+    assert!(creds.contains("api_key = \"test-key-xyz\""), "{creds}");
+}
+
+#[test]
+fn config_set_metrics_sinks_csv() {
+    let dir = init_dir();
+    set(&dir, "metrics.sinks", "mlflow, wandb").success();
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(
+        toml.contains("\"mlflow\"") && toml.contains("\"wandb\""),
+        "metrics.sinks not parsed as CSV array:\n{toml}"
+    );
 }
 
 #[test]

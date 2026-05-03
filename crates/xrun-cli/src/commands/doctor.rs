@@ -1,8 +1,11 @@
 #![deny(unsafe_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use xrun_core::config::credentials::Credentials;
+use xrun_core::config::GlobalConfig;
+use xrun_core::manifest::types::{DataMode, Vendor};
 use xrun_core::{manifest::Manifest, Store};
 use xrun_kaggle::KaggleAdapter;
 
@@ -10,47 +13,48 @@ use crate::cli::DoctorArgs;
 
 struct Check {
     name: &'static str,
+    category: &'static str,
     ok: bool,
     /// If true the check is advisory only — shown as WARN, does not cause exit 1.
     warn_only: bool,
     detail: String,
 }
 
+/// Manifest discovered on disk (either via --manifest or auto-scanned from exp/).
+struct DiscoveredManifest {
+    path: PathBuf,
+    /// True for paths passed via --manifest (parse failures are fatal); false
+    /// for auto-discovered paths (parse failures are advisory).
+    explicit: bool,
+    /// `Some` if the file parsed; `None` if parse failed (we still record the
+    /// failure as a manifest check, but cannot derive vendor info from it).
+    parsed: Option<Manifest>,
+    /// Read error or parse error message, if any.
+    error: Option<String>,
+}
+
 pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Result<()> {
     let mut checks: Vec<Check> = Vec::new();
 
-    // --- required checks ---
+    // Load config + credentials once. Treat read errors as "nothing configured"
+    // — the core config_dir check below will already flag a real I/O problem.
+    let config = GlobalConfig::load(config_dir).unwrap_or_default();
+    let creds = Credentials::load(config_dir).unwrap_or_default();
 
+    // Discover manifests: explicit --manifest args plus auto-scanned exp dir.
+    let manifests = discover_manifests(args, &config);
+
+    // Build the set of vendors that actually matter in this environment.
+    let active_vendors = active_vendors(&creds, &manifests, args.all);
+
+    // ---- core (always) ----
     let config_ok = dir_writable(config_dir);
     checks.push(Check {
         name: "config_dir",
+        category: "core",
         ok: config_ok,
         warn_only: false,
         detail: config_dir.display().to_string(),
-    });
-
-    let vastai_ok = binary_available("vastai");
-    checks.push(Check {
-        name: "vastai_binary",
-        ok: vastai_ok,
-        warn_only: false,
-        detail: if vastai_ok {
-            "found in PATH".to_string()
-        } else {
-            "not found in PATH".to_string()
-        },
-    });
-
-    let kaggle_ok = binary_available("kaggle");
-    checks.push(Check {
-        name: "kaggle_binary",
-        ok: kaggle_ok,
-        warn_only: false,
-        detail: if kaggle_ok {
-            "found in PATH".to_string()
-        } else {
-            "not found in PATH".to_string()
-        },
     });
 
     let db_ok = match db_path {
@@ -59,6 +63,7 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     };
     checks.push(Check {
         name: "db_access",
+        category: "core",
         ok: db_ok,
         warn_only: false,
         detail: db_path
@@ -66,77 +71,225 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
             .unwrap_or_else(|| "path unavailable".to_string()),
     });
 
-    // --- advisory / warn-only checks ---
-
-    // vastai SSH key: only check when the binary exists
-    if vastai_ok {
-        let (ssh_ok, ssh_detail) = check_vastai_ssh_key();
+    // ---- vendors (conditional) ----
+    if active_vendors.contains(&Vendor::Vast) {
+        let vastai_ok = binary_available("vastai");
         checks.push(Check {
-            name: "vastai_ssh_key",
-            ok: ssh_ok,
-            warn_only: true,
-            detail: ssh_detail,
+            name: "vastai_binary",
+            category: "vendor:vast",
+            ok: vastai_ok,
+            warn_only: false,
+            detail: if vastai_ok {
+                "found in PATH".to_string()
+            } else {
+                "not found in PATH (install: pipx install vastai)".to_string()
+            },
+        });
+        if vastai_ok {
+            let (ssh_ok, ssh_detail) = check_vastai_ssh_key();
+            checks.push(Check {
+                name: "vastai_ssh_key",
+                category: "vendor:vast",
+                ok: ssh_ok,
+                warn_only: true,
+                detail: ssh_detail,
+            });
+        }
+        checks.push(Check {
+            name: "vast_credentials",
+            category: "vendor:vast",
+            ok: creds.vast.api_key.is_some(),
+            warn_only: false,
+            detail: if creds.vast.api_key.is_some() {
+                "api_key set".to_string()
+            } else {
+                "no api_key — run `xrun config set vast.api_key <KEY>`".to_string()
+            },
         });
     }
 
-    // rsync: needed for manifest data sources with mode: rsync
-    let rsync_ok = binary_available("rsync");
-    checks.push(Check {
-        name: "rsync_binary",
-        ok: rsync_ok,
-        warn_only: true,
-        detail: if rsync_ok {
-            "found in PATH".to_string()
-        } else {
-            "not found in PATH (only needed for data.mode: rsync)".to_string()
-        },
-    });
-
-    // Manifest validation (--manifest path), one check per file. Fatal on
-    // failure since the user explicitly asked us to validate.
-    for path in &args.manifests {
-        match std::fs::read_to_string(path) {
-            Ok(yaml) => match Manifest::from_yaml_str(&yaml) {
-                Ok(m) => {
-                    checks.push(Check {
-                        name: "manifest",
-                        ok: true,
-                        warn_only: false,
-                        detail: format!("{} (vendor={:?})", path.display(), m.vendor),
-                    });
-                    // For Kaggle manifests, run additional checks.
-                    if matches!(m.vendor, xrun_core::manifest::Vendor::Kaggle) {
-                        kaggle_manifest_checks(&m, config_dir, &mut checks);
-                    }
-                }
-                Err(e) => checks.push(Check {
-                    name: "manifest",
-                    ok: false,
-                    warn_only: false,
-                    detail: format!("{}: {e}", path.display()),
-                }),
+    if active_vendors.contains(&Vendor::Kaggle) {
+        let kaggle_ok = binary_available("kaggle");
+        checks.push(Check {
+            name: "kaggle_binary",
+            category: "vendor:kaggle",
+            ok: kaggle_ok,
+            warn_only: false,
+            detail: if kaggle_ok {
+                "found in PATH".to_string()
+            } else {
+                "not found in PATH (install: pip install kaggle)".to_string()
             },
-            Err(e) => checks.push(Check {
-                name: "manifest",
-                ok: false,
-                warn_only: false,
-                detail: format!("{}: read failed: {e}", path.display()),
-            }),
-        }
+        });
     }
 
-    // python3 xrun_hook: installed on training instance; optional locally
-    let hook_ok = check_python_hook();
-    checks.push(Check {
-        name: "python_xrun_hook",
-        ok: hook_ok,
-        warn_only: true,
-        detail: if hook_ok {
-            "importable".to_string()
-        } else {
-            "not importable (installed on instance automatically; optional locally)".to_string()
-        },
+    if active_vendors.contains(&Vendor::Ssh) {
+        let ssh_ok = binary_available("ssh");
+        checks.push(Check {
+            name: "ssh_binary",
+            category: "vendor:ssh",
+            ok: ssh_ok,
+            warn_only: false,
+            detail: if ssh_ok {
+                "found in PATH".to_string()
+            } else {
+                "not found in PATH".to_string()
+            },
+        });
+        let alias_count = creds.ssh_hosts.len();
+        checks.push(Check {
+            name: "ssh_hosts",
+            category: "vendor:ssh",
+            ok: alias_count > 0,
+            warn_only: false,
+            detail: if alias_count > 0 {
+                let mut names: Vec<&str> = creds.ssh_hosts.keys().map(String::as_str).collect();
+                names.sort();
+                format!("{alias_count} alias(es): {}", names.join(", "))
+            } else {
+                "no [vendors.ssh.<alias>] sections in credentials.toml".to_string()
+            },
+        });
+    }
+
+    if active_vendors.contains(&Vendor::Local) {
+        // Local has no external prerequisites beyond what core already checks;
+        // surface a single OK row so users see local is wired up.
+        checks.push(Check {
+            name: "local_runtime",
+            category: "vendor:local",
+            ok: true,
+            warn_only: false,
+            detail: "host subprocess runner available".to_string(),
+        });
+    }
+
+    // ---- logging / metrics ----
+    let mlflow_active = config.mlflow.url.is_some()
+        || config.metrics.sinks.iter().any(|s| s == "mlflow")
+        || creds.mlflow.token.is_some()
+        || creds.mlflow.username.is_some()
+        || args.all;
+    if mlflow_active {
+        let url_ok = config.mlflow.url.is_some();
+        checks.push(Check {
+            name: "mlflow_url",
+            category: "logging",
+            ok: url_ok,
+            warn_only: !args.all,
+            detail: match &config.mlflow.url {
+                Some(u) => format!("tracking URL: {u}"),
+                None => "no mlflow.url set in config.toml".to_string(),
+            },
+        });
+        let creds_present = creds.mlflow.token.is_some()
+            || (creds.mlflow.username.is_some() && creds.mlflow.password.is_some());
+        checks.push(Check {
+            name: "mlflow_credentials",
+            category: "logging",
+            ok: creds_present,
+            warn_only: true,
+            detail: if creds_present {
+                "auth configured".to_string()
+            } else {
+                "no auth — public/anonymous tracking only".to_string()
+            },
+        });
+    }
+
+    // ---- data ----
+    let needs_rsync = manifests.iter().filter_map(|m| m.parsed.as_ref()).any(|m| {
+        m.data
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .any(|d| matches!(d.mode, Some(DataMode::Rsync)))
     });
+    if needs_rsync || args.all {
+        let rsync_ok = binary_available("rsync");
+        checks.push(Check {
+            name: "rsync_binary",
+            category: "data",
+            ok: rsync_ok,
+            warn_only: !needs_rsync, // fatal only when a manifest actually wants rsync
+            detail: if rsync_ok {
+                "found in PATH".to_string()
+            } else if needs_rsync {
+                "not found in PATH — at least one manifest uses data.mode: rsync".to_string()
+            } else {
+                "not found in PATH (only needed for data.mode: rsync)".to_string()
+            },
+        });
+    }
+
+    // ---- runtime hook ----
+    // Only relevant when at least one vendor that runs training locally-visible
+    // python is in play (vast, ssh, local). Kaggle ships with the hook server-side.
+    let hook_relevant = active_vendors
+        .iter()
+        .any(|v| matches!(v, Vendor::Vast | Vendor::Ssh | Vendor::Local))
+        || args.all;
+    if hook_relevant {
+        let hook_ok = check_python_hook();
+        checks.push(Check {
+            name: "python_xrun_hook",
+            category: "runtime",
+            ok: hook_ok,
+            warn_only: true,
+            detail: if hook_ok {
+                "importable".to_string()
+            } else {
+                "not importable (installed on instance automatically; optional locally)".to_string()
+            },
+        });
+    }
+
+    // ---- claude integration ----
+    let (skill_ok, skill_detail) = check_claude_skill();
+    checks.push(Check {
+        name: "claude_skill",
+        category: "claude",
+        ok: skill_ok,
+        warn_only: true,
+        detail: skill_detail,
+    });
+    let (claude_md_ok, claude_md_detail) = check_project_claude_md();
+    checks.push(Check {
+        name: "claude_md",
+        category: "claude",
+        ok: claude_md_ok,
+        warn_only: true,
+        detail: claude_md_detail,
+    });
+
+    // ---- manifests ----
+    for m in &manifests {
+        if let Some(err) = &m.error {
+            checks.push(Check {
+                name: "manifest",
+                category: "manifests",
+                ok: false,
+                // Auto-discovered (exp/) parse failures are advisory; explicit
+                // --manifest failures are fatal — matches old behaviour.
+                warn_only: !m.explicit,
+                detail: format!("{}: {err}", m.path.display()),
+            });
+            continue;
+        }
+        let manifest = m.parsed.as_ref().unwrap();
+        checks.push(Check {
+            name: "manifest",
+            category: "manifests",
+            ok: true,
+            warn_only: false,
+            detail: format!("{} (vendor={:?})", m.path.display(), manifest.vendor),
+        });
+        if matches!(manifest.vendor, Vendor::Kaggle)
+            && (creds.kaggle.token.is_some() || creds.kaggle.username.is_some() || args.all)
+        {
+            kaggle_manifest_checks(manifest, config_dir, &mut checks);
+        }
+    }
 
     let any_fail = checks.iter().any(|c| !c.ok && !c.warn_only);
 
@@ -146,6 +299,7 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
             .map(|c| {
                 serde_json::json!({
                     "check": c.name,
+                    "category": c.category,
                     "status": check_status_str(c),
                     "detail": c.detail,
                 })
@@ -155,7 +309,13 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     } else {
         println!("{:<24}  {:<6}  detail", "check", "status");
         println!("{}", "-".repeat(70));
+        let mut current_cat = "";
         for c in &checks {
+            if c.category != current_cat {
+                println!();
+                println!("[{}]", c.category);
+                current_cat = c.category;
+            }
             println!("{:<24}  {:<6}  {}", c.name, check_status_str(c), c.detail);
         }
     }
@@ -165,6 +325,102 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     }
 
     Ok(())
+}
+
+fn discover_manifests(args: &DoctorArgs, config: &GlobalConfig) -> Vec<DiscoveredManifest> {
+    let explicit: std::collections::HashSet<PathBuf> = args.manifests.iter().cloned().collect();
+    let mut paths: Vec<PathBuf> = args.manifests.clone();
+
+    // Auto-scan exp dir (config override or default ./exp) for *.yaml / *.yml.
+    let exp_dir = config
+        .defaults
+        .exp_dir
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("exp"));
+    if exp_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&exp_dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_file() {
+                    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    if (ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+                        && !paths.contains(&p)
+                    {
+                        paths.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let is_explicit = explicit.contains(&path);
+            match std::fs::read_to_string(&path) {
+                Ok(yaml) => match Manifest::from_yaml_str(&yaml) {
+                    Ok(m) => DiscoveredManifest {
+                        path,
+                        explicit: is_explicit,
+                        parsed: Some(m),
+                        error: None,
+                    },
+                    Err(e) => DiscoveredManifest {
+                        path,
+                        explicit: is_explicit,
+                        parsed: None,
+                        error: Some(e.to_string()),
+                    },
+                },
+                Err(e) => DiscoveredManifest {
+                    path,
+                    explicit: is_explicit,
+                    parsed: None,
+                    error: Some(format!("read failed: {e}")),
+                },
+            }
+        })
+        .collect()
+}
+
+fn active_vendors(creds: &Credentials, manifests: &[DiscoveredManifest], all: bool) -> Vec<Vendor> {
+    let mut set: Vec<Vendor> = Vec::new();
+    let push = |set: &mut Vec<Vendor>, v: Vendor| {
+        if !set.iter().any(|x| x == &v) {
+            set.push(v);
+        }
+    };
+    if all {
+        push(&mut set, Vendor::Vast);
+        push(&mut set, Vendor::Kaggle);
+        push(&mut set, Vendor::Local);
+        push(&mut set, Vendor::Ssh);
+        return set;
+    }
+    if creds.vast.api_key.is_some() {
+        push(&mut set, Vendor::Vast);
+    }
+    if creds.kaggle.token.is_some()
+        || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
+    {
+        push(&mut set, Vendor::Kaggle);
+    }
+    if !creds.ssh_hosts.is_empty() {
+        push(&mut set, Vendor::Ssh);
+    }
+    for m in manifests {
+        if let Some(p) = &m.parsed {
+            push(&mut set, p.vendor);
+        }
+    }
+    // Fallback: nothing configured anywhere → at least show local so the
+    // output isn't completely empty for a fresh install.
+    if set.is_empty() {
+        push(&mut set, Vendor::Local);
+    }
+    set
 }
 
 fn check_status_str(c: &Check) -> &'static str {
@@ -241,6 +497,49 @@ fn check_python_hook() -> bool {
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn check_claude_skill() -> (bool, String) {
+    let Some(home) = home_dir() else {
+        return (false, "could not resolve home directory".to_string());
+    };
+    let skill_path = home
+        .join(".claude")
+        .join("skills")
+        .join("xrun")
+        .join("SKILL.md");
+    if skill_path.is_file() {
+        (true, format!("installed at {}", skill_path.display()))
+    } else {
+        (
+            false,
+            format!(
+                "not installed at {} (cp docs/SKILL.md → that path to enable)",
+                skill_path.display()
+            ),
+        )
+    }
+}
+
+fn check_project_claude_md() -> (bool, String) {
+    let cwd = std::env::current_dir().ok();
+    let candidate = cwd.as_deref().map(|d| d.join("CLAUDE.md"));
+    match candidate {
+        Some(p) if p.is_file() => (true, format!("found at {}", p.display())),
+        Some(p) => (false, format!("not found at {}", p.display())),
+        None => (false, "could not resolve cwd".to_string()),
+    }
+}
+
 fn dir_writable(path: &Path) -> bool {
     if std::fs::create_dir_all(path).is_err() {
         return false;
@@ -258,6 +557,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         None => {
             checks.push(Check {
                 name: "kaggle_spec",
+                category: "manifests",
                 ok: false,
                 warn_only: false,
                 detail: "vendor is kaggle but no [kaggle] section found in manifest".to_string(),
@@ -267,7 +567,6 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
     };
 
     // Check kernel_slug consistency with manifest.name.
-    // Kaggle slugifies names by lowercasing and replacing spaces/special chars with hyphens.
     let expected_slug_suffix = manifest
         .name
         .to_lowercase()
@@ -288,6 +587,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
     let slug_ok = actual_suffix == expected_slug_suffix;
     checks.push(Check {
         name: "kaggle_kernel_slug",
+        category: "manifests",
         ok: slug_ok,
         warn_only: true,
         detail: if slug_ok {
@@ -304,16 +604,15 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         },
     });
 
-    // Build adapter to access KaggleCli.
     let creds = resolve_kaggle_credentials(config_dir);
     let adapter = KaggleAdapter::new().with_credentials(creds);
     let cli = adapter.cli();
 
-    // Check Kaggle credentials via `kaggle config view`.
     let creds_ok = match cli.username() {
         Ok(u) => {
             checks.push(Check {
                 name: "kaggle_credentials",
+                category: "manifests",
                 ok: true,
                 warn_only: false,
                 detail: format!("authenticated as {u}"),
@@ -323,6 +622,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         Err(e) => {
             checks.push(Check {
                 name: "kaggle_credentials",
+                category: "manifests",
                 ok: false,
                 warn_only: false,
                 detail: format!("could not authenticate: {e}"),
@@ -331,7 +631,6 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         }
     };
 
-    // Check each dataset slug for readiness (skip if not authenticated).
     if creds_ok {
         let mut all_slugs: Vec<&str> = Vec::new();
         if let Some(s) = &kaggle_spec.dataset {
@@ -355,6 +654,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
             };
             checks.push(Check {
                 name: "kaggle_dataset",
+                category: "manifests",
                 ok,
                 warn_only,
                 detail,

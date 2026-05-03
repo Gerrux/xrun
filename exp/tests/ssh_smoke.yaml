@@ -1,0 +1,30 @@
+# Покрывает: vendor=ssh, host_alias resolve из credentials.toml,
+# rsync upload, remote cmd, log tail, destroy=kill PID.
+#
+# Перед запуском:
+#   xrun config set ssh.myhost.host  192.168.1.10
+#   xrun config set ssh.myhost.user  ubuntu
+#   xrun config set ssh.myhost.key   ~/.ssh/id_ed25519
+#   pip install xrun-hook на удалённом хосте
+#
+# Если alias другой — поменяйте `ssh.host_alias` ниже.
+name: test_ssh_smoke
+description: minimal ssh test — rsync + remote python loop
+tags: [test, ssh]
+vendor: ssh
+
+ssh:
+  host_alias: myhost
+  workdir: /tmp/xrun-tests
+
+run:
+  cmd: |
+    python -c "
+    import time, xrun_hook
+    with xrun_hook.stage('train'):
+        for i in range(5):
+            xrun_hook.metric('loss', 1.0 / (i + 1), step=i)
+            print(f'step {i}', flush=True)
+            time.sleep(0.5)
+    xrun_hook.done()
+    "
