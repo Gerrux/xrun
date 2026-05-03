@@ -117,6 +117,9 @@ pub struct Run {
     pub cost_usd: Option<f64>,
     pub mlflow_run_id: Option<String>,
     pub notes: Option<String>,
+    /// PID of the detached poll-daemon, if one was spawned. None for foreground
+    /// runs and for runs whose daemon was never started.
+    pub poller_pid: Option<i64>,
 }
 
 #[derive(Default)]
@@ -140,12 +143,13 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         cost_usd: row.get(10)?,
         mlflow_run_id: row.get(11)?,
         notes: row.get(12)?,
+        poller_pid: row.get(13)?,
     })
 }
 
 const SELECT_RUN_COLS: &str =
     "id, name, manifest_hash, manifest_path, vendor, instance_id, status, \
-     created_at, started_at, ended_at, cost_usd, mlflow_run_id, notes";
+     created_at, started_at, ended_at, cost_usd, mlflow_run_id, notes, poller_pid";
 
 impl Store {
     pub fn create_run(
@@ -272,6 +276,24 @@ impl Store {
         tx.execute(
             "UPDATE runs SET mlflow_run_id = ?1 WHERE id = ?2",
             params![mlflow_run_id, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record the PID of a detached poll-daemon. Pass `None` to clear the
+    /// recorded PID (e.g. when the daemon exits cleanly or is reaped).
+    pub fn update_run_poller_pid(
+        &mut self,
+        id: &RunId,
+        pid: Option<i64>,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET poller_pid = ?1 WHERE id = ?2",
+            params![pid, id],
         )?;
         tx.commit()?;
         Ok(())

@@ -109,6 +109,24 @@ async def rerun_with_patches(
     return code == 0, (out + err).strip()
 
 
+async def resume_runs() -> tuple[bool, list[dict[str, Any]]]:
+    """Re-attach poll-daemons to runs whose poller died (reboot, blackout).
+
+    Returns (ok, runs). On any failure (binary missing, parse error, timeout)
+    returns (False, []) — caller treats this as a no-op so TUI startup never
+    blocks. The CLI itself prints to stdout in JSON mode; we surface only the
+    structured records.
+    """
+    code, out, _err = await _run("resume", "--json", timeout=20)
+    if code != 0 or not out:
+        return False, []
+    try:
+        data = json.loads(out)
+        return True, list(data.get("runs", []))
+    except Exception:
+        return False, []
+
+
 async def fix_status(run_id: str | None = None) -> tuple[bool, str]:
     """Reconcile stale 'running' runs against the vendor.
 

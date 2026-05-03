@@ -20,6 +20,7 @@ pub mod poll_daemon;
 pub mod probe;
 pub mod pull;
 pub mod rerun;
+pub mod resume;
 pub mod shell;
 pub mod show;
 pub mod stop;

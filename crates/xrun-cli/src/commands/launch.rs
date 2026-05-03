@@ -441,7 +441,10 @@ fn do_launch_with_budget(
     eprintln!("Run {run_id} started");
 
     if args.detach {
-        spawn_daemon(&run_id, db_path, runs_dir)?;
+        let pid = spawn_daemon(&run_id, db_path, runs_dir)?;
+        if let Err(e) = store.update_run_poller_pid(&run_id, Some(pid as i64)) {
+            tracing::warn!("could not record poller PID: {e}");
+        }
         println!("{run_id}");
         return Ok(());
     }
@@ -518,7 +521,8 @@ fn resolve_reuse_handle(store: &Store, id: &str) -> Result<InstanceHandle> {
 }
 
 /// Spawn `xrun __poll-daemon <run_id>` as a detached background process.
-pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<()> {
+/// Returns the spawned process PID so callers can record it for liveness checks.
+pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<u32> {
     let exe = std::env::current_exe().context("failed to determine current executable path")?;
 
     let mut cmd = std::process::Command::new(&exe);
@@ -546,9 +550,10 @@ pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<(
         cmd.process_group(0);
     }
 
-    cmd.spawn()
+    let child = cmd
+        .spawn()
         .with_context(|| format!("failed to spawn poll-daemon for run {run_id}"))?;
-    Ok(())
+    Ok(child.id())
 }
 
 /// Build a `MlflowMirrorConfig` from the manifest's `mlflow` section, the

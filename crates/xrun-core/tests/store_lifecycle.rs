@@ -188,6 +188,76 @@ fn migration_002_applies_on_top_of_001_without_data_loss() {
 }
 
 #[test]
+fn poller_pid_roundtrip() {
+    // poller_pid starts NULL, can be set, updated, and cleared.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("runs.db");
+    let mut store = Store::open(&db_path).unwrap();
+
+    let run_id = store
+        .create_run("pid-run", "hash", "p.yaml", "vast", &[])
+        .unwrap();
+
+    let run = store.get_run(&run_id).unwrap().unwrap();
+    assert_eq!(run.poller_pid, None, "fresh run has no poller_pid");
+
+    store
+        .update_run_poller_pid(&run_id, Some(12345))
+        .expect("set pid");
+    let run = store.get_run(&run_id).unwrap().unwrap();
+    assert_eq!(run.poller_pid, Some(12345));
+
+    store
+        .update_run_poller_pid(&run_id, Some(99999))
+        .expect("update pid");
+    let run = store.get_run(&run_id).unwrap().unwrap();
+    assert_eq!(run.poller_pid, Some(99999));
+
+    store
+        .update_run_poller_pid(&run_id, None)
+        .expect("clear pid");
+    let run = store.get_run(&run_id).unwrap().unwrap();
+    assert_eq!(run.poller_pid, None);
+}
+
+#[test]
+fn migration_004_applies_on_top_of_003_without_data_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("migration_004.db");
+
+    // Build a v3 schema by hand and seed a row.
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("../src/store/migrations/001_initial.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../src/store/migrations/002_cost_estimate.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../src/store/migrations/003_budget.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO runs \
+             (id, name, manifest_hash, manifest_path, vendor, status, created_at) \
+             VALUES (?1, 'legacy', 'h', 'p.yaml', 'vast', 'running', datetime('now'))",
+            rusqlite::params!["01HV0000000000000000000099"],
+        )
+        .unwrap();
+    }
+
+    // Re-open: 004 runs and adds the column with NULL default.
+    let mut store = Store::open(&db_path).unwrap();
+    let runs = store.list_runs(&ListFilter::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].poller_pid, None);
+
+    // The column is writable post-migration.
+    store
+        .update_run_poller_pid(&runs[0].id, Some(42))
+        .unwrap();
+    let r = store.get_run(&runs[0].id).unwrap().unwrap();
+    assert_eq!(r.poller_pid, Some(42));
+}
+
+#[test]
 fn update_nonexistent_run_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("runs.db");

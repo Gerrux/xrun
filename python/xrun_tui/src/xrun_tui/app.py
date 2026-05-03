@@ -95,6 +95,13 @@ class XrunApp(App):
                 timeout=15,
             )
 
+        # Re-attach poll-daemons that died (reboot / blackout / killed parent).
+        # Fire-and-forget — if the CLI is missing or slow, the TUI must still
+        # boot. Set XRUN_TUI_NO_RESUME=1 to skip (debugging stale runs).
+        import os as _os
+        if _os.environ.get("XRUN_TUI_NO_RESUME") != "1":
+            self.run_worker(self._auto_resume_runs(), exclusive=False)
+
         from xrun_tui.screens.splash import SplashScreen
 
         async def _after_splash() -> None:
@@ -114,6 +121,32 @@ class XrunApp(App):
 
     async def on_unmount(self) -> None:
         await self.db.close()
+
+    async def _auto_resume_runs(self) -> None:
+        from xrun_tui.services import resume_runs
+        try:
+            ok, runs = await resume_runs()
+        except Exception:
+            return
+        if not ok or not runs:
+            return
+        respawned = [r for r in runs if r.get("outcome") == "respawned"]
+        reconciled = [r for r in runs if r.get("outcome") == "reconciled"]
+        if respawned:
+            self.notify(
+                f"Resumed poller for {len(respawned)} run(s) after restart.",
+                title="xrun",
+                severity="information",
+                timeout=8,
+            )
+        if reconciled:
+            self.notify(
+                f"Reconciled {len(reconciled)} stale run(s) "
+                "whose vendor instances were gone.",
+                title="xrun",
+                severity="warning",
+                timeout=10,
+            )
 
     # ── Notification history ─────────────────────────────────────────────────
 

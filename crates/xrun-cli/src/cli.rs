@@ -71,6 +71,10 @@ pub enum Commands {
     /// Reconcile stale `running` runs against the vendor and fix their status
     #[command(name = "fix-status")]
     FixStatus(FixStatusArgs),
+    /// Resume a `running` run whose poll-daemon died (e.g. after reboot or
+    /// blackout). Re-spawns the poller for live instances and reconciles
+    /// dead ones — same path as `fix-status`.
+    Resume(ResumeArgs),
     /// Materialise a Cartesian grid of manifests and (optionally) launch them
     Sweep(SweepArgs),
     /// Compare two runs side-by-side: manifest fields and metrics (last + best)
@@ -368,6 +372,18 @@ pub struct DiffArgs {
     #[arg(long, conflicts_with = "manifest_only")]
     pub metrics_only: bool,
     /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args)]
+pub struct ResumeArgs {
+    /// Run ID (ULID) to resume. Omit to scan all runs in `running` status.
+    pub id: Option<String>,
+    /// Show what would happen without spawning daemons or writing to the DB
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output as JSON (one record per inspected run)
     #[arg(long)]
     pub json: bool,
 }

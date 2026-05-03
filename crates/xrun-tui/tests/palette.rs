@@ -167,6 +167,7 @@ fn parse_stop_by_name_finds_run() {
         cost_usd: None,
         mlflow_run_id: None,
         notes: None,
+        poller_pid: None,
     };
     let run_id = run.id.clone();
 
