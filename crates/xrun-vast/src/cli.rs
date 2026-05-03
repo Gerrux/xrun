@@ -151,65 +151,8 @@ fn idempotent_policy() -> RetryPolicy {
     RetryPolicy::default()
 }
 
-pub async fn show_user() -> Result<UserInfo, VastError> {
-    let args = ["show", "user", "--raw"];
-    let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
-    parse_user_info(&out)
-}
-
 pub fn parse_user_info(raw: &[u8]) -> Result<UserInfo, VastError> {
     serde_json::from_slice::<UserInfo>(raw).map_err(|e| parse_err("show user", raw, e))
-}
-
-pub async fn search_offers(query: &OfferQuery) -> Result<Vec<Offer>, VastError> {
-    let q = query.render();
-    let args = ["search", "offers", "--raw", &q];
-    let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
-    serde_json::from_slice::<Vec<Offer>>(&out).map_err(|e| parse_err("search offers", &out, e))
-}
-
-pub async fn create_instance(
-    offer_id: InstanceId,
-    image: &str,
-    disk_gb: u32,
-    ssh: bool,
-) -> Result<InstanceId, VastError> {
-    let offer_id_str = offer_id.to_string();
-    let disk_str = disk_gb.to_string();
-    let mut args = vec![
-        "create",
-        "instance",
-        &offer_id_str,
-        "--image",
-        image,
-        "--disk",
-        &disk_str,
-    ];
-    if ssh {
-        args.push("--ssh");
-    }
-    // Non-idempotent: single attempt only.
-    let out = run_vastai(&args).await?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&out).map_err(|e| parse_err("create instance", &out, e))?;
-    v["new_contract"].as_u64().ok_or_else(|| {
-        let preview = String::from_utf8_lossy(&out).trim().to_string();
-        VastError::ParseError(format!(
-            "vastai create instance → missing new_contract (raw: {})",
-            if preview.is_empty() {
-                "(empty stdout)"
-            } else {
-                &preview
-            }
-        ))
-    })
-}
-
-pub async fn show_instance(id: InstanceId) -> Result<InstanceInfo, VastError> {
-    let id_str = id.to_string();
-    let args = ["show", "instance", "--raw", &id_str];
-    let out = run_vastai_with_retry(&args, &idempotent_policy()).await?;
-    serde_json::from_slice::<InstanceInfo>(&out).map_err(|e| parse_err("show instance", &out, e))
 }
 
 pub async fn execute(id: InstanceId, cmd: &str) -> Result<Vec<u8>, VastError> {
