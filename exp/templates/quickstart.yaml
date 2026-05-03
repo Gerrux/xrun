@@ -1,0 +1,21 @@
+# Zero-config quickstart — runs locally, no creds, no GPU, no data.
+# Use this to verify xrun works end-to-end before touching vast/kaggle.
+#
+#   xrun launch exp/templates/quickstart.yaml
+#   xrun events <id>
+#   xrun metrics <id> --ascii
+name: quickstart
+description: zero-config local smoke test (no GPU, no data, no creds)
+vendor: local
+
+local:
+  gpu: cpu
+
+run:
+  cmd: python exp/templates/quickstart_train.py
+  args:
+    --epochs: 3
+
+artifacts:
+  patterns:
+    - "output/*.txt"

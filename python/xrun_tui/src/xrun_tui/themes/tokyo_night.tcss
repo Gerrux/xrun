@@ -488,45 +488,76 @@ ModalScreen {
     height: 1fr;
 }
 
-.vendor-row {
-    height: 3;
-    align: left middle;
-    border: solid #2d3149;
+.vendor-card {
+    height: 6;
     background: #1a1b26;
+    border: round #2d3149;
     padding: 0 1;
     margin-bottom: 1;
-    transition: background 150ms linear;
+    transition: background 200ms in_out_cubic;
 }
 
-.vendor-row:hover {
+.vendor-card:hover {
     background: #1e2030;
 }
 
+.vendor-card-vast {
+    border-left: thick #ff6b35;
+}
+
+.vendor-card-kaggle {
+    border-left: thick #20beff;
+}
+
 .vendor-row-active {
-    border: solid #7aa2f7;
+    border: round #7aa2f7;
     background: #2d3149;
+}
+
+.vendor-row-active.vendor-card-vast {
+    border-left: thick #ff9e64;
+}
+
+.vendor-row-active.vendor-card-kaggle {
+    border-left: thick #7dcfff;
 }
 
 .vendor-row-active:hover {
     background: #2d3149;
 }
 
-.vendor-dot {
-    width: 3;
+.vendor-card-head {
+    height: 1;
+    align: left middle;
+}
+
+.vendor-card-foot {
+    height: 1;
+    align: left middle;
+}
+
+.vendor-logo {
+    width: 4;
+    content-align: center middle;
+    text-style: bold;
+}
+
+.vendor-card-title {
+    width: 1fr;
+    content-align: left middle;
+}
+
+.vendor-card-pill {
+    width: 9;
+    content-align: right middle;
+}
+
+.vendor-card-dot {
+    width: 4;
     content-align: center middle;
 }
 
-.vendor-name-col {
-    width: 30;
-    content-align: left middle;
-}
-
-.vendor-status-col {
-    width: 20;
-    content-align: left middle;
-}
-
-.vendor-info-col {
+.vendor-card-info {
     width: 1fr;
     content-align: left middle;
 }
@@ -689,4 +720,67 @@ LoadingIndicator {
     background: #1e2030;
     border: tall #7aa2f7;
     margin: 0;
+}
+
+/* ── Country exclude picker ──────────────────────────────────────────────── */
+
+CountryExcludeScreen {
+    align: center middle;
+}
+
+#cx-dialog {
+    background: #24283b;
+    border: solid #7aa2f7;
+    width: 70;
+    height: 80%;
+    max-height: 40;
+    padding: 1 2;
+    layout: vertical;
+}
+
+.cx-title {
+    width: 100%;
+    text-align: center;
+    padding: 0 0 1 0;
+    height: auto;
+}
+
+.cx-hint {
+    width: 100%;
+    text-align: left;
+    padding: 0;
+    height: auto;
+}
+
+#cx-scroll {
+    width: 100%;
+    height: 1fr;
+    border: solid #414868;
+    margin: 1 0;
+    padding: 0 1;
+}
+
+#cx-list {
+    width: 100%;
+    height: auto;
+}
+
+#cx-list Checkbox {
+    width: 100%;
+    height: 1;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+#cx-buttons {
+    width: 100%;
+    height: 3;
+    align: center middle;
+    layout: horizontal;
+}
+
+#cx-buttons Button {
+    margin: 0 1;
 }

@@ -475,42 +475,76 @@ CountryExcludeScreen {
     height: auto;
 }
 
-/* ── Vendor overview rows ────────────────────────────────────────────────── */
+/* ── Vendor overview cards ───────────────────────────────────────────────── */
 
 #vendor-overview {
     padding: 1 2;
     height: 1fr;
 }
 
-.vendor-row {
-    height: 3;
-    align: left middle;
-    border: solid #2d3149;
+.vendor-card {
+    height: 6;
+    background: #16161e;
+    border: round #2d3149;
     padding: 0 1;
     margin-bottom: 1;
+    transition: background 200ms in_out_cubic, border 200ms in_out_cubic;
+}
+
+.vendor-card-vast {
+    border-left: thick #ff6b35;
+}
+
+.vendor-card-kaggle {
+    border-left: thick #20beff;
 }
 
 .vendor-row-active {
-    border: solid #7aa2f7;
     background: #1e2030;
+    border: round #7aa2f7;
 }
 
-.vendor-dot {
-    width: 3;
+.vendor-row-active.vendor-card-vast {
+    border-left: thick #ff9e64;
+}
+
+.vendor-row-active.vendor-card-kaggle {
+    border-left: thick #7dcfff;
+}
+
+.vendor-card-head {
+    height: 1;
+    align: left middle;
+}
+
+.vendor-card-foot {
+    height: 1;
+    align: left middle;
+    padding: 0 0 0 0;
+}
+
+.vendor-logo {
+    width: 4;
+    content-align: center middle;
+    text-style: bold;
+}
+
+.vendor-card-title {
+    width: 1fr;
+    content-align: left middle;
+}
+
+.vendor-card-pill {
+    width: 9;
+    content-align: right middle;
+}
+
+.vendor-card-dot {
+    width: 4;
     content-align: center middle;
 }
 
-.vendor-name-col {
-    width: 30;
-    content-align: left middle;
-}
-
-.vendor-status-col {
-    width: 20;
-    content-align: left middle;
-}
-
-.vendor-info-col {
+.vendor-card-info {
     width: 1fr;
     content-align: left middle;
 }

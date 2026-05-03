@@ -13,6 +13,67 @@ from collections import Counter
 # breaks on country-name-first entries and produces invalid widget ids.
 _ISO_RE = re.compile(r"\b([A-Z]{2})\b")
 
+
+def _flag(cc: str) -> str:
+    """Return a coloured pill marker for an ISO-3166 alpha-2 code.
+
+    Windows Terminal does not combine regional-indicator codepoints into a
+    single flag glyph, so plain emoji flags break for our primary user base.
+    A two-letter pill on a region-tinted background renders consistently
+    everywhere. The colour is a coarse continent hint (Europe blue,
+    Asia red, Americas green, …) so the eye can group at a glance.
+    """
+    if not cc or len(cc) != 2 or not cc.isalpha():
+        return "[on #414868]    [/]"
+    return f"[#1a1b26 on {_region_color(cc)}] {cc.upper()} [/]"
+
+
+_REGION_PALETTE = {
+    "EU": "#7aa2f7",  # Europe — blue
+    "AS": "#f7768e",  # Asia — red
+    "NA": "#9ece6a",  # North America — green
+    "SA": "#e0af68",  # South America — amber
+    "AF": "#bb9af7",  # Africa — violet
+    "OC": "#7dcfff",  # Oceania — cyan
+    "ME": "#ff9e64",  # Middle East — orange
+}
+
+# Coarse hand-mapped region for the most common vast.ai geolocation codes.
+# Anything missing falls back to the default tint.
+_CC_REGION = {
+    # North America
+    "US": "NA", "CA": "NA", "MX": "NA",
+    # South America
+    "BR": "SA", "AR": "SA", "CL": "SA", "CO": "SA", "PE": "SA",
+    # Europe
+    "GB": "EU", "DE": "EU", "FR": "EU", "IT": "EU", "ES": "EU", "PT": "EU",
+    "NL": "EU", "BE": "EU", "AT": "EU", "CH": "EU", "SE": "EU", "NO": "EU",
+    "FI": "EU", "DK": "EU", "IS": "EU", "IE": "EU", "PL": "EU", "CZ": "EU",
+    "SK": "EU", "HU": "EU", "RO": "EU", "BG": "EU", "GR": "EU", "HR": "EU",
+    "SI": "EU", "LT": "EU", "LV": "EU", "EE": "EU", "UA": "EU", "RU": "EU",
+    "BY": "EU", "MD": "EU", "RS": "EU", "BA": "EU", "MK": "EU", "AL": "EU",
+    "MT": "EU", "CY": "EU", "LU": "EU",
+    # Asia
+    "CN": "AS", "JP": "AS", "KR": "AS", "IN": "AS", "ID": "AS", "TH": "AS",
+    "VN": "AS", "MY": "AS", "SG": "AS", "PH": "AS", "TW": "AS", "HK": "AS",
+    "MO": "AS", "PK": "AS", "BD": "AS", "LK": "AS", "KZ": "AS", "UZ": "AS",
+    "MN": "AS", "NP": "AS", "KH": "AS", "LA": "AS", "MM": "AS",
+    # Middle East
+    "TR": "ME", "IL": "ME", "AE": "ME", "SA": "ME", "QA": "ME", "KW": "ME",
+    "OM": "ME", "BH": "ME", "JO": "ME", "LB": "ME", "IR": "ME", "IQ": "ME",
+    "SY": "ME", "YE": "ME",
+    # Africa
+    "ZA": "AF", "EG": "AF", "MA": "AF", "TN": "AF", "DZ": "AF", "NG": "AF",
+    "KE": "AF", "ET": "AF", "GH": "AF", "SN": "AF", "CI": "AF",
+    # Oceania
+    "AU": "OC", "NZ": "OC", "FJ": "OC", "PG": "OC",
+}
+
+
+def _region_color(cc: str) -> str:
+    region = _CC_REGION.get(cc.upper())
+    return _REGION_PALETTE.get(region or "", "#414868")
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -123,7 +184,8 @@ class CountryExcludeScreen(ModalScreen[list[str] | None]):
         list_box = self.query_one("#cx-list", Vertical)
         await list_box.remove_children()
         for cc, n in sorted_codes:
-            label = f"{cc}  ({n} offers)" if n else f"{cc}  (not in current set)"
+            tail = f"({n} offers)" if n else "(not in current set)"
+            label = f"{_flag(cc)}  {tail}"
             await list_box.mount(
                 Checkbox(label,
                          value=(cc in self._initial_excluded),

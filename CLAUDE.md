@@ -97,11 +97,48 @@ artifacts:
 
 Полная схема: `docs/MANIFEST.md`
 
+## Первый запуск / ничего не настроено (для Claude Code)
+
+Если пользователь только что установил xrun и просит «запусти что-нибудь»:
+
+```bash
+xrun doctor --json                              # быстрая диагностика
+xrun launch exp/templates/quickstart.yaml       # zero-config smoke-test
+```
+
+Если нужен `vendor: vast` / `kaggle` / `ssh`, а креды не выставлены —
+**не пиши `credentials.toml` сам** и **не пытайся запустить `xrun init`
+через `!`** в Claude Code: эта оболочка без TTY, визард выйдет с ошибкой
+сразу же. Попроси пользователя открыть отдельный терминал и выполнить
+там:
+
+```
+xrun init
+```
+
+После выхода визарда пользователь возвращается в Claude Code, и ты
+делаешь `xrun doctor --json` + `xrun launch`.
+
+Если пользователь сам прислал ключ в чат, можно записать его без TTY
+(ключ не уходит в argv и не эхо-ится обратно):
+
+```bash
+printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --vast-key -
+printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --kaggle-token -
+```
+
+После записи — **не** читать обратно. Никаких `xrun config show --secrets`
+/ `cat ~/.config/xrun/credentials.toml`.
+
+Шаблоны для копирования: `exp/templates/quickstart.yaml` (zero-config, без
+кредов и данных), `exp/templates/classification.yaml`,
+`exp/templates/regression.yaml`.
+
 ## Типичный workflow (для Claude Code)
 
 ```bash
-# 1. Создать/скопировать манифест
-cp exp/base.yaml exp/v2.yaml
+# 1. Скопировать шаблон (или существующий манифест)
+cp exp/templates/classification.yaml exp/v2.yaml
 # отредактировать поля
 
 # 2. Запустить

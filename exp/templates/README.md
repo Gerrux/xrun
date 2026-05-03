@@ -5,8 +5,17 @@
 
 | Шаблон | Файлы | Задача |
 |--------|-------|--------|
+| `quickstart` | `quickstart.yaml` + `quickstart_train.py` | Zero-config smoke-test (vendor=local, без данных и кредов) — для проверки что xrun вообще работает |
 | `classification` | `classification.yaml` + `classification_train.py` | Многоклассовая классификация с метриками `loss`, `acc`, `f1_macro`, `precision`, `recall` |
 | `regression` | `regression.yaml` + `regression_train.py` | Регрессия с метриками `loss`, `mae`, `rmse`, `r2` |
+
+## Самая короткая первая проверка
+
+```bash
+xrun launch exp/templates/quickstart.yaml      # ничего не нужно настраивать
+xrun events <id>
+xrun metrics <id> --ascii
+```
 
 ## Как пользоваться
 

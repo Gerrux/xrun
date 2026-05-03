@@ -13,6 +13,25 @@
 
 `~/.claude/skills/xrun/scripts/` — опционально вспомогательные shell-скрипты, если что-то совсем мономотивное.
 
+## First-run / unconfigured state
+
+Перед запуском любого вендорного экспа скилл:
+1. Проверяет `xrun doctor --json` (exit 0 = core healthy).
+2. `xrun config show` (без `--secrets`) — что настроено.
+3. Если для нужного вендора нет кредов — НЕ пишет `credentials.toml`
+   вручную и НЕ пытается `! xrun init` (Claude Code-овая bash без TTY,
+   визард упадёт). Инструктирует пользователя открыть **отдельный
+   терминал** и запустить `xrun init` там. После выхода визарда —
+   `xrun doctor --json` и продолжить. Если ключ уже у пользователя в
+   руках, можно записать без TTY: `printf '%s' "$KEY" | xrun init
+   --non-interactive --mark-completed --vast-key -`.
+4. Для абсолютной проверки «xrun вообще жив» — `xrun launch
+   exp/templates/quickstart.yaml` (vendor=local, без кредов и данных).
+
+В non-interactive контекстах (CI/скрипт) скилл может использовать
+`xrun init --non-interactive --vast-key -` со stdin-pipe. В обычной сессии
+с пользователем — всегда визард, чтобы ключи не попадали в транскрипт.
+
 ## Триггеры
 
 Скилл активируется когда пользователь:

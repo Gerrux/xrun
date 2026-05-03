@@ -4,8 +4,11 @@ import asyncio
 import base64
 import json
 import os
+import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 from textual import events
 from textual.app import ComposeResult
@@ -23,6 +26,27 @@ _VENDORS = [
     ("vast",   "vast.ai",  "GPU cloud (primary)"),
     ("kaggle", "Kaggle",   "Notebook platform"),
 ]
+
+# Brand emblems and accent colors (used in CSS via .vendor-card-{vid})
+_LOGOS = {
+    "vast":   "⚡",
+    "kaggle": "◆",
+}
+_BRAND = {
+    "vast":   "#ff6b35",
+    "kaggle": "#20beff",
+}
+
+
+def _pill(state: str) -> str:
+    """Render a status pill. state ∈ {empty, checking, ok, error}."""
+    if state == "checking":
+        return "[#1a1b26 on #e0af68] CHECK [/]"
+    if state == "ok":
+        return "[#1a1b26 on #9ece6a] READY [/]"
+    if state == "error":
+        return "[#c0caf5 on #f7768e] ERROR [/]"
+    return "[#c0caf5 on #414868] EMPTY [/]"
 
 
 def _vendor_configured(creds: dict, vid: str) -> bool:
@@ -50,6 +74,7 @@ class VendorsScreen(Screen):
         Binding("i",          "import_native", "Import"),
         Binding("t",          "test",    "Test"),
         Binding("r",          "revoke",  "Revoke"),
+        Binding("u",          "open_quota", "Quota"),
         Binding("j,down",     "next",    "Down",   show=False),
         Binding("k,up",       "prev",    "Up",     show=False),
     ]
@@ -58,6 +83,9 @@ class VendorsScreen(Screen):
         super().__init__()
         self._cursor = 0
         self._creds  = config.read_credentials()
+        self._last_click: tuple[int, float] = (-1, 0.0)
+        self._pulse_timers: dict[int, Any] = {}
+        self._pulse_phase: dict[int, int] = {}
 
     def compose(self) -> ComposeResult:
         yield TitleBar("vendors")
@@ -65,23 +93,47 @@ class VendorsScreen(Screen):
         with Vertical(id="vendor-overview"):
             for i, (vid, vname, vdesc) in enumerate(_VENDORS):
                 configured = _vendor_configured(self._creds, vid)
-                dot_style  = "#9ece6a" if configured else "#414868"
-                dot_sym    = "●" if configured else "○"
-                with Horizontal(classes="vendor-row", id=f"vrow-{i}"):
-                    yield Static(f"[{dot_style}]{dot_sym}[/]", classes="vendor-dot",
-                                 id=f"vdot-{i}")
-                    yield Static(f"[bold #c0caf5]{vname}[/]  [#565f89]{vdesc}[/]",
-                                 classes="vendor-name-col")
-                    yield Static(
-                        "[#9ece6a]configured[/]" if configured else "[#414868]not configured[/]",
-                        classes="vendor-status-col", id=f"vstatus-{i}",
-                    )
-                    yield Static("", id=f"vinfo-{i}", classes="vendor-info-col")
+                brand      = _BRAND[vid]
+                state      = "ok" if configured else "empty"
+                with Vertical(
+                    classes=f"vendor-card vendor-card-{vid}",
+                    id=f"vrow-{i}",
+                ):
+                    with Horizontal(classes="vendor-card-head"):
+                        yield Static(
+                            f"[{brand}]{_LOGOS[vid]}[/]",
+                            classes="vendor-logo",
+                            id=f"vlogo-{i}",
+                        )
+                        yield Static(
+                            f"[bold #c0caf5]{vname}[/]  [#565f89]{vdesc}[/]",
+                            classes="vendor-card-title",
+                        )
+                        yield Static(
+                            _pill(state),
+                            id=f"vstatus-{i}",
+                            classes="vendor-card-pill",
+                        )
+                    with Horizontal(classes="vendor-card-foot"):
+                        yield Static(
+                            f"[{brand if configured else '#414868'}]"
+                            f"{'●' if configured else '○'}[/]",
+                            classes="vendor-card-dot",
+                            id=f"vdot-{i}",
+                        )
+                        yield Static(
+                            "[#565f89]Press[/] [#c0caf5]Enter[/] "
+                            "[#565f89]or double-click to edit[/]"
+                            if not configured else "",
+                            id=f"vinfo-{i}",
+                            classes="vendor-card-info",
+                        )
             yield Rule()
             yield Static(
                 "[#565f89]Enter/e[/] [#c0caf5]Edit[/]   "
                 "[#565f89]i[/] [#c0caf5]Import native[/]   "
                 "[#565f89]t[/] [#c0caf5]Test[/]   "
+                "[#565f89]u[/] [#c0caf5]Quota in browser[/]   "
                 "[#565f89]r[/] [#c0caf5]Revoke[/]   "
                 "[#565f89]j/k[/] [#c0caf5]Navigate[/]",
                 classes="vendor-hint",
@@ -98,29 +150,33 @@ class VendorsScreen(Screen):
         api_key = config.get_vast_api_key()
         if not api_key:
             return
-        status_widget = self.query_one("#vstatus-0", Static)
-        info_widget   = self.query_one("#vinfo-0",   Static)
-        status_widget.update("[#e0af68]checking…[/]")
+        idx = 0
+        status_widget = self.query_one(f"#vstatus-{idx}", Static)
+        info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
+        status_widget.update(_pill("checking"))
+        info_widget.update("")
+        self._start_pulse(idx, "vast")
         try:
             info = await _fetch_user(api_key)
             if not self.is_attached:
                 return
             name   = info.get("username") or info.get("email") or "?"
             credit = float(info.get("credit", 0))
-            status_widget.update("[bold #9ece6a]✓ connected[/]")
+            self._stop_pulse(idx, ok=True, vid="vast")
+            status_widget.update(_pill("ok"))
             info_widget.update(
                 f"[#565f89]user:[/] [#c0caf5]{name}[/]  "
                 f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
             )
-            self.query_one("#vdot-0", Static).update("[#9ece6a]●[/]")
             cache = getattr(self.app, "_vast_status_cache", None)
             if isinstance(cache, dict):
                 cache.update({"credit": credit, "username": name})
         except Exception as exc:
             if not self.is_attached:
                 return
-            status_widget.update(f"[#f7768e]✗ {exc}[/]")
-            self.query_one("#vdot-0", Static).update("[#f7768e]●[/]")
+            self._stop_pulse(idx, ok=False, vid="vast")
+            status_widget.update(_pill("error"))
+            info_widget.update(f"[#f7768e]{exc}[/]")
 
     async def _check_kaggle(self) -> None:
         v = self._creds.get("kaggle", {})
@@ -137,23 +193,25 @@ class VendorsScreen(Screen):
         idx = next(i for i, (vid, _, _) in enumerate(_VENDORS) if vid == "kaggle")
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
-        status_widget.update("[#e0af68]checking…[/]")
+        status_widget.update(_pill("checking"))
         info_widget.update("")
+        self._start_pulse(idx, "kaggle")
         try:
             label, info = await _test_kaggle_api(username, key, token)
             if not self.is_attached:
                 return
-            status_widget.update("[bold #9ece6a]✓ connected[/]")
+            self._stop_pulse(idx, ok=True, vid="kaggle")
+            status_widget.update(_pill("ok"))
             info_widget.update(f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}")
-            self.query_one(f"#vdot-{idx}", Static).update("[#9ece6a]●[/]")
             cache = getattr(self.app, "_kaggle_status_cache", None)
             if isinstance(cache, dict):
                 cache.update({"kaggle_user": label, "kaggle_connected": True})
         except Exception as exc:
             if not self.is_attached:
                 return
-            status_widget.update(f"[#f7768e]✗ {exc}[/]")
-            self.query_one(f"#vdot-{idx}", Static).update("[#f7768e]●[/]")
+            self._stop_pulse(idx, ok=False, vid="kaggle")
+            status_widget.update(_pill("error"))
+            info_widget.update(f"[#f7768e]{exc}[/]")
             cache = getattr(self.app, "_kaggle_status_cache", None)
             if isinstance(cache, dict):
                 cache.clear()
@@ -162,7 +220,7 @@ class VendorsScreen(Screen):
 
     def _highlight(self, idx: int) -> None:
         for i in range(len(_VENDORS)):
-            row = self.query_one(f"#vrow-{i}", Horizontal)
+            row = self.query_one(f"#vrow-{i}", Vertical)
             if i == idx:
                 row.add_class("vendor-row-active")
             else:
@@ -285,6 +343,23 @@ class VendorsScreen(Screen):
             else:
                 await _do_kaggle(True)
 
+    def action_open_quota(self) -> None:
+        import webbrowser
+        vid = _VENDORS[self._cursor][0]
+        urls = {
+            "vast":   "https://cloud.vast.ai/billing/",
+            "kaggle": "https://www.kaggle.com/settings",
+        }
+        url = urls.get(vid)
+        if not url:
+            self.notify(f"No quota page for {vid}", severity="warning")
+            return
+        try:
+            webbrowser.open(url)
+            self.notify(f"Opened {url}", severity="information")
+        except Exception as exc:
+            self.notify(f"Failed to open browser: {exc}", severity="error")
+
     async def action_revoke(self) -> None:
         vid, vname, _ = _VENDORS[self._cursor]
         idx = self._cursor
@@ -308,14 +383,56 @@ class VendorsScreen(Screen):
     def _refresh_row(self, idx: int) -> None:
         vid = _VENDORS[idx][0]
         configured = _vendor_configured(self._creds, vid)
-        dot_style  = "#9ece6a" if configured else "#414868"
-        self.query_one(f"#vdot-{idx}",    Static).update(
-            f"[{dot_style}]{'●' if configured else '○'}[/]"
+        brand = _BRAND[vid]
+        self.query_one(f"#vdot-{idx}", Static).update(
+            f"[{brand if configured else '#414868'}]"
+            f"{'●' if configured else '○'}[/]"
         )
         self.query_one(f"#vstatus-{idx}", Static).update(
-            "[#9ece6a]configured[/]" if configured else "[#414868]not configured[/]"
+            _pill("ok" if configured else "empty")
         )
-        self.query_one(f"#vinfo-{idx}",   Static).update("")
+        self.query_one(f"#vinfo-{idx}", Static).update(
+            "" if configured else
+            "[#565f89]Press[/] [#c0caf5]Enter[/] "
+            "[#565f89]or double-click to edit[/]"
+        )
+
+    # ── Pulse animation on status dot during 'checking' state ────────────────
+
+    def _start_pulse(self, idx: int, vid: str) -> None:
+        self._stop_pulse(idx, ok=False, vid=vid, _restore=False)
+        self._pulse_phase[idx] = 0
+        frames = ["◐", "◓", "◑", "◒"]
+        brand  = _BRAND[vid]
+
+        def _tick() -> None:
+            try:
+                w = self.query_one(f"#vdot-{idx}", Static)
+            except Exception:
+                return
+            ph = self._pulse_phase.get(idx, 0)
+            self._pulse_phase[idx] = (ph + 1) % len(frames)
+            w.update(f"[{brand}]{frames[ph]}[/]")
+
+        self._pulse_timers[idx] = self.set_interval(0.15, _tick)
+
+    def _stop_pulse(self, idx: int, *, ok: bool, vid: str,
+                    _restore: bool = True) -> None:
+        timer = self._pulse_timers.pop(idx, None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._pulse_phase.pop(idx, None)
+        if not _restore:
+            return
+        try:
+            w = self.query_one(f"#vdot-{idx}", Static)
+        except Exception:
+            return
+        color = _BRAND[vid] if ok else "#f7768e"
+        w.update(f"[{color}]●[/]")
 
     def on_click(self, event: events.Click) -> None:
         widget = event.widget
@@ -326,9 +443,20 @@ class VendorsScreen(Screen):
             if wid.startswith("vrow-"):
                 try:
                     idx = int(wid[5:])
-                    if self._cursor != idx:
-                        self._cursor = idx
-                        self._highlight(idx)
+                    self._cursor = idx
+                    self._highlight(idx)
+                    is_double = getattr(event, "chain", 1) >= 2
+                    if not is_double:
+                        import time as _time
+                        now = _time.monotonic()
+                        last_idx, last_t = self._last_click
+                        if last_idx == idx and (now - last_t) < 0.5:
+                            is_double = True
+                            self._last_click = (-1, 0.0)
+                        else:
+                            self._last_click = (idx, now)
+                    if is_double:
+                        asyncio.create_task(self.action_edit())
                 except (ValueError, IndexError):
                     pass
                 return
@@ -433,6 +561,47 @@ class VendorEditScreen(Screen):
                         "[#565f89]Native fallback:[/] [#7aa2f7]~/.config/vastai/vast_api_key[/]",
                         classes="form-footer-hint",
                     )
+                    yield Static(
+                        "[bold #bb9af7]SSH Keys[/] "
+                        "[#565f89](needed for `xrun pull`, live logs, and SSH into rented instances)[/]",
+                        classes="form-section",
+                    )
+                    yield Static(
+                        "[#565f89]Loading registered keys…[/]",
+                        id="vast-ssh-list",
+                        classes="form-hint",
+                    )
+                    with Horizontal(classes="form-row"):
+                        yield Label("Public key:", classes="form-label")
+                        yield Input(
+                            "",
+                            id="input-ssh-pubkey",
+                            placeholder="ssh-ed25519 AAAA…  (paste contents of *.pub)",
+                            classes="form-input",
+                        )
+                    with Horizontal(classes="form-actions"):
+                        yield Button("Add key",            id="btn-ssh-add")
+                        yield Button("Load from ~/.ssh",   id="btn-ssh-load")
+                        yield Button("Generate new",       id="btn-ssh-gen")
+                        yield Button("Refresh",            id="btn-ssh-refresh")
+                    yield Static("", id="ssh-result", classes="form-hint")
+
+                    # Region filter — applies to offer search via xrun-core
+                    # config key `search.exclude_countries`.
+                    yield Static(
+                        "[bold #bb9af7]Region filter[/] "
+                        "[#565f89](skip offers from these countries during search)[/]",
+                        classes="form-section",
+                    )
+                    yield Static(
+                        "[#565f89]Loading current exclusions…[/]",
+                        id="region-current",
+                        classes="form-hint",
+                    )
+                    with Horizontal(classes="form-actions"):
+                        yield Button("Pick countries…", id="btn-pick-countries-vast")
+                        yield Button("Clear",           id="btn-clear-countries")
+                    yield Static("", id="region-result", classes="form-hint")
 
             yield Static("", id="test-result", classes="form-hint")
             yield Static("", classes="form-spacer")
@@ -449,6 +618,9 @@ class VendorEditScreen(Screen):
             if event.input.id == "input-api-key":
                 self.query_one("#key-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
+                if self._vid == "vast":
+                    # Re-probe SSH keys with the new credential.
+                    self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
             elif event.input.id == "input-kaggle-token":
                 self.query_one("#token-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
@@ -458,11 +630,295 @@ class VendorEditScreen(Screen):
         except Exception:
             pass
 
+    def on_mount(self) -> None:
+        if self._vid == "vast":
+            self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
+            self.run_worker(self._load_excluded_countries(), exclusive=True, group="region")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        match event.button.id:
-            case "btn-save": self.action_save()
-            case "btn-test": self.run_worker(self._do_test(), exclusive=True)
-            case "btn-back": self.action_go_back()
+        bid = event.button.id or ""
+        if bid == "btn-save":
+            self.action_save()
+        elif bid == "btn-test":
+            self.run_worker(self._do_test(), exclusive=True)
+        elif bid == "btn-back":
+            self.action_go_back()
+        elif bid == "btn-ssh-add":
+            self.run_worker(self._do_ssh_add(), exclusive=True, group="ssh")
+        elif bid == "btn-ssh-load":
+            self._do_ssh_load_local()
+        elif bid == "btn-ssh-gen":
+            self.run_worker(self._do_ssh_generate(), exclusive=True, group="ssh")
+        elif bid == "btn-ssh-refresh":
+            self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
+        elif bid.startswith("btn-ssh-del-"):
+            key_id = bid[len("btn-ssh-del-"):]
+            self.run_worker(self._do_ssh_delete(key_id), exclusive=True, group="ssh")
+        elif bid == "btn-pick-countries-vast":
+            self._open_country_picker()
+        elif bid == "btn-clear-countries":
+            self.run_worker(self._save_excluded_countries([]),
+                            exclusive=True, group="region")
+
+    # ── Region filter (vast only) ────────────────────────────────────────────
+
+    async def _load_excluded_countries(self) -> list[str]:
+        from xrun_tui import services
+        ok, data, err = await services.config_show(secrets=False)
+        codes: list[str] = []
+        if ok:
+            search_cfg = data.get("search") or {}
+            raw = search_cfg.get("exclude_countries") or []
+            if isinstance(raw, list):
+                codes = [str(c).strip().upper() for c in raw if str(c).strip()]
+            elif isinstance(raw, str):
+                codes = [c.strip().upper() for c in raw.split(",") if c.strip()]
+        try:
+            from xrun_tui.screens.country_exclude import _flag
+            w = self.query_one("#region-current", Static)
+            if codes:
+                pretty = " ".join(_flag(c) for c in codes)
+                w.update(f"[#565f89]Excluded:[/] {pretty}")
+            elif not ok:
+                w.update(f"[#414868]Could not read config: {err[:80]}[/]")
+            else:
+                w.update("[#414868]No countries excluded.[/]")
+        except Exception:
+            pass
+        self._excluded_countries = codes
+        return codes
+
+    def _open_country_picker(self) -> None:
+        from xrun_tui.screens.country_exclude import CountryExcludeScreen
+        current = list(getattr(self, "_excluded_countries", []) or [])
+
+        def _done(result: list[str] | None) -> None:
+            if result is None:
+                return
+            self.run_worker(
+                self._save_excluded_countries(result),
+                exclusive=True, group="region",
+            )
+
+        self.app.push_screen(CountryExcludeScreen(current), _done)
+
+    async def _save_excluded_countries(self, codes: list[str]) -> None:
+        from xrun_tui.screens.settings import _xrun_config_set
+        value = ", ".join(codes)
+        result = self.query_one("#region-result", Static)
+        result.update("[#e0af68]Saving…[/]")
+        ok, err = await _xrun_config_set("search.exclude_countries", value)
+        if ok:
+            result.update(
+                f"[bold #9ece6a]✓ Saved.[/] "
+                f"[#565f89]{len(codes)} countr{'y' if len(codes) == 1 else 'ies'} excluded.[/]"
+            )
+            await self._load_excluded_countries()
+        else:
+            result.update(f"[bold #f7768e]✗ {err[:120]}[/]")
+
+    # ── SSH key management (vast only) ────────────────────────────────────────
+
+    def _current_api_key(self) -> str:
+        try:
+            return self.query_one("#input-api-key", Input).value.strip()
+        except Exception:
+            return ""
+
+    async def _refresh_ssh_keys(self) -> None:
+        try:
+            list_widget = self.query_one("#vast-ssh-list", Static)
+        except Exception:
+            return
+        api_key = self._current_api_key()
+        if not api_key:
+            list_widget.update("[#e0af68]Enter API key above to manage SSH keys.[/]")
+            return
+        list_widget.update("[#565f89]Loading registered keys…[/]")
+        try:
+            keys = await _list_vast_ssh_keys(api_key)
+        except Exception as exc:
+            list_widget.update(f"[bold #f7768e]✗ Failed to fetch keys:[/] {exc}")
+            return
+        if not keys:
+            list_widget.update(
+                "[#e0af68]No SSH keys registered.[/] "
+                "[#565f89]Paste a public key below or click[/] [bold]Load from ~/.ssh[/]."
+            )
+            return
+        # Render a compact list. Avoid mounting per-row buttons (Static can't host
+        # them) — surface ids the user can revoke via the existing Vendors screen
+        # in a follow-up. Here we just show them.
+        lines = ["[bold #c0caf5]Registered keys[/]"]
+        for k in keys:
+            kid = k.get("id", "?")
+            label = _short_pubkey(k.get("ssh_key", ""))
+            kid_str = "primary" if kid == "-" else f"#{kid}"
+            lines.append(f"  [#9ece6a]●[/] [#414868]{kid_str:<12}[/] {label}")
+        list_widget.update("\n".join(lines))
+
+    async def _do_ssh_add(self) -> None:
+        result = self.query_one("#ssh-result", Static)
+        api_key = self._current_api_key()
+        if not api_key:
+            self.notify("Enter and save an API key first.", severity="warning")
+            return
+        try:
+            inp = self.query_one("#input-ssh-pubkey", Input)
+        except Exception:
+            return
+        pub = inp.value.strip()
+        if not pub:
+            self.notify("Paste a public key first (or click 'Load from ~/.ssh').", severity="warning")
+            return
+        if not pub.startswith(("ssh-", "ecdsa-", "sk-")):
+            self.notify(
+                "That doesn't look like a public key. Expected a single line starting "
+                "with 'ssh-ed25519' / 'ssh-rsa' / 'ecdsa-…'.",
+                severity="warning", timeout=10,
+            )
+            return
+        result.update("[#e0af68]Registering key…[/]")
+        try:
+            await _add_vast_ssh_key(api_key, pub)
+        except Exception as exc:
+            result.update(f"[bold #f7768e]✗ {exc}[/]")
+            return
+        inp.value = ""
+        result.update("[bold #9ece6a]✓ Key registered.[/]")
+        await self._refresh_ssh_keys()
+
+    async def _do_ssh_delete(self, key_id: str) -> None:
+        api_key = self._current_api_key()
+        if not api_key or key_id in ("", "-"):
+            return
+        result = self.query_one("#ssh-result", Static)
+        result.update(f"[#e0af68]Deleting key #{key_id}…[/]")
+        try:
+            await _delete_vast_ssh_key(api_key, key_id)
+        except Exception as exc:
+            result.update(f"[bold #f7768e]✗ {exc}[/]")
+            return
+        result.update(f"[bold #9ece6a]✓ Key #{key_id} removed.[/]")
+        await self._refresh_ssh_keys()
+
+    async def _do_ssh_generate(self) -> None:
+        """Generate ~/.ssh/id_ed25519 via ssh-keygen and load the .pub into the form.
+
+        Refuses to overwrite an existing key — the user must delete it manually
+        or pick a different name. We don't ask for a passphrase here (empty
+        passphrase) since vast.ai's automation flow assumes unattended SSH; if
+        the user wants a passphrase, they should run ssh-keygen themselves and
+        click 'Load from ~/.ssh' afterwards.
+        """
+        result = self.query_one("#ssh-result", Static)
+        ssh_dir = Path.home() / ".ssh"
+        priv = ssh_dir / "id_ed25519"
+        pub = ssh_dir / "id_ed25519.pub"
+        if priv.exists() or pub.exists():
+            # Already have a key — auto-load it so the user only needs one
+            # more click (Add key) to register it on vast.ai. We never
+            # silently overwrite an existing private key.
+            if pub.exists():
+                try:
+                    pub_text = pub.read_text(encoding="utf-8").strip()
+                    self.query_one("#input-ssh-pubkey", Input).value = pub_text
+                    result.update(
+                        f"[bold #9ece6a]✓ Existing key loaded[/] [#c0caf5]({pub.name})[/]. "
+                        f"[#565f89]Press[/] [bold]Add key[/] [#565f89]to register on vast.ai. "
+                        f"To make a fresh key, rename or delete[/] [bold]{priv}[/] "
+                        f"[#565f89]first.[/]"
+                    )
+                    return
+                except Exception:
+                    pass
+            result.update(
+                f"[#e0af68]A private key exists at[/] [bold]{priv}[/] "
+                f"[#565f89]but its[/] [bold]{pub.name}[/] [#565f89]is missing. "
+                f"Regenerate the public part with[/] "
+                f"[bold]ssh-keygen -y -f {priv} > {pub}[/][#565f89], "
+                f"or rename the private key and click[/] [bold]Generate new[/] "
+                f"[#565f89]again.[/]"
+            )
+            return
+        ssh_dir.mkdir(parents=True, exist_ok=True)
+        result.update("[#e0af68]Running ssh-keygen…[/]")
+
+        async def _spawn() -> tuple[int, str]:
+            kwargs: dict[str, Any] = dict(
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            if sys.platform == "win32":
+                import subprocess as _sub
+                kwargs["creationflags"] = _sub.CREATE_NO_WINDOW
+            proc = await asyncio.create_subprocess_exec(
+                "ssh-keygen", "-t", "ed25519",
+                "-f", str(priv),
+                "-N", "",                # empty passphrase
+                "-C", f"xrun-vast@{os.environ.get('COMPUTERNAME') or 'host'}",
+                **kwargs,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            return proc.returncode or 0, out.decode(errors="replace")
+
+        try:
+            code, output = await _spawn()
+        except FileNotFoundError:
+            result.update(
+                "[bold #f7768e]✗ ssh-keygen not found in PATH.[/] "
+                "[#565f89]On Windows install OpenSSH Client via "
+                "Settings → Apps → Optional features.[/]"
+            )
+            return
+        except Exception as exc:
+            result.update(f"[bold #f7768e]✗ ssh-keygen failed:[/] {exc}")
+            return
+        if code != 0 or not pub.exists():
+            tail = output.strip().splitlines()[-1] if output.strip() else "non-zero exit"
+            result.update(f"[bold #f7768e]✗ ssh-keygen failed:[/] {tail}")
+            return
+
+        try:
+            pub_text = pub.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            result.update(f"[bold #f7768e]✗ Could not read {pub}:[/] {exc}")
+            return
+        try:
+            self.query_one("#input-ssh-pubkey", Input).value = pub_text
+        except Exception:
+            pass
+        result.update(
+            f"[bold #9ece6a]✓ Generated[/] [#c0caf5]{priv}[/] "
+            f"[#565f89](no passphrase). Public key loaded — press[/] "
+            f"[bold]Add key[/] [#565f89]to register on vast.ai.[/]"
+        )
+
+    def _do_ssh_load_local(self) -> None:
+        result = self.query_one("#ssh-result", Static)
+        found = _scan_local_pubkeys()
+        if not found:
+            result.update(
+                "[#e0af68]No *.pub files in[/] [bold]~/.ssh[/]. "
+                "[#565f89]Generate one with[/] [bold]ssh-keygen -t ed25519[/]."
+            )
+            return
+        # Prefer ed25519 over rsa over the rest.
+        priority = {"id_ed25519.pub": 0, "id_rsa.pub": 1}
+        found.sort(key=lambda pc: priority.get(pc[0].name, 9))
+        path, text = found[0]
+        try:
+            self.query_one("#input-ssh-pubkey", Input).value = text
+        except Exception:
+            return
+        extras = (
+            f"  [#414868](+{len(found) - 1} more in ~/.ssh — edit field manually if needed)[/]"
+            if len(found) > 1 else ""
+        )
+        result.update(
+            f"[#565f89]Loaded[/] [bold]{path.name}[/]. "
+            f"[#565f89]Press[/] [bold]Add key[/] [#565f89]to register.[/]{extras}"
+        )
 
     def action_save(self) -> None:
         creds = dict(self._creds)
@@ -566,7 +1022,12 @@ async def _fetch_user(api_key: str) -> dict:
 
 
 async def _test_kaggle_api(username: str, key: str, token: str = "") -> tuple[str, str]:
-    """Test Kaggle credentials. Returns (label, info_markup) on success."""
+    """Test Kaggle credentials. Returns (label, info_markup) on success.
+
+    Hits /competitions/list?pageSize=1 only as an auth probe — the response
+    body is discarded. The Kaggle public API doesn't expose remaining quota;
+    we surface the well-known free-tier limits instead.
+    """
     def _do() -> tuple[str, str]:
         if token:
             auth_header = f"Bearer {token}"
@@ -580,10 +1041,169 @@ async def _test_kaggle_api(username: str, key: str, token: str = "") -> tuple[st
             headers={"Authorization": auth_header},
         )
         with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read())
-        count = len(data) if isinstance(data, list) else "?"
-        return label, f"[#565f89]competitions visible:[/] [#c0caf5]{count}[/]"
+            r.read()
+        info = (
+            "[#565f89]free tier:[/] "
+            "[#9ece6a]CPU ∞[/][#565f89], 24h/session · [/]"
+            "[#9ece6a]GPU 30h[/][#565f89]/wk, 12h/session · [/]"
+            "[#9ece6a]TPU 20h[/][#565f89]/wk, 9h/session[/]"
+        )
+        return label, info
     return await asyncio.to_thread(_do)
+
+
+async def _list_vast_ssh_keys(api_key: str) -> list[dict]:
+    """Return registered SSH keys for the vast.ai account.
+
+    Each entry carries at minimum {id, ssh_key}. Older accounts may also have a
+    single primary key on `users/current/.ssh_key`; we surface that as a virtual
+    entry with id=`-` so the user can see it even if the dedicated endpoint is
+    empty.
+    """
+    def _do() -> list[dict]:
+        keys: list[dict] = []
+        try:
+            req = urllib.request.Request(
+                "https://console.vast.ai/api/v0/ssh/",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            if isinstance(data, list):
+                keys = data
+            elif isinstance(data, dict):
+                keys = data.get("results") or data.get("ssh_keys") or []
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+        # Legacy primary-key field on the user record.
+        try:
+            req = urllib.request.Request(
+                "https://console.vast.ai/api/v0/users/current/",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                user = json.loads(r.read())
+            primary = (user.get("ssh_key") or "").strip()
+            if primary and not any(
+                (k.get("ssh_key") or "").strip() == primary for k in keys
+            ):
+                keys.insert(0, {"id": "-", "ssh_key": primary, "name": "primary"})
+        except Exception:
+            pass
+        return keys
+    return await asyncio.to_thread(_do)
+
+
+async def _add_vast_ssh_key(api_key: str, pubkey: str) -> None:
+    """Register a public key with the vast.ai account.
+
+    Tries the modern collection endpoint first; on 400/404/405 falls back to
+    `PUT /users/current/.ssh_key` (legacy single-key model). Surfaces the
+    server's error body on final failure so the user can see what vast.ai is
+    actually complaining about.
+    """
+    pubkey = pubkey.strip()
+
+    def _post(url: str, body_obj: dict, method: str = "POST") -> tuple[bool, int, str]:
+        body = json.dumps(body_obj).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                r.read()
+            return True, 200, ""
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            # Strip noisy HTML wrappers — vast.ai usually returns JSON or a
+            # short plain-text reason.
+            if detail.startswith("<"):
+                detail = ""
+            return False, e.code, detail
+        except urllib.error.URLError as e:
+            return False, 0, str(e.reason)
+
+    def _do() -> None:
+        ok, code, detail = _post(
+            "https://console.vast.ai/api/v0/ssh/",
+            {"ssh_key": pubkey},
+        )
+        if ok:
+            return
+        # Fall back to the legacy single-key endpoint for accounts that don't
+        # expose the collection (or that 400 on it for unknown reasons).
+        if code in (400, 404, 405):
+            ok2, code2, detail2 = _post(
+                "https://console.vast.ai/api/v0/users/current/",
+                {"ssh_key": pubkey},
+                method="PUT",
+            )
+            if ok2:
+                return
+            # Prefer the original /ssh/ error message if it's informative,
+            # otherwise show the legacy endpoint's reason.
+            primary = detail or f"HTTP {code}"
+            secondary = detail2 or f"HTTP {code2}"
+            raise RuntimeError(
+                f"vast.ai rejected the key. /ssh/ → {primary}; "
+                f"/users/current/ → {secondary}"
+            )
+        raise RuntimeError(f"HTTP {code}: {detail or 'Bad Request'}")
+
+    await asyncio.to_thread(_do)
+
+
+async def _delete_vast_ssh_key(api_key: str, key_id: str) -> None:
+    def _do() -> None:
+        req = urllib.request.Request(
+            f"https://console.vast.ai/api/v0/ssh/{key_id}/",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+    await asyncio.to_thread(_do)
+
+
+def _scan_local_pubkeys() -> list[tuple[Path, str]]:
+    """Return [(path, contents)] for any *.pub under ~/.ssh."""
+    found: list[tuple[Path, str]] = []
+    ssh_dir = Path.home() / ".ssh"
+    if not ssh_dir.is_dir():
+        return found
+    for p in sorted(ssh_dir.glob("*.pub")):
+        try:
+            text = p.read_text(encoding="utf-8").strip()
+            if text.startswith(("ssh-", "ecdsa-", "sk-")):
+                found.append((p, text))
+        except Exception:
+            continue
+    return found
+
+
+def _short_pubkey(pubkey: str) -> str:
+    parts = pubkey.strip().split()
+    if not parts:
+        return "(empty)"
+    algo = parts[0]
+    body = parts[1] if len(parts) > 1 else ""
+    comment = " ".join(parts[2:]) if len(parts) > 2 else ""
+    tail = body[-12:] if len(body) > 12 else body
+    label = f"{algo} …{tail}"
+    if comment:
+        label += f"  [#565f89]{comment}[/]"
+    return label
 
 
 async def fetch_vast_instances(api_key: str) -> list[dict]:

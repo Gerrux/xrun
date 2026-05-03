@@ -223,11 +223,12 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     }
 
     // ---- runtime hook ----
-    // Only relevant when at least one vendor that runs training locally-visible
-    // python is in play (vast, ssh, local). Kaggle ships with the hook server-side.
+    // Only relevant when training runs in-process on this host (vendor: local).
+    // For vast/ssh/kaggle the hook is bootstrapped on the remote instance, so
+    // a local import-check is noise. `--all` still surfaces it on demand.
     let hook_relevant = active_vendors
         .iter()
-        .any(|v| matches!(v, Vendor::Vast | Vendor::Ssh | Vendor::Local))
+        .any(|v| matches!(v, Vendor::Local))
         || args.all;
     if hook_relevant {
         let hook_ok = check_python_hook();

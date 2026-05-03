@@ -29,6 +29,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Input, RadioSet, Static
 
+from xrun_tui import config as _config
 from xrun_tui.screens.wizard import steps as _steps
 from xrun_tui.screens.wizard.catalog import (
     KAGGLE_FIELDS,
@@ -68,6 +69,63 @@ class WizardScreen(Screen):
         self._mlflow_fields: dict[str, str] = {}
         self._doctor_loaded = False
         self._probe_results: list[dict] = []
+        # Vendors / sinks that already have credentials on disk. Rendered as
+        # "● configured" badges so re-running `xrun init` shows the user what
+        # is already set up — without echoing secrets back into the form.
+        self._existing_vendors: set[str] = set()
+        self._existing_sinks: set[str] = set()
+        self._existing_ssh_alias: str | None = None
+        self._wizard_was_completed = False
+        self._load_existing_state()
+
+    def _load_existing_state(self) -> None:
+        """Pre-populate wizard state from already-saved config + credentials.
+
+        Non-secret fields (SSH host/user/port/key path, MLflow URL, Kaggle
+        legacy username) are filled into inputs so the user can see / edit
+        them. Secrets (API keys, tokens, passwords) stay blank — the existing
+        value is preserved on save unless the user types a new one. We only
+        record which vendors/sinks are configured, for badge rendering.
+        """
+        creds = _config.read_credentials()
+        cfg = _config.read_global_config()
+        self._wizard_was_completed = bool(cfg.get("ui", {}).get("wizard_completed", False))
+
+        if creds.get("vast", {}).get("api_key"):
+            self._existing_vendors.add("vast")
+            self._selected_vendors.add("vast")
+
+        kag = creds.get("kaggle", {}) or {}
+        if kag.get("token") or (kag.get("username") and kag.get("key")):
+            self._existing_vendors.add("kaggle")
+            self._selected_vendors.add("kaggle")
+            if usr := kag.get("username"):
+                self._kaggle_fields["username"] = usr
+
+        ssh_section = creds.get("ssh", {}) or {}
+        # First [ssh.<alias>] block wins — wizard handles a single host.
+        for alias, data in ssh_section.items():
+            if isinstance(data, dict) and data.get("host") and data.get("user"):
+                self._existing_vendors.add("ssh")
+                self._existing_ssh_alias = alias
+                self._selected_vendors.add("ssh")
+                self._ssh_fields["alias"] = alias
+                for field in ("host", "user", "port", "key"):
+                    if v := data.get(field):
+                        self._ssh_fields[field] = str(v)
+                break
+
+        if mlflow_url := cfg.get("mlflow", {}).get("url"):
+            self._mlflow_fields["url"] = mlflow_url
+            self._existing_sinks.add("mlflow")
+
+        sinks = cfg.get("metrics", {}).get("sinks") or []
+        if sinks:
+            self._selected_sinks = set(sinks)
+            self._log_mode = "mirror"
+        elif self._wizard_was_completed:
+            # Saved config explicitly chose no sinks → polling.
+            self._selected_sinks = set()
 
     # ── Composition ───────────────────────────────────────────────────────────
 

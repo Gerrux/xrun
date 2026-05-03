@@ -54,6 +54,17 @@ async def render_local(screen: "WizardScreen", body: Vertical) -> None:
         "",
         f"[#565f89]OS:[/]   [#c0caf5]{os_str}[/]  [#414868]({arch})[/]",
     ]
+    if screen._wizard_was_completed:
+        existing_v = ", ".join(sorted(screen._existing_vendors)) or "none"
+        existing_s = ", ".join(sorted(screen._existing_sinks)) or "none"
+        lines.append("")
+        lines.append(
+            f"[#9ece6a]● Returning user[/] — wizard was completed previously.\n"
+            f"[#565f89]Configured vendors:[/] [#c0caf5]{existing_v}[/]\n"
+            f"[#565f89]Configured sinks:  [/] [#c0caf5]{existing_s}[/]\n"
+            f"[#565f89]Existing fields are pre-filled. Secrets stay blank — "
+            f"leave them blank to keep, or type new values to overwrite.[/]"
+        )
     if gpus:
         lines.append(f"[#565f89]GPU:[/]  [#9ece6a]{len(gpus)} detected[/]")
         for g in gpus:
@@ -73,16 +84,29 @@ async def render_local(screen: "WizardScreen", body: Vertical) -> None:
 
 
 async def render_vendors(screen: "WizardScreen", body: Vertical) -> None:
+    header_extra = ""
+    if screen._existing_vendors:
+        configured = ", ".join(sorted(screen._existing_vendors))
+        header_extra = (
+            f"\n\n[#9ece6a]● Already configured:[/] [#c0caf5]{configured}[/]"
+            "  [#565f89](leave secret fields blank to keep existing values)[/]"
+        )
     await body.mount(Static(
         "[bold #c0caf5]Step 2 — Vendors[/]\n\n"
         "[#565f89]Tab to move between cards · Space to toggle · "
-        "[/][bold]o[/][#565f89] opens the API-key page of the focused card.[/]",
+        "[/][bold]o[/][#565f89] opens the API-key page of the focused card.[/]"
+        + header_extra,
         classes="wizard-text",
     ))
     for vid, label, desc, _url, available, takes_key in VENDOR_CARDS:
         row = Vertical(classes="wizard-vendor-row")
         await body.mount(row)
-        badge = "" if available else "  [#e0af68][v0.7+][/]"
+        if not available:
+            badge = "  [#e0af68][v0.7+][/]"
+        elif vid in screen._existing_vendors:
+            badge = "  [#9ece6a]● configured[/]"
+        else:
+            badge = ""
         cb = Checkbox(
             f"[bold]{label}[/]{badge}  [#565f89]{desc}[/]",
             value=(vid in screen._selected_vendors and available),
@@ -102,12 +126,17 @@ async def _mount_kaggle_form(screen: "WizardScreen", row: Vertical) -> None:
     kform = Vertical(id="wiz-kaggle-form", classes="wizard-ssh-form")
     kform.display = "kaggle" in screen._selected_vendors
     await row.mount(kform)
-    await kform.mount(Static(
+    hint = (
         "[#565f89]Either fill the JWT token, or username + API key. "
         "Leave blank if [/][bold]~/.kaggle/kaggle.json[/][#565f89] is "
-        "already on this machine — xrun imports it automatically.[/]",
-        classes="wizard-text",
-    ))
+        "already on this machine — xrun imports it automatically.[/]"
+    )
+    if "kaggle" in screen._existing_vendors:
+        hint = (
+            "[#9ece6a]● Kaggle credentials already on disk[/] "
+            "[#565f89]— leave blank to keep them, or paste new values to overwrite.[/]"
+        )
+    await kform.mount(Static(hint, classes="wizard-text"))
     await kform.mount(Static(
         " Get token ↗  Open Kaggle Account → Tokens ",
         id="wiz-open-kaggle",
@@ -134,10 +163,15 @@ async def _mount_vendor_key_form(
         id=f"wiz-open-{vid}",
         classes="wizard-link-btn",
     ))
+    placeholder = (
+        f"● {label} key already saved — leave blank to keep, paste new value to overwrite"
+        if vid in screen._existing_vendors
+        else f"Paste {label} API key (optional — can also set later)"
+    )
     await vform.mount(Input(
         value=screen._pasted_keys.get(vid, ""),
         password=True,
-        placeholder=f"Paste {label} API key (optional — can also set later)",
+        placeholder=placeholder,
         id=f"wiz-vendor-input-{vid}",
         classes="wizard-input",
     ))
@@ -205,7 +239,12 @@ async def mount_sinks(screen: "WizardScreen", container: Vertical) -> None:
         classes="wizard-text",
     ))
     for sid, label, available, _url in SINKS:
-        badge = "" if available else "  [#e0af68][v0.8][/]"
+        if not available:
+            badge = "  [#e0af68][v0.8][/]"
+        elif sid in screen._existing_sinks:
+            badge = "  [#9ece6a]● configured[/]"
+        else:
+            badge = ""
         cb = Checkbox(
             f"[bold]{label}[/]{badge}",
             value=(sid in screen._selected_sinks and available),
@@ -221,13 +260,19 @@ async def _mount_mlflow_form(screen: "WizardScreen", container: Vertical) -> Non
     mform = Vertical(id="wiz-mlflow-form", classes="wizard-ssh-form")
     mform.display = "mlflow" in screen._selected_sinks
     await container.mount(mform)
-    await mform.mount(Static(
+    hint = (
         "[#565f89]Tracking server URL is required. Auth is optional: "
         "use a Bearer token, OR username+password, OR leave blank for an "
         "anonymous local server. Stored in[/] [bold]credentials.toml[/][#565f89] "
-        "(except URL — goes to[/] [bold]config.toml[/][#565f89]).[/]",
-        classes="wizard-text",
-    ))
+        "(except URL — goes to[/] [bold]config.toml[/][#565f89]).[/]"
+    )
+    if "mlflow" in screen._existing_sinks:
+        hint = (
+            f"[#9ece6a]● MLflow already configured[/] "
+            f"[#565f89]— URL pre-filled. Auth fields stay blank; type new "
+            f"values to overwrite, leave blank to keep existing.[/]"
+        )
+    await mform.mount(Static(hint, classes="wizard-text"))
     await mform.mount(Static(
         " Docs ↗  MLflow tracking-server setup ",
         id="wiz-open-mlflow",
@@ -250,7 +295,12 @@ async def render_recap(screen: "WizardScreen", body: Vertical) -> None:
     sinks = sorted(screen._selected_sinks) if screen._log_mode == "mirror" else []
     active_vendors = [v for v in screen._selected_vendors
                       if VENDOR_BY_ID.get(v, (None,) * 5)[4]]
-    keys_set = [v for v, k in screen._pasted_keys.items() if k.strip()]
+    keys_set: list[str] = []
+    for v, k in screen._pasted_keys.items():
+        if k.strip():
+            keys_set.append(v)
+        elif v in screen._existing_vendors:
+            keys_set.append(f"{v} [#565f89](kept existing)[/]")
     if "kaggle" in screen._selected_vendors:
         ktok = screen._kaggle_fields.get("token", "")
         kusr = screen._kaggle_fields.get("username", "")
@@ -259,6 +309,8 @@ async def render_recap(screen: "WizardScreen", body: Vertical) -> None:
             keys_set.append("kaggle (token)")
         elif kusr and kkey:
             keys_set.append(f"kaggle (legacy, {kusr})")
+        elif "kaggle" in screen._existing_vendors:
+            keys_set.append("kaggle [#565f89](kept existing)[/]")
         else:
             keys_set.append("kaggle (auto-import from ~/.kaggle/)")
 
