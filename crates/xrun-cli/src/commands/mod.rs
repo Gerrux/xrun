@@ -5,6 +5,7 @@ pub mod config_cmd;
 pub mod confirm;
 pub mod cp;
 pub mod dataset;
+pub mod diff;
 pub mod doctor;
 pub mod events_cmd;
 pub mod fix_status;

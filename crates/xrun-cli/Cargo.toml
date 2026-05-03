@@ -28,6 +28,7 @@ plotters = { workspace = true }
 xrun-tui = { path = "../xrun-tui", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

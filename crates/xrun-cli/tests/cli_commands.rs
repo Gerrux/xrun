@@ -63,6 +63,18 @@ fn show_nonexistent_id_exits_one() {
 }
 
 #[test]
+fn diff_nonexistent_runs_exits_one() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .arg("diff")
+        .arg("00000000000000000000000000")
+        .arg("00000000000000000000000001")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
 fn doctor_prints_check_and_status_columns() {
     let tmp = TempDir::new().unwrap();
     let result = xrun(&tmp).arg("doctor").assert();

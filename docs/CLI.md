@@ -102,6 +102,36 @@ stdout/stderr.
 --keep-instance  не гасить vast-инстанс (для отладки)
 ```
 
+### `xrun diff <run-a> <run-b> [flags]`
+Сравнение двух запусков side-by-side: различающиеся поля манифеста и метрики
+(last + best per key). Best-направление выбирается по имени ключа: `loss`/`err`
+→ min, всё остальное → max.
+
+```
+--keys k1,k2,...    отфильтровать ключи метрик (по умолчанию объединение)
+--manifest-only     только манифест-секция
+--metrics-only      только метрики-секция
+--json              машинно-читаемый вывод
+```
+
+Пример:
+```
+$ xrun diff 01HX...A 01HX...B
+a: 01HX1234 (lr-baseline)
+   vendor=vast status=done cost=$0.5821 duration=12m34s
+b: 01HX5678 (lr-tweak)
+   vendor=vast status=done cost=$0.6102 duration=13m02s
+
+Manifest diff (1 differing paths):
+  path                  a       b
+  run.args.--lr         1e-3    5e-4
+
+Metrics diff (2 keys):
+  key       dir  a (last/best)        b (last/best)        Δ best
+  val_f1    max  0.8210 / 0.8340      0.8470 / 0.8510      +0.0170
+  val_loss  min  0.4120 / 0.3980      0.3890 / 0.3710      -0.0270
+```
+
 ### `xrun rerun <run-id> [--patch key=val ...]`
 Повтор запуска. Без --patch — точная копия. С --patch — модифицирует args/гиперпараметры (значение лезет внутрь run.args, обозначается через jq-style путь: `--patch run.args.--lr=5e-4`).
 

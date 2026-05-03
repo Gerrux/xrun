@@ -73,6 +73,8 @@ pub enum Commands {
     FixStatus(FixStatusArgs),
     /// Materialise a Cartesian grid of manifests and (optionally) launch them
     Sweep(SweepArgs),
+    /// Compare two runs side-by-side: manifest fields and metrics (last + best)
+    Diff(DiffArgs),
     /// First-run wizard: detect local capabilities, add vendors, choose
     /// logging mode. Spawns the TUI by default; use --non-interactive for
     /// scripted setup or --probe-local for capability detection.
@@ -348,6 +350,26 @@ pub struct DatasetListArgs {
 pub struct DatasetArgs {
     #[command(subcommand)]
     pub subcommand: DatasetSubcommand,
+}
+
+#[derive(Args)]
+pub struct DiffArgs {
+    /// First run ID (ULID)
+    pub a: String,
+    /// Second run ID (ULID)
+    pub b: String,
+    /// Comma-separated metric keys to include (default: union of both runs)
+    #[arg(long)]
+    pub keys: Option<String>,
+    /// Skip the metrics section
+    #[arg(long, conflicts_with = "metrics_only")]
+    pub manifest_only: bool,
+    /// Skip the manifest section
+    #[arg(long, conflicts_with = "manifest_only")]
+    pub metrics_only: bool,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args)]
