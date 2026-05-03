@@ -13,7 +13,7 @@ use xrun_core::{
     vendor::{DryRunPlan, InstanceHandle, VendorAdapter, VendorRemoteInstance, VendorStatus},
 };
 
-use crate::{cli, error::VastError, execute, provision, pull, stub::VastStub, tail, upload};
+use crate::{error::VastError, execute, provision, pull, stub::VastStub, tail, upload};
 
 fn get_tokio_rt() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -438,11 +438,12 @@ impl VastAdapter {
             h.id.parse()
                 .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
 
-        if let Some(key) = self.credentials.api_key.clone() {
-            crate::rest::destroy_instance(&key, instance_id).await?;
-        } else {
-            cli::destroy(instance_id).await?;
-        }
+        let key = self.credentials.api_key.clone().ok_or_else(|| {
+            VastError::ParseError(
+                "vast.api_key not configured — cannot destroy instance".to_string(),
+            )
+        })?;
+        crate::rest::destroy_instance(&key, instance_id).await?;
 
         let now = Utc::now();
 
