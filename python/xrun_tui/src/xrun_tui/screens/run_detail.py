@@ -19,6 +19,8 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+from xrun_tui.widgets.metrics_view import MetricsView
+from xrun_tui.widgets.report_view import ReportView
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
@@ -50,6 +52,7 @@ class RunDetailScreen(Screen):
         Binding("2",        "tab_logs",       show=False),
         Binding("3",        "tab_manifest",   show=False),
         Binding("4",        "tab_metrics",    show=False),
+        Binding("5",        "tab_report",     show=False),
     ]
 
     def __init__(self, run_id: str) -> None:
@@ -60,6 +63,9 @@ class RunDetailScreen(Screen):
         self._log_tab_active = False
         self._log_lines: list[str] = []
         self._search_active = False
+        self._metrics_timer: Any = None
+        self._metrics_tab_active = False
+        self._metrics_series: dict[str, list[float]] = {}
 
     def compose(self) -> ComposeResult:
         yield TitleBar("run detail")
@@ -99,11 +105,9 @@ class RunDetailScreen(Screen):
                 yield RichLog(id="manifest-view",
                               highlight=True, markup=False, wrap=False)
             with TabPane("Metrics [4]", id="tab-metrics"):
-                yield Static("", id="metrics-summary", classes="stats-bar")
-                yield DataTable(id="metrics-table",
-                                cursor_type="row", zebra_stripes=True)
-                yield RichLog(id="metrics-chart",
-                              highlight=False, markup=False, wrap=False)
+                yield MetricsView(self._run_id)
+            with TabPane("Report [5]", id="tab-report"):
+                yield ReportView(self._run_id)
         yield StatusBar()
         yield Footer()
 
@@ -120,17 +124,11 @@ class RunDetailScreen(Screen):
             Text("Status",  style="#565f89"),
             Text("Message", style="#565f89"),
         )
-        m = self.query_one("#metrics-table", DataTable)
-        m.add_columns(
-            Text("Key",     style="#565f89"),
-            Text("Points",  style="#565f89"),
-            Text("Latest",  style="#565f89"),
-            Text("Spark",   style="#565f89"),
-        )
         self.call_after_refresh(self._load_run)
 
     def on_unmount(self) -> None:
         self._stop_log_poll()
+        self._stop_metrics_poll()
 
     # ── Loading ──────────────────────────────────────────────────────────────
 
@@ -317,73 +315,49 @@ class RunDetailScreen(Screen):
         view.write(Syntax(content, "yaml", theme="nord", line_numbers=True))
 
     async def _load_metrics(self) -> None:
-        from xrun_tui.widgets.ascii_chart import render_chart
-        summary = self.query_one("#metrics-summary", Static)
-        table   = self.query_one("#metrics-table",   DataTable)
-        chart   = self.query_one("#metrics-chart",   RichLog)
-        summary.update("[#e0af68]Loading metrics…[/]")
-        table.clear()
-        chart.clear()
-
+        view = self.query_one(MetricsView)
         app: XrunApp = self.app  # type: ignore[assignment]
         try:
             keys = await app.db.metric_keys(self._run_id)
         except Exception as exc:
-            summary.update(f"[#f7768e]Error:[/] {exc}")
+            self.notify(f"Metrics error: {exc}", severity="error", timeout=8)
             return
-        if not keys:
-            summary.update("[#414868]No metrics emitted by this run yet[/]")
-            return
-
-        summary.update(
-            f"[#7aa2f7]{len(keys)}[/] metric keys  "
-            f"[#414868]┊[/]  [#565f89]↑/↓ select a row to chart it[/]"
-        )
-
-        self._metrics_series: dict[str, list[float]] = {}
+        new_series: dict[str, list[float]] = {}
         for entry in keys:
-            k     = entry.get("key") or "?"
-            count = entry.get("count") or 0
+            k = entry.get("key") or "?"
             try:
-                series = await app.db.metrics_for_key(self._run_id, k)
+                points = await app.db.metrics_for_key(self._run_id, k)
             except Exception:
-                series = []
-            latest = "—"
-            spark  = ""
-            if series:
-                vals = [float(p.get("value", 0)) for p in series]
-                self._metrics_series[k] = vals
-                latest = f"{vals[-1]:.4g}"
-                spark  = _sparkline(vals[-40:])
-            table.add_row(
-                Text(k,           style="#c0caf5"),
-                Text(str(count),  style="#7aa2f7"),
-                Text(latest,      style="#9ece6a"),
-                Text(spark,       style="#7dcfff"),
-                key=k,
-            )
+                points = []
+            new_series[k] = [float(p.get("value", 0)) for p in points]
+        self._metrics_series = new_series
+        status = (self._run or {}).get("status", "")
+        view.update_metrics(new_series, status)
 
-        first_key = list(self._metrics_series.keys())[0] if self._metrics_series else None
-        if first_key:
-            self._render_chart(first_key)
+    def _start_metrics_poll(self) -> None:
+        if self._metrics_timer is None:
+            self._metrics_timer = self.set_interval(15.0, self._poll_metrics)
 
-    def _render_chart(self, key: str) -> None:
-        from xrun_tui.widgets.ascii_chart import render_chart
-        chart = self.query_one("#metrics-chart", RichLog)
-        chart.clear()
-        vals = getattr(self, "_metrics_series", {}).get(key)
-        if not vals:
+    def _stop_metrics_poll(self) -> None:
+        if self._metrics_timer is not None:
+            try:
+                self._metrics_timer.stop()
+            except Exception:
+                pass
+            self._metrics_timer = None
+
+    async def _poll_metrics(self) -> None:
+        if not (self._metrics_tab_active and self.is_mounted):
             return
-        rendered = render_chart(vals, width=56, height=10, title=key, color="#7aa2f7")
-        chart.write(rendered)
-
-    def on_data_table_row_highlighted(
-        self, event: DataTable.RowHighlighted
-    ) -> None:
-        if event.data_table.id == "metrics-table":
-            key = (event.row_key.value if event.row_key else None) or ""
-            if key:
-                self._render_chart(key)
+        status = (self._run or {}).get("status", "")
+        if status in self._TERMINAL_STATUSES:
+            self._stop_metrics_poll()
+            return
+        try:
+            self._run = await self.app.db.run(self._run_id)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        await self._load_metrics()
 
     # ── Events ───────────────────────────────────────────────────────────────
 
@@ -392,23 +366,23 @@ class RunDetailScreen(Screen):
     ) -> None:
         pid = event.pane.id if event.pane else None
         self._log_tab_active = (pid == "tab-logs")
+        self._metrics_tab_active = (pid == "tab-metrics")
+        if pid != "tab-logs":
+            self._stop_log_poll()
+        if pid != "tab-metrics":
+            self._stop_metrics_poll()
         if pid == "tab-logs":
             self._start_log_poll()
             self.run_worker(self._load_logs(), exclusive=True)
-        else:
-            self._stop_log_poll()
-            if pid == "tab-manifest":
-                self.run_worker(self._load_manifest())
-            elif pid == "tab-metrics":
-                metrics_table = self.query_one("#metrics-table", DataTable)
-                metrics_table.loading = True
-                async def _load_metrics_with_spinner() -> None:
-                    try:
-                        await self._load_metrics()
-                    finally:
-                        if self.is_mounted:
-                            metrics_table.loading = False
-                self.run_worker(_load_metrics_with_spinner())
+        elif pid == "tab-manifest":
+            self.run_worker(self._load_manifest())
+        elif pid == "tab-metrics":
+            status = (self._run or {}).get("status", "")
+            if status not in self._TERMINAL_STATUSES:
+                self._start_metrics_poll()
+            self.run_worker(self._load_metrics())
+        elif pid == "tab-report":
+            self.run_worker(self._load_report())
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "log-search-input":
@@ -588,19 +562,35 @@ class RunDetailScreen(Screen):
     def action_tab_metrics(self) -> None:
         self.query_one(TabbedContent).active = "tab-metrics"
 
+    def action_tab_report(self) -> None:
+        self.query_one(TabbedContent).active = "tab-report"
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-_SPARK_BARS = "▁▂▃▄▅▆▇█"
-
-
-def _sparkline(values: list[float]) -> str:
-    if not values:
-        return ""
-    lo, hi = min(values), max(values)
-    if hi - lo < 1e-12:
-        return _SPARK_BARS[3] * len(values)
-    n = len(_SPARK_BARS) - 1
-    return "".join(
-        _SPARK_BARS[int((v - lo) / (hi - lo) * n)] for v in values
-    )
+    async def _load_report(self) -> None:
+        from xrun_tui.db import _default_data_dir
+        from pathlib import Path
+        view = self.query_one(ReportView)
+        if not self._metrics_series:
+            await self._load_metrics()
+        run_dir: Path | None = (
+            _default_data_dir() / "data" / "runs" / self._run_id
+        )
+        if not run_dir.exists():
+            run_dir = None
+        # Pull the launch CWD from the provision event so we can glob
+        # `artifacts.patterns` from the same place the script wrote them
+        # (relevant for local runs where `xrun pull` is a no-op).
+        workdir: Path | None = None
+        try:
+            app: XrunApp = self.app  # type: ignore[assignment]
+            for ev in await app.db.events(self._run_id):
+                if ev.get("stage") == "provision":
+                    msg = ev.get("msg") or ""
+                    if "workdir=" in msg:
+                        wd = msg.split("workdir=", 1)[1].strip().strip('"')
+                        workdir = Path(wd)
+                        break
+        except Exception:
+            workdir = None
+        status = (self._run or {}).get("status", "")
+        view.update_report(self._run_id, run_dir,
+                           self._metrics_series, status, workdir)

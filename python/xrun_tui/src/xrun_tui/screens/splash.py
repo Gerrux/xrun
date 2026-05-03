@@ -21,6 +21,34 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _STEP_W = 14
 
 
+def _configured_vendors(creds: dict) -> list[str]:
+    """Return the list of vendor names that have *any* credential configured.
+
+    Splash uses this both to decide what to probe and to decide whether the
+    `config` step is informative. Mirrors the logic used by the dynamic
+    `xrun doctor` so the two stay consistent.
+    """
+    out: list[str] = []
+    vast = creds.get("vast")
+    if isinstance(vast, dict) and vast.get("api_key"):
+        out.append("vast")
+    kaggle = creds.get("kaggle")
+    if isinstance(kaggle, dict) and (
+        kaggle.get("token") or (kaggle.get("username") and kaggle.get("key"))
+    ):
+        out.append("kaggle")
+    mlflow = creds.get("mlflow")
+    if isinstance(mlflow, dict) and (
+        mlflow.get("token")
+        or (mlflow.get("username") and mlflow.get("password"))
+    ):
+        out.append("mlflow")
+    ssh = creds.get("ssh")
+    if isinstance(ssh, dict) and ssh:
+        out.append("ssh")
+    return out
+
+
 class SplashScreen(Screen):
     """Boot screen showing real init progress."""
 
@@ -69,7 +97,7 @@ class SplashScreen(Screen):
     _STEPS: list[tuple[str, str]] = [
         ("db", "Database"),
         ("config", "Credentials"),
-        ("vast", "Vast.ai"),
+        ("vendors", "Vendors"),
         ("scan", "Manifests"),
         ("ready", "Workspace"),
     ]
@@ -85,6 +113,7 @@ class SplashScreen(Screen):
         self._spin_frame = 0
         self._running_sid: str | None = None
         self._spin_timer = None
+        self._current_detail = "…"
 
     def compose(self) -> ComposeResult:
         with Middle():
@@ -120,11 +149,22 @@ class SplashScreen(Screen):
             (l for s, l in self._STEPS if s == self._running_sid), self._running_sid
         )
         sym = _SPINNER[self._spin_frame]
-        detail = w._renderable_object if hasattr(w, "_renderable_object") else "…"
         w.update(self._format_line(sym, "#e0af68", label, self._current_detail))
 
     async def _init_sequence(self) -> None:
         from xrun_tui import config, services
+
+        # Refresh the version label from the actual binary so it stays in sync
+        # with the installed `xrun` rather than a hardcoded constant.
+        try:
+            v = await services.xrun_version()
+            if v:
+                self._version = v
+                self.query_one("#splash-version", Static).update(
+                    f"[#414868]xrun[/] [#565f89]v{v}[/]"
+                )
+        except Exception:
+            pass
 
         # 1) DB
         await self._set("db", "running", detail="opening…")
@@ -134,44 +174,52 @@ class SplashScreen(Screen):
         except Exception as exc:
             await self._set("db", "fail", detail=str(exc)[:32])
 
-        # 2) Config / creds
+        # 2) Config / creds — count every kind of credential, not just api_key.
         await self._set("config", "running", detail="reading…")
         try:
             creds = config.read_credentials()
-            keys = sum(
-                1 for v in creds.values() if isinstance(v, dict) and v.get("api_key")
-            )
-            if keys == 0:
+            configured = _configured_vendors(creds)
+            if not configured:
                 await self._set("config", "warn", detail="none configured")
             else:
-                noun = "key" if keys == 1 else "keys"
-                await self._set("config", "ok", detail=f"{keys} {noun}")
+                await self._set(
+                    "config", "ok", detail=", ".join(configured)
+                )
         except Exception as exc:
             await self._set("config", "warn", detail=str(exc)[:32])
 
-        # 3) Vast probe
-        await self._set("vast", "running", detail="probing…")
-        api_key = config.get_vast_api_key()
-        if not api_key:
-            await self._set("vast", "warn", detail="no API key")
+        # 3) Vendors probe — only probe what is actually configured.
+        await self._set("vendors", "running", detail="probing…")
+        configured = _configured_vendors(config.read_credentials())
+        if not configured:
+            await self._set("vendors", "warn", detail="nothing to probe")
         else:
-            try:
-                from xrun_tui.screens.vendors import _fetch_user
+            results: list[str] = []
+            # vast: live API call (balance + user) only if api_key is set.
+            api_key = config.get_vast_api_key()
+            if api_key:
+                try:
+                    from xrun_tui.screens.vendors import _fetch_user
 
-                info = await asyncio.wait_for(_fetch_user(api_key), timeout=4)
-                user = info.get("username") or info.get("email") or "?"
-                credit = float(info.get("credit", 0))
-                self.app._vast_status_cache = {  # type: ignore[attr-defined]
-                    "vast_user": user,
-                    "vast_credit": credit,
-                }
-                await self._set(
-                    "vast",
-                    "ok",
-                    detail=f"{user}  [#e0af68]${credit:.2f}[/]",
-                )
-            except Exception as exc:
-                await self._set("vast", "warn", detail=str(exc)[:32])
+                    info = await asyncio.wait_for(_fetch_user(api_key), timeout=4)
+                    user = info.get("username") or info.get("email") or "?"
+                    credit = float(info.get("credit", 0))
+                    self.app._vast_status_cache = {  # type: ignore[attr-defined]
+                        "vast_user": user,
+                        "vast_credit": credit,
+                    }
+                    results.append(f"vast ${credit:.2f}")
+                except Exception:
+                    results.append("vast ?")
+            if "kaggle" in configured:
+                results.append("kaggle")
+            if "ssh" in configured:
+                ssh_count = len(creds.get("ssh", {})) if isinstance(creds.get("ssh"), dict) else 0
+                results.append(f"ssh×{ssh_count}" if ssh_count else "ssh")
+            if "mlflow" in configured:
+                results.append("mlflow")
+            state = "ok" if results else "warn"
+            await self._set("vendors", state, detail="  ".join(results) or "none")
 
         # 4) Manifest scan
         await self._set("scan", "running", detail="scanning…")

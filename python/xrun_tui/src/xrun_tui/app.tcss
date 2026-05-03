@@ -411,11 +411,18 @@ CountryExcludeScreen {
     height: 1fr;
 }
 
-#settings-form {
-    /* Lives inside #settings-scroll — sizes to content so the scroller
-       has overflow to scroll. */
+#settings-form, .settings-form {
+    /* Form body inside a VerticalScroll — sizes to content so the
+       scroller has overflow to scroll. */
     padding: 2 4;
     height: auto;
+}
+
+#settings-footer {
+    height: auto;
+    padding: 1 2;
+    background: #1e2030;
+    border-top: solid #2d3149;
 }
 
 .form-row {
@@ -647,6 +654,8 @@ LoadingIndicator {
     height: auto;
     border-bottom: solid #2d3149;
 }
+
+/* Run detail · Metrics tab — styles live in MetricsView.DEFAULT_CSS */
 
 /* ── Splash ──────────────────────────────────────────────────────────────── */
 /* (Splash uses inline DEFAULT_CSS — nothing else needed here.) */

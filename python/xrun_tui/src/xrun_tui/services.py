@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-async def _run(*args: str, timeout: int = 30) -> tuple[int, str, str]:
+async def _run(
+    *args: str,
+    timeout: int = 30,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     kwargs: dict[str, Any] = dict(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -20,6 +24,12 @@ async def _run(*args: str, timeout: int = 30) -> tuple[int, str, str]:
     if sys.platform == "win32":
         import subprocess as _sub
         kwargs["creationflags"] = _sub.CREATE_NO_WINDOW
+    if env is not None:
+        # Merge over current environment so PATH etc. survive.
+        import os
+        merged = os.environ.copy()
+        merged.update(env)
+        kwargs["env"] = merged
     try:
         proc = await asyncio.create_subprocess_exec("xrun", *args, **kwargs)
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -32,6 +42,40 @@ async def _run(*args: str, timeout: int = 30) -> tuple[int, str, str]:
         return -1, "", "timeout"
     except FileNotFoundError:
         return -1, "", "xrun not found in PATH"
+
+
+async def probe(
+    vendor: str,
+    *,
+    env: dict[str, str] | None = None,
+    extra_args: list[str] | None = None,
+    timeout: int = 25,
+) -> dict[str, Any]:
+    """Run `xrun config probe --vendor <V>` and return the parsed JSON result.
+
+    On any failure to invoke or parse, returns an `ok=False` payload so callers
+    don't have to special-case errors vs probe failures.
+    """
+    args = ["config", "probe", "--vendor", vendor, *(extra_args or [])]
+    code, out, err = await _run(*args, timeout=timeout, env=env)
+    if code != 0 and not out:
+        return {"vendor": vendor, "ok": False,
+                "detail": err.strip() or f"exit {code}", "elapsed_ms": 0}
+    try:
+        return json.loads(out)
+    except Exception as exc:
+        return {"vendor": vendor, "ok": False,
+                "detail": f"parse error: {exc}", "elapsed_ms": 0}
+
+
+async def xrun_version() -> str | None:
+    """Return the `xrun` CLI version (e.g. "0.4.0"), or None if unavailable."""
+    code, out, _ = await _run("--version", timeout=5)
+    if code != 0:
+        return None
+    # `xrun --version` prints "xrun 0.4.0"
+    parts = out.strip().split()
+    return parts[-1] if parts else None
 
 
 # ── Mutations ─────────────────────────────────────────────────────────────────
@@ -114,14 +158,21 @@ async def pull(
 
 # ── Reads ─────────────────────────────────────────────────────────────────────
 
-async def config_show() -> tuple[bool, dict[str, Any], str]:
-    code, out, err = await _run("config", "show", "--json", timeout=10)
+async def config_show(secrets: bool = False) -> tuple[bool, dict[str, Any], str]:
+    """Run `xrun config show --json`. When `secrets=True`, includes a
+    `_credentials_tail` map with the last 6 chars of each set credential —
+    used by the Settings screen to render a `…XXXXXX` placeholder so users
+    can confirm the right key is in place without seeing the whole secret.
+    """
+    args = ["config", "show", "--json"]
+    if secrets:
+        args.append("--secrets")
+    code, out, err = await _run(*args, timeout=10)
     if not out:
         return False, {}, err.strip()
     try:
         return True, json.loads(out), ""
     except Exception:
-        # Tolerate plain key=value output as well
         return False, {}, f"parse error: {out[:200]}"
 
 
