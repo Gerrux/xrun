@@ -5,7 +5,21 @@ target/
 .vscode/
 .idea/
 .ralphex/
-.claude/
+# .claude: ship shared settings.json with credential deny rules,
+# but ignore per-user state and local overrides.
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
+
+# Belt-and-suspenders: never commit credentials, even if a user
+# misconfigures xrun to write them inside the repo.
+credentials.toml
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+secrets/
 __pycache__/
 *.pyc
 *.pyo
@@ -13,3 +27,8 @@ __pycache__/
 dist/
 
 .scratch/
+
+# Runtime artifacts produced by exp/tests/local_* manifests.
+# Real training runs live elsewhere (see `xrun pull --into ...`).
+/output/
+/checkpoints/*.pt

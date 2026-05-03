@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(//**/xrun/credentials.toml)",
+      "Read(//**/xrun/credentials.toml.bak)",
+      "Read(//**/.config/xrun/**)",
+      "Read(//**/Library/Application Support/xrun/**)",
+      "Read(//**/AppData/Roaming/xrun/**)",
+      "Read(//**/AppData/Local/xrun/**)",
+
+      "Read(//**/.kaggle/kaggle.json)",
+      "Read(//**/.config/vastai/**)",
+      "Read(//**/.vast_api_key)",
+      "Read(//**/.ssh/id_*)",
+      "Read(//**/.ssh/*_key)",
+      "Read(//**/.aws/credentials)",
+      "Read(//**/.netrc)",
+
+      "Read(./credentials.toml)",
+      "Read(./**/credentials.toml)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Read(./secrets/**)",
+
+      "Bash(cat *credentials*)",
+      "Bash(type *credentials*)",
+      "Bash(Get-Content *credentials*)",
+      "Bash(cat *.env*)",
+      "Bash(cat *kaggle.json*)",
+      "Bash(cat *id_rsa*)",
+      "Bash(cat *id_ed25519*)",
+      "Bash(xrun config show --secrets*)",
+      "Bash(* config show --secrets*)",
+
+      "WebFetch",
+      "Bash(curl -* -d *credentials*)",
+      "Bash(curl -* -d *api_key*)",
+      "Bash(curl -* -F *credentials*)",
+      "Bash(curl --data*credentials*)"
+    ],
+    "ask": [
+      "Bash(xrun config set *)",
+      "Bash(xrun config show*)",
+      "Bash(git add .claude/settings.local.json)",
+      "Bash(git add credentials*)",
+      "Bash(git add *.env*)"
+    ]
+  }
+}

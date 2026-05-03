@@ -80,6 +80,8 @@ stdout/stderr.
 --key val_f1,val_loss        выбрать конкретные
 --ascii                      ASCII chart в stdout (default если TTY)
 --png <out>                  дамп PNG (через MLflow или локально через plotters)
+--per-key                    в комбинации с --png: один subplot на ключ в auto-grid
+                             (рекомендуется когда шкалы метрик различаются на порядки)
 --mlflow-url                 распечатать URL run в MLflow UI
 ```
 
@@ -180,16 +182,41 @@ xrun doctor --manifest exp/a.yaml --manifest exp/b.yaml --json
 Требует: `pip install -e python/xrun_tui`. Экраны: Dashboard, Runs, Run detail (Stages/Logs/Metrics/Manifest), Instances, Vendors, Launch, Artifacts, Settings, Doctor. Chord-навигация: `g→r`, `g→v`, `g→s` и др. Биндинги: `?` help, `:` command palette, `q`/`Esc` — назад/выход.
 
 ### `xrun doctor`
-Проверки: креды есть, vastai/kaggle CLI работают, MLflow server поднят, диск, сеть.
+Проверки сгруппированы по категориям: `core`, `vendor:vast`, `vendor:kaggle`,
+`vendor:ssh`, `vendor:local`, `sink:mlflow`, `manifest:<path>`. По умолчанию
+условные проверки скипаются, если соответствующий вендор/sink не сконфигурирован.
+
+```
+--manifest <path>          добавить pre-flight для конкретного манифеста (повторяемый)
+--all                      запустить все проверки, даже если вендор не настроен
+--json                     машинно-читаемый вывод (для skill / TUI)
+```
 
 ### `xrun config`
 Управление `~/.config/xrun/`.
 
 ```
 xrun config init                    создать дефолтные файлы
-xrun config set vast.api_key ...
-xrun config show                   текущая конфигурация (без секретов)
+xrun config set vast.api_key ...    точечный set; пути: <section>.<field>,
+                                    ssh.<alias>.<field>, vendors.<name>.<field>
+xrun config show                    текущая конфигурация (без секретов)
+xrun config probe --vendor <name>   валидация переданных через
+                                    XRUN_PROBE_* env vars кредов без записи на
+                                    диск; используется визардом
 ```
+
+Per-vendor дефолты живут в `[vendors.<name>]` секции `config.toml`:
+
+```toml
+[vendors.vast]
+default_gpu = "RTX_4090"
+default_image = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
+max_per_hour_usd = 0.6
+```
+
+Поля: `default_gpu`, `default_image`, `default_region`, `default_disk_gb`,
+`max_per_hour_usd`, плюс свободный `extra` (string→string) для адаптеров,
+которые понимают свои кастомные ключи.
 
 ## Глобальные флаги
 
@@ -259,6 +286,9 @@ xrun __poll-daemon <run-id>   # вручную из терминала, foregrou
 | `xrun fix-status [id]` | ✅ | Сверка БД с вендором для зависших running-ранов |
 | `xrun dataset push/status/list` | ✅ | Kaggle datasets через xrun-креды |
 | `xrun doctor --manifest` | ✅ | Pre-flight: схема + Kaggle dataset readiness |
+| `xrun doctor --all` | ✅ | Запускает все проверки даже для не сконфигурированных вендоров |
+| `xrun config probe` | ✅ | Probe вендора без записи на диск; вход через `XRUN_PROBE_*` env vars |
+| `xrun metrics --per-key --png` | ✅ | Auto-grid PNG, один subplot на ключ |
 
 ### TUI
 

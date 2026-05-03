@@ -76,9 +76,15 @@ Dashboard cards сверху: текущий burn `$/hr`, `cap-left $X.XX`, `tod
 
 - **Stages**: таймлайн с throbber на текущей стадии. Цвета: grey pending, yellow running, green ok, red failed.
 - **Logs**: читает локальный снапшот `stdout.log` (поллер обновляет каждые ~5s). Для live-стриминга: `xrun logs <id> --follow` в терминале.
-- **Metrics**: ключи метрик из SQLite, ASCII chart по выбранному ключу. `o` — открыть MLflow run в браузере.
-- **Artifacts**: дерево артефактов. `P` — pull выбранных.
+- **Metrics**: левая палитра ключей с спарклайнами (`MetricsPalette`),
+  справа `MetricsView` — таблица final-значений + grid с одним subplot на ключ.
+  `o` — открыть MLflow run в браузере; `g` (в --png export) включает
+  per-key grid; см. `xrun metrics --per-key --png`.
+- **Artifacts**: дерево артефактов. `P` — pull выбранных. `Enter` на
+  PNG/JPG открывает встроенный `ImageView` (ASCII-preview через chafa-style).
 - **Manifest**: read-only YAML. `e` — открыть в `$EDITOR`.
+- **Report**: `ReportView` рендерит `report.md`/`report.html` артефакт run-а
+  (если есть) — markdown в Textual-нативном виде.
 
 ### 3. Launch (g l)
 
