@@ -9,20 +9,53 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.5.0] — 2026-05-03
+
 ### Added
-- `xrun_hook.metrics(values: dict, step: int)` — batch shortcut: writes one row
-  per key sharing a single timestamp. Avoids N separate `metric()` calls in the
-  training loop.
-- `exp/templates/` — starter templates with manifest + train.py for common ML
-  tasks: `classification` (loss/acc/f1_macro/precision/recall) and `regression`
-  (loss/mae/rmse/r2). Templates run end-to-end without torch so they smoke-test
-  the structure before adaptation.
+- `xrun-local` adapter — run manifests directly on the host as a first-class
+  vendor (`vendor: local`). Full lifecycle parity with vast (provision →
+  upload → execute → tail → pull → destroy), cross-platform (bash/sh on Unix,
+  pwsh/powershell on Windows), idempotent destroy via PID file.
+- `xrun-ssh` adapter — same lifecycle against your own server / NAS / VPS over
+  SSH; reuses the local execution model.
 - `xrun init` — first-run wizard. TTY → spawns `xrun-tui --wizard` (4 steps:
   local capabilities → vendors → logging mode → recap with live `xrun doctor`).
   Non-interactive flags for the Claude skill / CI: `--probe-local --json`,
   `--non-interactive --mark-completed --sink mlflow`. Credential flags
   (`--vast-key`, `--kaggle-token`, `--kaggle-username`, `--kaggle-key`) accept
   `-` to read one stdin line, so secrets stay out of shell history.
+- `xrun doctor` categorized output: env / vendors / manifests groups with
+  per-category counts, `--json` for skill consumption.
+- `xrun config probe --vendor <name>` — validate credentials read from
+  `XRUN_PROBE_*` env (used by the wizard).
+- `xrun metrics --per-key` — emit one chart per metric key instead of overlay.
+- `xrun_hook.metrics(values: dict, step: int)` — batch shortcut: writes one row
+  per key sharing a single timestamp. Avoids N separate `metric()` calls in the
+  training loop.
+- Kaggle live log streaming end-to-end via `xrun_hook` → MLflow chunked
+  artifacts (the public Kaggle API has no live-log endpoint).
+- `exp/templates/` — starter manifests + train.py for common ML tasks:
+  `quickstart` (zero-config smoke test), `classification`
+  (loss/acc/f1_macro/precision/recall), `regression` (loss/mae/rmse/r2).
+  Templates run end-to-end without torch so they smoke-test the structure
+  before adaptation.
+- TUI Vendors screen: brand-coloured cards (vast orange `#ff6b35`, kaggle cyan
+  `#20beff` via `border-left thick` accent), status pills
+  (READY/CHECK/ERROR/EMPTY), pulse animation on the connectivity probe dot,
+  double-click opens edit.
+- TUI Vast edit screen: "Region filter" section reusing the existing
+  `CountryExcludeScreen` — pulls and saves `search.exclude_countries` via
+  `xrun config`, surfaces current exclusions inline.
+- TUI country picker: pills tinted by continent (EU blue, AS red, NA green,
+  ME orange, AF violet, OC cyan, SA amber) so country codes render and group
+  visually in any terminal — including Windows Terminal which doesn't compose
+  regional-indicator codepoints into flag glyphs.
+- TUI `u` binding on Vendors screen — opens the vendor's quota/billing page
+  in a browser (`kaggle.com/settings`, `cloud.vast.ai/billing`).
+- TUI wizard split into a sub-package with `image_view` / `metrics_view` /
+  `report_view` widgets for reuse in run detail.
 
 ### Changed
 - Wizard rebuilt for keyboard-first UX: `Checkbox` widgets (Tab/Space toggle),
@@ -30,19 +63,26 @@ Versions follow [Semantic Versioning](https://semver.org/).
   now requires Y/N confirmation, probe shows a loading indicator, Recap runs
   `xrun doctor --json` and prints ✓/⚠/✗ per check. Toggling no longer rebuilds
   the body — pasted keys keep focus.
+- TUI Kaggle card surfaces free-tier limits (CPU ∞ 24h/session,
+  GPU 30h/wk 12h/session, TPU 20h/wk 9h/session) instead of an opaque
+  "competitions visible: N" probe artifact.
+- TUI vendor cards: flat `Horizontal` rows replaced with `Vertical` cards;
+  `vendor-row`/`vendor-dot`/`vendor-name-col` CSS retired in favour of
+  `vendor-card`/`vendor-card-head`/`vendor-card-foot`. Old class names removed.
+- `xrun gc` filters non-vast records — local cleanup is via `xrun stop`.
 
 ### Removed
 - `xrun init --vendor` flag. It was informational-only (echoed in JSON, never
   wrote anything). The wizard now relies on `--sink` and the credential flags
   for non-interactive setup.
-- TUI auto-launches the wizard when `[ui] wizard_completed = false` and
-  finishes by writing both that flag and `[metrics] sinks` via the CLI. WandB
-  and Comet sink checkboxes are visible but disabled with a `[v0.8]` badge.
-- Config schema: `[ui] wizard_completed: bool` (default false) and
-  `[metrics] sinks: Vec<String>` (default `["mlflow"]`). Both editable through
-  `xrun config set`.
-- Roadmap v0.8: pluggable metric backends — `MetricSink` trait + `xrun-wandb` /
-  `xrun-comet` crates as mirrors alongside MLflow.
+
+### Configuration
+- `[ui] wizard_completed: bool` (default false) — TUI auto-launches the
+  wizard when false; finishing the wizard sets both this flag and
+  `[metrics] sinks` via the CLI.
+- `[metrics] sinks: Vec<String>` (default `["mlflow"]`) — editable through
+  `xrun config set`. WandB and Comet sink checkboxes are visible but disabled
+  with a `[v0.8]` badge.
 
 ---
 

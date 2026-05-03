@@ -224,7 +224,7 @@ xrun. И всё это видно из TUI, не только из CLI.
 
 ---
 
-## v0.5 — Vendor phase 0: `xrun-local`
+## v0.5 — Vendor phase 0: `xrun-local` ✅ done
 
 **Цель**: запускать манифесты прямо на хосте — отладка без оплаты cloud-времени,
 паритет с vast по lifecycle (provision → upload → execute → tail → pull →
