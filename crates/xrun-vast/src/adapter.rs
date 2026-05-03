@@ -44,10 +44,6 @@ impl VastAdapter {
         store: Store,
         exclude_countries: Vec<String>,
     ) -> Self {
-        // Push the api key into the process-wide override so every subsequent
-        // `vastai` invocation receives `--api-key …` and doesn't fall back to
-        // the native ~/.config/vastai/vast_api_key file.
-        crate::process::set_api_key_override(credentials.api_key.clone());
         Self {
             credentials,
             store: RefCell::new(store),
@@ -89,10 +85,6 @@ impl VastAdapter {
             };
         };
 
-        crate::process::set_api_key_override(Some(key.clone()));
-        // Hit the REST API directly: the `vastai` Python CLI returns 403 on
-        // auth-required endpoints for some recent server versions even with a
-        // valid key. REST works in both cases.
         match crate::rest::show_user(&key).await {
             Ok(info) => VendorStatus {
                 connected: true,
@@ -150,8 +142,6 @@ impl VastAdapter {
                          (or place the token in ~/.config/vastai/vast_api_key)"
                     .into(),
             })?;
-        crate::process::set_api_key_override(Some(api_key.clone()));
-
         let query = provision::offer_query_from_manifest(vast);
         let body = crate::rest::build_offer_search_body(&query, 5.0);
         let body_str = serde_json::to_string(&body).unwrap_or_else(|_| "<unprintable>".to_string());

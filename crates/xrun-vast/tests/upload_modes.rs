@@ -1,60 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
-use xrun_core::manifest::{DataMode, DataSource, RunSpec, UnpackSpec};
-use xrun_vast::{
-    cli::CopyEndpoint,
-    error::VastError,
-    execute::render_args,
-    upload::{copy_endpoints, unpack_commands},
-};
-
-// ─── copy mode ───────────────────────────────────────────────────────────────
-
-#[test]
-fn copy_mode_builds_correct_endpoints() {
-    let instance_id: u64 = 9876;
-    let source = DataSource {
-        src: "/local/dataset.tar".to_string(),
-        dst: "/workspace/dataset.tar".to_string(),
-        mode: None,
-        unpack: None,
-        exclude: Vec::new(),
-        compress: None,
-    };
-
-    let (src, dst) = copy_endpoints(instance_id, &source);
-
-    match src {
-        CopyEndpoint::Local(p) => assert_eq!(p, PathBuf::from("/local/dataset.tar")),
-        _ => panic!("expected Local endpoint for src"),
-    }
-
-    match dst {
-        CopyEndpoint::Remote { instance, path } => {
-            assert_eq!(instance, instance_id);
-            assert_eq!(path, "/workspace/dataset.tar");
-        }
-        _ => panic!("expected Remote endpoint for dst"),
-    }
-}
-
-#[test]
-fn explicit_copy_mode_same_as_default() {
-    let instance_id: u64 = 111;
-    let source = DataSource {
-        src: "/data/file.bin".to_string(),
-        dst: "/remote/file.bin".to_string(),
-        mode: Some(DataMode::Copy),
-        unpack: None,
-        exclude: Vec::new(),
-        compress: None,
-    };
-
-    let (src, dst) = copy_endpoints(instance_id, &source);
-
-    assert!(matches!(src, CopyEndpoint::Local(_)));
-    assert!(matches!(dst, CopyEndpoint::Remote { instance: 111, .. }));
-}
+use xrun_core::manifest::{DataSource, RunSpec, UnpackSpec};
+use xrun_vast::{error::VastError, execute::render_args, upload::unpack_commands};
 
 // ─── rsync mode ──────────────────────────────────────────────────────────────
 

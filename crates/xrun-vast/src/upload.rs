@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use xrun_core::{
@@ -8,23 +8,7 @@ use xrun_core::{
     vendor::InstanceHandle,
 };
 
-use crate::{
-    cli::{CopyEndpoint, InstanceId},
-    error::VastError,
-};
-
-/// Returns the copy endpoints for a DataSource in copy mode.
-pub fn copy_endpoints(
-    instance_id: InstanceId,
-    source: &DataSource,
-) -> (CopyEndpoint, CopyEndpoint) {
-    let src = CopyEndpoint::Local(PathBuf::from(&source.src));
-    let dst = CopyEndpoint::Remote {
-        instance: instance_id,
-        path: source.dst.clone(),
-    };
-    (src, dst)
-}
+use crate::{error::VastError, types::InstanceId};
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -543,14 +527,10 @@ pub(crate) async fn upload_sources(
 
         for cmd in unpack_commands(source)? {
             let host = h.ssh_host.as_deref().ok_or_else(|| {
-                VastError::ParseError(format!(
-                    "instance {instance_id} has no ssh_host for unpack"
-                ))
+                VastError::ParseError(format!("instance {instance_id} has no ssh_host for unpack"))
             })?;
             let port = h.ssh_port.ok_or_else(|| {
-                VastError::ParseError(format!(
-                    "instance {instance_id} has no ssh_port for unpack"
-                ))
+                VastError::ParseError(format!("instance {instance_id} has no ssh_port for unpack"))
             })?;
             crate::transfer::ssh_exec(host, port, &cmd).await?;
         }

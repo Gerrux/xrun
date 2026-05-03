@@ -1,13 +1,4 @@
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc,
-};
-
-use xrun_vast::{
-    cli::{parse_user_info, InstanceInfo, Offer, OfferQuery},
-    error::VastError,
-    process::{retry_op, RetryPolicy},
-};
+use xrun_vast::types::{parse_user_info, InstanceInfo, Offer, OfferQuery};
 
 const SEARCH_FIXTURE: &str = include_str!("data/vastai_search_offers.json");
 const SHOW_FIXTURE: &str = include_str!("data/vastai_show_instance.json");
@@ -51,7 +42,7 @@ fn show_instance_fixture_deserializes_ssh_fields() {
     assert!(
         info.ssh_host
             .as_deref()
-            .map(|s| !s.is_empty())
+            .map(|s: &str| !s.is_empty())
             .unwrap_or(false),
         "ssh_host must be non-empty"
     );
@@ -95,68 +86,4 @@ fn offer_query_renders_with_all_fields() {
     assert!(rendered.contains("gpu_ram>=80"));
     assert!(rendered.contains("dph_total<=2.5000"));
     assert!(rendered.contains("datacenter_region=us-east"));
-}
-
-#[tokio::test]
-async fn retry_op_succeeds_on_third_attempt() {
-    tokio::time::pause();
-
-    let call_count = Arc::new(AtomicU32::new(0));
-    let count_clone = call_count.clone();
-
-    let policy = RetryPolicy {
-        max_attempts: 4,
-        base_delay_ms: 1000,
-    };
-
-    let result: Result<Vec<u8>, VastError> = retry_op(&policy, move || {
-        let n = count_clone.fetch_add(1, Ordering::SeqCst);
-        async move {
-            if n < 2 {
-                Err(VastError::CliFailure {
-                    exit_code: 1,
-                    stderr: "transient failure".to_string(),
-                })
-            } else {
-                Ok(b"ok".to_vec())
-            }
-        }
-    })
-    .await;
-
-    assert!(
-        result.is_ok(),
-        "retry_op should succeed after 2 failed attempts"
-    );
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        3,
-        "should have been called exactly 3 times"
-    );
-}
-
-#[tokio::test]
-async fn retry_op_exhausts_attempts_and_returns_last_error() {
-    tokio::time::pause();
-
-    let policy = RetryPolicy {
-        max_attempts: 3,
-        base_delay_ms: 100,
-    };
-
-    let result: Result<Vec<u8>, VastError> = retry_op(&policy, || async {
-        Err(VastError::CliFailure {
-            exit_code: 1,
-            stderr: "permanent failure".to_string(),
-        })
-    })
-    .await;
-
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        VastError::CliFailure { stderr, .. } => {
-            assert_eq!(stderr, "permanent failure");
-        }
-        e => panic!("unexpected error: {}", e),
-    }
 }

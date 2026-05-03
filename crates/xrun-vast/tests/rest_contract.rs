@@ -3,8 +3,8 @@
 //! a future refactor can't silently change the wire shape.
 
 use serde_json::Value;
-use xrun_vast::cli::{Offer, OfferQuery};
 use xrun_vast::rest::build_offer_search_body;
+use xrun_vast::types::{Offer, OfferQuery};
 
 #[test]
 fn search_body_includes_default_filters_and_user_query() {

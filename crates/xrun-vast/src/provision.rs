@@ -2,8 +2,8 @@
 
 use std::cmp::Ordering;
 
-use crate::cli::{Offer, OfferQuery};
 use crate::error::VastError;
+use crate::types::{Offer, OfferQuery};
 use xrun_core::manifest::VastSpec;
 
 pub fn offer_query_from_manifest(vast: &VastSpec) -> OfferQuery {

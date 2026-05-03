@@ -1,17 +1,21 @@
 #![deny(unsafe_code)]
 
-use std::path::PathBuf;
+//! Pure data types for the vast.ai REST API.
+//!
+//! These were previously colocated with the (now-removed) `vastai` Python CLI
+//! wrappers. They live here independent of any transport so `rest.rs`, the
+//! adapter, and the public API can share them.
 
 use serde::Deserialize;
 
 use crate::error::VastError;
-use crate::process::{run_vastai, run_vastai_with_retry, RetryPolicy};
 
-/// Build a readable parse error for vastai output: includes which sub-command
-/// produced it, the underlying serde error, and a bounded preview of the raw
-/// bytes so the user can see what `vastai` actually returned (often an HTML
-/// error page, an "owner: Extra inputs are not permitted" string, etc.).
-fn parse_err(cmd: &str, raw: &[u8], e: serde_json::Error) -> VastError {
+pub type InstanceId = u64;
+
+/// Compose a human-readable parse error: which sub-call produced it, the
+/// underlying serde error, and a bounded preview of the raw bytes the server
+/// returned (often an HTML error page when the API misbehaves).
+pub fn parse_err(cmd: &str, raw: &[u8], e: serde_json::Error) -> VastError {
     let preview_raw = String::from_utf8_lossy(raw);
     let trimmed = preview_raw.trim();
     let preview: String = if trimmed.is_empty() {
@@ -21,10 +25,8 @@ fn parse_err(cmd: &str, raw: &[u8], e: serde_json::Error) -> VastError {
     } else {
         trimmed.to_string()
     };
-    VastError::ParseError(format!("vastai {} → {} (raw: {})", cmd, e, preview))
+    VastError::ParseError(format!("vast {} → {} (raw: {})", cmd, e, preview))
 }
-
-pub type InstanceId = u64;
 
 #[derive(Debug, Clone)]
 pub struct OfferQuery {
@@ -131,57 +133,6 @@ pub struct InstanceInfo {
     pub dph_total: Option<f64>,
 }
 
-/// Endpoint for `vastai copy`: either a local path or a remote instance path.
-#[derive(Debug, Clone)]
-pub enum CopyEndpoint {
-    Local(PathBuf),
-    Remote { instance: InstanceId, path: String },
-}
-
-impl CopyEndpoint {
-    fn to_arg(&self) -> String {
-        match self {
-            CopyEndpoint::Local(p) => p.display().to_string(),
-            CopyEndpoint::Remote { instance, path } => format!("{}:{}", instance, path),
-        }
-    }
-}
-
-fn idempotent_policy() -> RetryPolicy {
-    RetryPolicy::default()
-}
-
 pub fn parse_user_info(raw: &[u8]) -> Result<UserInfo, VastError> {
     serde_json::from_slice::<UserInfo>(raw).map_err(|e| parse_err("show user", raw, e))
-}
-
-pub async fn execute(id: InstanceId, cmd: &str) -> Result<Vec<u8>, VastError> {
-    let id_str = id.to_string();
-    let args = ["execute", &id_str, cmd];
-    // Non-idempotent: single attempt only to avoid duplicate remote commands.
-    run_vastai(&args).await
-}
-
-pub async fn copy(src: &CopyEndpoint, dst: &CopyEndpoint) -> Result<(), VastError> {
-    let src_arg = src.to_arg();
-    let dst_arg = dst.to_arg();
-    let args = ["copy", &src_arg, &dst_arg];
-    run_vastai_with_retry(&args, &idempotent_policy()).await?;
-    Ok(())
-}
-
-pub async fn destroy(id: InstanceId) -> Result<(), VastError> {
-    let id_str = id.to_string();
-    let args = ["destroy", "instance", &id_str];
-    // Non-idempotent: single attempt, but ignore "not found" errors gracefully.
-    match run_vastai(&args).await {
-        Ok(_) => Ok(()),
-        Err(VastError::CliFailure { stderr, .. })
-            if stderr.to_lowercase().contains("not found")
-                || stderr.to_lowercase().contains("unknown instance") =>
-        {
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
 }

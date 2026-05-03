@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    cli::InstanceId,
     error::VastError,
     transfer::{scp_pull, ssh_exec},
+    types::InstanceId,
 };
 
 /// Classify an artifact kind from the file extension.

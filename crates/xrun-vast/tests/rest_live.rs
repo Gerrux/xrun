@@ -6,8 +6,8 @@
 //!   set VAST_API_KEY=...
 //!   cargo test -p xrun-vast --test rest_live -- --ignored
 
-use xrun_vast::cli::OfferQuery;
 use xrun_vast::rest;
+use xrun_vast::types::OfferQuery;
 
 fn key() -> Option<String> {
     std::env::var("VAST_API_KEY").ok().filter(|k| !k.is_empty())

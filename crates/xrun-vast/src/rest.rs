@@ -9,8 +9,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::cli::{Offer, OfferQuery, UserInfo};
 use crate::error::VastError;
+use crate::types::{Offer, OfferQuery, UserInfo};
 
 /// Subset of fields returned by `GET /instances/` that we surface in the TUI.
 /// All optional with `#[serde(default)]` so a schema change at vast doesn't
@@ -81,7 +81,7 @@ pub async fn show_user_at(base_url: &str, api_key: &str) -> Result<UserInfo, Vas
         .bytes()
         .await
         .map_err(|e| VastError::ParseError(format!("read body: {}", e)))?;
-    crate::cli::parse_user_info(&body)
+    crate::types::parse_user_info(&body)
 }
 
 /// GET /instances/ — list the user's running/stopped instances.

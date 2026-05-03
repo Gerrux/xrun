@@ -1,7 +1,7 @@
 use xrun_vast::{
-    cli::Offer,
     error::VastError,
     provision::{filter_excluded_countries, rank_and_select},
+    types::Offer,
 };
 
 fn make_offer(id: u64, dph: f64, gpu_ram: f64) -> Offer {
