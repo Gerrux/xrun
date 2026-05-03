@@ -7,7 +7,7 @@ from typing import Any
 
 from . import _log_streamer, _paths, _writer
 
-__all__ = ["stage", "metric", "epoch", "fail", "done"]
+__all__ = ["stage", "metric", "metrics", "epoch", "fail", "done"]
 
 # ---------------------------------------------------------------------------
 # Module-level lazy state
@@ -124,6 +124,21 @@ class stage:
 def metric(key: str, value: float, step: int) -> None:
     """Write one metric data point."""
     _write_metric(key, value, step)
+
+
+def metrics(values: "dict[str, float]", step: int) -> None:
+    """Write multiple metric data points in one call.
+
+    Each key/value pair becomes one record in metrics.jsonl, all sharing the
+    same step. Equivalent to calling :func:`metric` in a loop, but keeps the
+    call site terse and groups the writes under a single timestamp.
+    """
+    if not values:
+        return
+    ts = _now_iso()
+    writer = _get_metrics()
+    for key, value in values.items():
+        writer.append({"ts": ts, "step": step, "key": key, "value": value})
 
 
 def epoch(idx: int, extra: "dict | None" = None) -> None:

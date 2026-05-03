@@ -327,6 +327,65 @@ destroy).
 - Password auth (out of scope — ключи only).
 - Поддержка Windows-серверов (использует bash/tail/rsync).
 
+## v0.8 — Pluggable metric backends: WandB + Comet ML
+
+**Цель**: дать пользователю выбор, куда зеркалить метрики и логи помимо
+MLflow. Та же модель, что у `xrun-mlflow` сегодня — отдельный crate-зеркало,
+включаемое из конфига; hook на стороне training-скрипта остаётся прежним.
+
+### Дизайн (контракт)
+
+- Новый trait `MetricSink` в `xrun-core`:
+  ```rust
+  trait MetricSink: Send + Sync {
+      fn open_run(&self, run: &RunRow) -> Result<RemoteRunHandle>;
+      fn log_metric(&self, h: &RemoteRunHandle, key: &str, value: f64, step: u64) -> Result<()>;
+      fn log_metrics_batch(&self, h: &RemoteRunHandle, batch: &[MetricPoint]) -> Result<()>;
+      fn log_artifact(&self, h: &RemoteRunHandle, path: &Path, name: &str) -> Result<()>;
+      fn finalize(&self, h: &RemoteRunHandle, status: RunStatus) -> Result<()>;
+  }
+  ```
+- Существующий `xrun-mlflow` рефакторится под этот trait (без изменения поведения).
+- Новые crates:
+  - `crates/xrun-wandb/` — REST API (`api.wandb.ai/graphql` + REST для metrics);
+    auth через `WANDB_API_KEY` либо `[vendors.wandb] api_key=...`.
+  - `crates/xrun-comet/` — REST API (`www.comet.com/api/rest/v2/`); auth через
+    `COMET_API_KEY` либо `[vendors.comet]`.
+- Poller выбирает sinks по конфигу: `[metrics.sinks] = ["mlflow", "wandb"]`.
+  Любая комбинация, fan-out, ошибка одного sink не валит остальные.
+- Training-side: `xrun_hook` ничего не меняет (продолжает писать
+  `metrics.jsonl`). Опционально — direct-mode env: `XRUN_HOOK_DIRECT_WANDB=1`
+  для случаев, когда poller недоступен (например, Kaggle без MLflow).
+
+### Scope
+
+- [ ] `MetricSink` trait + рефактор `xrun-mlflow` под него.
+- [ ] Конфиг: `[metrics] sinks = ["mlflow"]` в `~/.config/xrun/config.toml`.
+- [ ] Credentials: `[vendors.wandb]`, `[vendors.comet]` секции (api_key,
+      опц. workspace/project).
+- [ ] `crates/xrun-wandb/` — open_run / log_metrics_batch / log_artifact /
+      finalize, retry с exponential backoff, wiremock-тесты.
+- [ ] `crates/xrun-comet/` — то же.
+- [ ] Poller fan-out: каждый событие/метрика идёт во все enabled sinks
+      параллельно через `tokio::join!`.
+- [ ] `xrun doctor`: probe для каждого sink (auth + network).
+- [ ] TUI: на Vendors screen — секция "Metric backends" с тем же UX (status/
+      edit/test/revoke).
+- [ ] Документация: `docs/METRICS.md` (модель fan-out, как добавить свой sink).
+
+### Acceptance
+
+1. `cargo test --workspace` зелёный, включая wiremock-тесты для wandb/comet.
+2. `xrun launch exp/foo.yaml` с `[metrics] sinks = ["mlflow", "wandb"]`
+   зеркалит метрики в обе системы; падение wandb не ломает MLflow.
+3. `xrun doctor` показывает статус каждого настроенного sink.
+
+### Не входит в v0.8
+
+- Auto-import существующих WandB/Comet runs (только новые с момента launch).
+- Sweep-интеграция с WandB Sweeps API (отложено в v0.9).
+- TensorBoard sink (минорный спрос; можно отдельно после v0.8).
+
 ## v0.7+ (backlog)
 - RunPod (`crates/xrun-runpod/`): REST + SSH, копия `xrun-vast` с другим API.
 - Lambda Labs (`crates/xrun-lambda/`): REST + SSH; стабильные цены, проще

@@ -34,6 +34,13 @@ _CHORDS: dict[str, dict[str, str]] = {
 _CHORD_TIMEOUT_S = 1.5
 
 
+def _wizard_pending() -> bool:
+    try:
+        return config.wizard_pending()
+    except Exception:
+        return False
+
+
 def _resolved_css_path() -> str:
     """Render the user-selected theme into the config dir and return its path."""
     theme = (config.get_settings() or {}).get("theme") or "tokyo-night"
@@ -60,8 +67,9 @@ class XrunApp(App):
         Binding("g",             "chord_g",            "Go…",      priority=True),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, start_in_wizard: bool = False) -> None:
         super().__init__()
+        self._start_in_wizard = start_in_wizard
         db_path = find_db_path()
         self.db = Database(db_path)
         # Cross-screen state
@@ -90,10 +98,19 @@ class XrunApp(App):
         from xrun_tui.screens.splash import SplashScreen
 
         async def _after_splash() -> None:
-            from xrun_tui.screens.dashboard import DashboardScreen
-            await self.switch_screen(DashboardScreen())
+            if self._start_in_wizard or _wizard_pending():
+                from xrun_tui.screens.wizard import WizardScreen
+                await self.switch_screen(WizardScreen())
+            else:
+                from xrun_tui.screens.dashboard import DashboardScreen
+                await self.switch_screen(DashboardScreen())
 
-        await self.push_screen(SplashScreen(_after_splash, version=XRUN_VERSION))
+        # Skip splash entirely when launched directly into wizard mode (xrun init).
+        if self._start_in_wizard:
+            from xrun_tui.screens.wizard import WizardScreen
+            await self.push_screen(WizardScreen())
+        else:
+            await self.push_screen(SplashScreen(_after_splash, version=XRUN_VERSION))
 
     async def on_unmount(self) -> None:
         await self.db.close()

@@ -3,7 +3,9 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::commands::{config_cmd::ConfigArgs, cp::CpArgs, dataset::DatasetSubcommand};
+use crate::commands::{
+    config_cmd::ConfigArgs, cp::CpArgs, dataset::DatasetSubcommand, init::InitArgs,
+};
 
 #[derive(Parser)]
 #[command(name = "xrun", version, about = "ML experiment runner")]
@@ -71,6 +73,10 @@ pub enum Commands {
     FixStatus(FixStatusArgs),
     /// Materialise a Cartesian grid of manifests and (optionally) launch them
     Sweep(SweepArgs),
+    /// First-run wizard: detect local capabilities, add vendors, choose
+    /// logging mode. Spawns the TUI by default; use --non-interactive for
+    /// scripted setup or --probe-local for capability detection.
+    Init(InitArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)

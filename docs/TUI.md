@@ -8,6 +8,41 @@ Python Textual. Single-window app с chord-навигацией, command palette
 
 ## Экраны
 
+### 0. First-run wizard (auto / `xrun init`)
+
+Запускается автоматически при первом старте TUI (когда
+`[ui] wizard_completed = false` в `config.toml`) или явно через `xrun init`.
+Один экран, четыре шага: **Local** → **Vendors** → **Logging** → **Done**.
+
+```
+┌── xrun — Setup ────────────────────────────────────────────────────────┐
+│  ✓ Local  →  ● Vendors  →  ○ Logging  →  ○ Done                       │
+│                                                                        │
+│  Step 2 — Vendors                                                      │
+│  Toggle vendors. Press [o] on a card to open its API-key page.         │
+│                                                                        │
+│  ●  vast.ai          GPU spot marketplace          key set             │
+│     [paste vast.ai API key……………………………………………………]                        │
+│  ○  Kaggle           Free notebooks (mlflow live)  no key              │
+│  ○  SSH machine      Your own server / NAS / VPS   no key              │
+│  ○  RunPod          [v0.7+]                        no key              │
+│  ○  Lambda Labs     [v0.7+]                        no key              │
+│                                                                        │
+│  [Back  Ctrl+B]  [Skip wizard  Esc]  [Next  Ctrl+N]                    │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+| Шаг | Что делает |
+|------|-----------|
+| Local    | Запускает `xrun init --probe-local --json`; показывает OS/GPU. Спиннер пока probe не вернулся. |
+| Vendors  | `Checkbox` per vendor — Tab/Space навигация. Vast/Kaggle открывают password-Input при выборе. `o` открывает API-key страницу focused-карточки (работает ДО выбора). |
+| Logging  | Radio: `off` / `polling` (default) / `polling+mirror`; для mirror — Checkbox-список sinks (mlflow ✓; wandb/comet `[v0.8]` disabled). При выбранном Kaggle подсветка-подсказка про mirror. |
+| Done     | Recap + live `xrun doctor --json` (✓/⚠/✗ по чекам) + `Finish` пишет конфиг через `xrun init --non-interactive --mark-completed --sink ...` (ключи — через `xrun config set`). |
+
+`Esc`/`Skip wizard` показывает confirm-modal (Y/N) — случайный Esc больше не
+сбрасывает прогресс. После подтверждения ставит `wizard_completed = true`
+без записи выбранных вендоров/sinks; вернуться можно через `xrun init`.
+
 ### 1. Runs (g r)
 
 ```

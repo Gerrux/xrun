@@ -4,6 +4,36 @@
 
 ## Команды
 
+### `xrun init [flags]`
+First-run wizard. Без флагов на TTY — спавнит TUI-визард (`xrun-tui --wizard`),
+который проводит через 4 шага: локальные мощности → вендоры → режим
+логирования → recap. Для скилла и CI — флаговый non-interactive режим.
+
+```
+--non-interactive         не запускать TUI; пишет конфиг по флагам
+--sink <name>             включить mirror-sink (mlflow). wandb/comet — v0.8
+--mark-completed          выставить [ui] wizard_completed = true
+--probe-local             только probe локальных мощностей; не пишет конфиг
+--json                    машинно-читаемый вывод (для --probe-local и summary)
+
+# credential-флаги (требуют --non-interactive). Значение `-` читает одну
+# строку из stdin; только один `-` за вызов.
+--vast-key <KEY|->        записать vast.api_key в credentials.toml
+--kaggle-token <TOK|->    записать kaggle.token (JWT, предпочтительно)
+--kaggle-username <USR>   legacy-аутентификация (парный --kaggle-key)
+--kaggle-key <KEY|->      legacy-аутентификация (парный --kaggle-username)
+```
+
+Примеры:
+```bash
+xrun init                                      # интерактивный TUI-визард
+xrun init --probe-local --json                 # детект GPU/OS для скилла
+xrun init --non-interactive --mark-completed --sink mlflow
+
+# скриптовая запись ключа без следов в shell-history:
+echo "$VAST_KEY" | xrun init --non-interactive --mark-completed --vast-key -
+```
+
 ### `xrun launch <manifest> [flags]`
 Создаёт run, валидирует манифест, провижинит инстанс, заливает данные, стартует команду.
 

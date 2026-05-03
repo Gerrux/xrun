@@ -1,0 +1,24 @@
+# Шаблон манифеста: регрессия (предсказание непрерывной величины).
+# Скопируй в exp/my_*.yaml и замени cmd/data/artifacts.
+name: template_regression
+description: starter template — regression with xrun_hook
+vendor: local              # local | vast | kaggle | ssh
+
+local:
+  gpu: cpu
+
+# data:
+#   - src: data/train.parquet
+#     dst: /workspace/data/train.parquet
+
+run:
+  cmd: python exp/templates/regression_train.py
+  args:
+    --epochs: 5
+    --lr: 1e-3
+
+artifacts:
+  patterns:
+    - "checkpoints/best*.pt"
+    - "checkpoints/best*.json"
+    - "output/*.png"

@@ -82,6 +82,28 @@ def test_metric_writes_correct_structure(isolated_run_dir):
 
 
 # ---------------------------------------------------------------------------
+# metrics() — batch shortcut
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_batch_writes_one_row_per_key(isolated_run_dir):
+    xrun_hook.metrics({"loss": 0.42, "val_f1": 0.81, "lr": 1e-3}, step=5)
+    rows = [json.loads(line) for line in _read_metrics(isolated_run_dir)]
+    assert len(rows) == 3
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["loss"]["value"] == pytest.approx(0.42)
+    assert by_key["val_f1"]["value"] == pytest.approx(0.81)
+    assert by_key["lr"]["value"] == pytest.approx(1e-3)
+    assert all(r["step"] == 5 for r in rows)
+    assert len({r["ts"] for r in rows}) == 1  # все три под одним timestamp
+
+
+def test_metrics_batch_empty_dict_is_noop(isolated_run_dir):
+    xrun_hook.metrics({}, step=0)
+    assert _read_metrics(isolated_run_dir) == []
+
+
+# ---------------------------------------------------------------------------
 # epoch()
 # ---------------------------------------------------------------------------
 

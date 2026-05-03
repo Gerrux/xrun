@@ -7,6 +7,45 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- `xrun_hook.metrics(values: dict, step: int)` — batch shortcut: writes one row
+  per key sharing a single timestamp. Avoids N separate `metric()` calls in the
+  training loop.
+- `exp/templates/` — starter templates with manifest + train.py for common ML
+  tasks: `classification` (loss/acc/f1_macro/precision/recall) and `regression`
+  (loss/mae/rmse/r2). Templates run end-to-end without torch so they smoke-test
+  the structure before adaptation.
+- `xrun init` — first-run wizard. TTY → spawns `xrun-tui --wizard` (4 steps:
+  local capabilities → vendors → logging mode → recap with live `xrun doctor`).
+  Non-interactive flags for the Claude skill / CI: `--probe-local --json`,
+  `--non-interactive --mark-completed --sink mlflow`. Credential flags
+  (`--vast-key`, `--kaggle-token`, `--kaggle-username`, `--kaggle-key`) accept
+  `-` to read one stdin line, so secrets stay out of shell history.
+
+### Changed
+- Wizard rebuilt for keyboard-first UX: `Checkbox` widgets (Tab/Space toggle),
+  `o` opens API-key page of *focused* card (works before selecting), Esc-skip
+  now requires Y/N confirmation, probe shows a loading indicator, Recap runs
+  `xrun doctor --json` and prints ✓/⚠/✗ per check. Toggling no longer rebuilds
+  the body — pasted keys keep focus.
+
+### Removed
+- `xrun init --vendor` flag. It was informational-only (echoed in JSON, never
+  wrote anything). The wizard now relies on `--sink` and the credential flags
+  for non-interactive setup.
+- TUI auto-launches the wizard when `[ui] wizard_completed = false` and
+  finishes by writing both that flag and `[metrics] sinks` via the CLI. WandB
+  and Comet sink checkboxes are visible but disabled with a `[v0.8]` badge.
+- Config schema: `[ui] wizard_completed: bool` (default false) and
+  `[metrics] sinks: Vec<String>` (default `["mlflow"]`). Both editable through
+  `xrun config set`.
+- Roadmap v0.8: pluggable metric backends — `MetricSink` trait + `xrun-wandb` /
+  `xrun-comet` crates as mirrors alongside MLflow.
+
+---
+
 ## [0.4.0] — 2026-04-30
 
 ### Added

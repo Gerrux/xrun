@@ -144,6 +144,10 @@ fn run() -> Result<()> {
             let config_dir = get_config()?;
             xrun_cli::commands::sweep::run(&args, &ctx.db_path, &ctx.runs_dir, &config_dir)?;
         }
+        Some(Commands::Init(args)) => {
+            let config_dir = get_config()?;
+            xrun_cli::commands::init::run(&args, &config_dir)?;
+        }
         Some(Commands::Tui) => {
             #[cfg(feature = "tui")]
             {

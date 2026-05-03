@@ -12,7 +12,7 @@ pip install xrun_hook
 
 ```python
 import xrun_hook
-from xrun_hook import stage, metric, epoch, fail, done
+from xrun_hook import stage, metric, metrics, epoch, fail, done
 
 # Single-shot event
 stage("unpack")
@@ -26,9 +26,12 @@ for ep in range(epochs):
     train_one_epoch(model, loader)
     val = validate(model, val_loader)
 
+    # Single-metric form:
     metric("train_loss", train_loss, step=ep)
-    metric("val_loss", val.loss, step=ep)
-    metric("val_f1", val.f1, step=ep)
+
+    # Batch form — one call, one timestamp, one row per key in metrics.jsonl:
+    metrics({"val_loss": val.loss, "val_f1": val.f1, "lr": current_lr}, step=ep)
+
     epoch(ep, {"val_f1": val.f1})   # stage="epoch" status="ok" extra={epoch, val_f1}
 
 done()   # writes stage="done" status="ok" and closes files

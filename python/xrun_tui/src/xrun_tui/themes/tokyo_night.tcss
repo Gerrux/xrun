@@ -407,6 +407,80 @@ ModalScreen {
     height: auto;
 }
 
+/* ── Wizard ──────────────────────────────────────────────────────────── */
+
+.wizard-stepper {
+    height: 1;
+    padding: 0 2;
+    margin: 0 0 1 0;
+}
+
+.wizard-text {
+    height: auto;
+    padding: 0 2;
+    margin: 0 0 1 0;
+}
+
+.wizard-card {
+    height: 1;
+    padding: 0 2;
+    margin: 0 1;
+}
+
+.wizard-card-disabled {
+    color: #565f89;
+}
+
+.wizard-input {
+    margin: 0 2 1 4;
+    width: 80%;
+}
+
+.wizard-vendor-row {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.wizard-ssh-form {
+    height: auto;
+    padding: 0 0 0 4;
+}
+
+.wizard-link-btn {
+    height: 1;
+    width: auto;
+    margin: 0 2 1 4;
+    background: #2d3149;
+    color: #7aa2f7;
+    text-style: bold;
+}
+
+.wizard-link-btn:hover {
+    background: #414868;
+    color: #c0caf5;
+    text-style: bold underline;
+}
+
+#wiz-vendor-scroll {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#wiz-sinks-box {
+    height: auto;
+    padding: 0 2;
+}
+
+#wiz-doctor-spinner {
+    height: 1;
+    margin: 0 2;
+}
+
+#wizard-body {
+    height: 1fr;
+    padding: 1 0;
+}
+
 /* ── Vendor overview rows ────────────────────────────────────────────────── */
 
 #vendor-overview {

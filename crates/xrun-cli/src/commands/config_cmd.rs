@@ -113,6 +113,42 @@ fn print_cred(key: &str, value: Option<&str>, secrets: bool) {
     }
 }
 
+/// Set an SSH host field: `<alias>.<field>` where field ∈
+/// {host, user, port, key, default_workdir}. Aliases must be alphanumeric
+/// (plus `-` / `_`) so they round-trip through TOML keys without quoting.
+fn cmd_set_ssh(config_dir: &Path, rest: &str, value: &str) -> Result<()> {
+    let (alias, field) = rest.split_once('.').ok_or_else(|| {
+        anyhow::anyhow!(
+            "SSH key must be `ssh.<alias>.<field>` (field: host/user/port/key/default_workdir)"
+        )
+    })?;
+    if alias.is_empty() || !alias.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        bail!("invalid SSH alias `{alias}`: must be alphanumeric (plus - or _)");
+    }
+
+    let mut creds = Credentials::load(config_dir)?;
+    let entry = creds.ssh_hosts.entry(alias.to_string()).or_default();
+    match field {
+        "host" => entry.host = Some(value.to_string()),
+        "user" => entry.user = Some(value.to_string()),
+        "port" => {
+            entry.port = Some(
+                value
+                    .parse::<u16>()
+                    .context("ssh.<alias>.port expected an integer 0..=65535")?,
+            )
+        }
+        "key" => entry.key = Some(value.to_string()),
+        "default_workdir" => entry.default_workdir = Some(value.to_string()),
+        other => bail!(
+            "unknown SSH field `{other}` (expected host/user/port/key/default_workdir)"
+        ),
+    }
+    creds.save(config_dir)?;
+    println!("ssh.{alias}.{field}: <set>");
+    Ok(())
+}
+
 /// Last 6 characters of a credential. Used to confirm you're shipping the key
 /// you think you are without leaking the whole secret to the terminal.
 fn tail6(s: &str) -> String {
@@ -125,6 +161,12 @@ fn tail6(s: &str) -> String {
 }
 
 fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
+    // SSH host: `ssh.<alias>.<field>` where field ∈ {host, user, port, key, default_workdir}.
+    // Stored in credentials.toml under `[ssh.<alias>]`.
+    if let Some(rest) = key.strip_prefix("ssh.") {
+        return cmd_set_ssh(config_dir, rest, value);
+    }
+
     let is_credential = matches!(
         key,
         "vast.api_key"
@@ -180,6 +222,20 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
                     "kaggle" => Vendor::Kaggle,
                     _ => bail!("unknown vendor: {value}"),
                 });
+            }
+            "ui.wizard_completed" => {
+                cfg.ui.wizard_completed = match value {
+                    "true" | "1" | "yes" => true,
+                    "false" | "0" | "no" => false,
+                    _ => bail!("expected boolean (true/false), got: {value}"),
+                };
+            }
+            "metrics.sinks" => {
+                cfg.metrics.sinks = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             _ => {
                 bail!("unknown config key: {key}");

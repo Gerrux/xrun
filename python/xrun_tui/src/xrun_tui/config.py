@@ -85,3 +85,26 @@ def write_tui_settings(settings: dict) -> None:
 
 def get_settings() -> dict:
     return {**_DEFAULTS, **read_tui_settings()}
+
+
+def read_global_config() -> dict:
+    """Parse `~/.config/xrun/config.toml` (xrun-core's GlobalConfig).
+
+    Returns an empty dict if the file is missing or malformed; the caller then
+    treats every flag as its default — including `ui.wizard_completed = false`,
+    which is what triggers the first-run wizard.
+    """
+    path = config_dir() / "config.toml"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        return {}
+
+
+def wizard_pending() -> bool:
+    """True when the first-run wizard should auto-launch."""
+    cfg = read_global_config()
+    return not bool(cfg.get("ui", {}).get("wizard_completed", False))

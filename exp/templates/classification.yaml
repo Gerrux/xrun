@@ -1,0 +1,27 @@
+# Шаблон манифеста: многоклассовая классификация.
+# Скопируй в exp/my_*.yaml и замени cmd/data/artifacts.
+name: template_classification
+description: starter template — multiclass classification with xrun_hook
+vendor: local              # local | vast | kaggle | ssh
+
+local:
+  gpu: cpu                 # для local-вендора достаточно
+
+# data:
+#   - src: data/train.parquet
+#     dst: /workspace/data/train.parquet
+#   - src: data/val.parquet
+#     dst: /workspace/data/val.parquet
+
+run:
+  cmd: python exp/templates/classification_train.py
+  args:
+    --epochs: 5
+    --lr: 1e-3
+    --num-classes: 4
+
+artifacts:
+  patterns:
+    - "checkpoints/best*.pt"
+    - "checkpoints/best*.json"
+    - "output/*.png"

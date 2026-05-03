@@ -94,6 +94,33 @@ impl Default for BudgetConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
+pub struct UiConfig {
+    /// Set to `true` once the first-run wizard has been dismissed (either by
+    /// completing it or skipping). When `false`, `xrun` (TTY) and `xrun init`
+    /// auto-launch the wizard before any other screen.
+    pub wizard_completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsConfig {
+    /// Mirror sinks to fan-out metrics to in addition to the local SQLite +
+    /// JSONL store. Empty = local-only (TUI still updates live via the poller).
+    /// Currently recognised values: `"mlflow"`. `"wandb"` and `"comet"` arrive
+    /// in v0.8.
+    pub sinks: Vec<String>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            sinks: vec!["mlflow".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
 pub struct GlobalConfig {
     pub mlflow: MlflowConfig,
     pub poller: PollerConfig,
@@ -101,4 +128,6 @@ pub struct GlobalConfig {
     pub tui: TuiConfig,
     pub search: SearchConfig,
     pub budget: BudgetConfig,
+    pub ui: UiConfig,
+    pub metrics: MetricsConfig,
 }
