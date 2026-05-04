@@ -94,19 +94,12 @@ def cost(run: dict) -> str:
 # silently). The user can recover with `xrun fix-status` — TUI surfaces this
 # directly so they don't have to discover the command from logs.
 #
-# Authoritative signal: the recorded `poller_pid`. Event silence alone is not
-# enough — Kaggle runs emit no events between `running:start` and `done:ok`,
-# so a long-but-healthy training would otherwise look "stale".
-STALE_THRESHOLD_SECS = 30 * 60
-
-
-def _parse_iso(dt_str: str | None) -> datetime | None:
-    if not dt_str:
-        return None
-    try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-    except Exception:
-        return None
+# Authoritative signal: the recorded `poller_pid` is dead. Event silence is
+# NOT a stale signal — Kaggle runs emit no events between `running:start` and
+# `done:ok`, so a long-but-healthy training would otherwise look "stale".
+# When `poller_pid` is missing (synchronous launch, or detached launch where
+# spawn_daemon never reached because vendor.execute() blocked), we don't have
+# a reliable signal — better to under-report than to cry wolf on healthy runs.
 
 
 def _process_alive(pid: int) -> bool:
@@ -142,22 +135,14 @@ def _process_alive(pid: int) -> bool:
         return False
 
 
-def is_stale(run: dict, threshold_secs: int = STALE_THRESHOLD_SECS) -> bool:
+def is_stale(run: dict) -> bool:
     """A `running`/`provisioning`/`uploading` run whose poll-daemon is dead."""
     if run.get("status") not in ("running", "provisioning", "uploading"):
         return False
     pid = run.get("poller_pid")
-    if pid:
-        return not _process_alive(int(pid))
-    # No recorded poller PID (synchronous launch, or row written before the
-    # poller_pid migration): fall back to event-silence heuristic.
-    last = _parse_iso(run.get("last_event_ts")) or _parse_iso(
-        run.get("started_at")
-    ) or _parse_iso(run.get("created_at"))
-    if last is None:
+    if not pid:
         return False
-    age = (datetime.now(timezone.utc) - last).total_seconds()
-    return age > threshold_secs
+    return not _process_alive(int(pid))
 
 
 def status_label_for(run: dict) -> Text:

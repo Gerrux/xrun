@@ -1,10 +1,12 @@
 #![deny(unsafe_code)]
 
+use std::io::{Read as _, Seek, SeekFrom};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use xrun_core::{vendor::InstanceHandle, GlobalConfig, RunId, Store};
+use xrun_core::{store::RunStatus, vendor::InstanceHandle, GlobalConfig, Run, RunId, Store};
 
 use crate::cli::LogsArgs;
 
@@ -15,7 +17,7 @@ pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         .with_context(|| format!("invalid run ID: {}", args.id))?;
 
     if args.follow {
-        return follow_logs(&id, db_path, runs_dir, args.grep.as_deref());
+        return follow_logs(&id, db_path, runs_dir, config_dir, args.grep.as_deref());
     }
 
     let log_path = runs_dir.join(id.to_string()).join("stdout.log");
@@ -59,6 +61,10 @@ fn explain_empty_log(id: &RunId, db_path: &Path, config_dir: &Path) {
     let Ok(Some(run)) = store.get_run(id) else {
         return;
     };
+    explain_empty_log_for(id, &run, config_dir);
+}
+
+fn explain_empty_log_for(id: &RunId, run: &Run, config_dir: &Path) {
     let status_str = run.status.as_str();
     let active = matches!(status_str, "provisioning" | "uploading" | "running");
 
@@ -102,42 +108,102 @@ fn explain_empty_log(id: &RunId, db_path: &Path, config_dir: &Path) {
     }
 }
 
-/// Dispatch `xrun logs --follow` to either SSH streaming (vast) or local file
-/// reading (kaggle, which has no live log streaming).
-fn follow_logs(id: &RunId, db_path: &Path, runs_dir: &Path, grep: Option<&str>) -> Result<()> {
+/// Dispatch `xrun logs --follow` to either SSH streaming (vast) or local-file
+/// tailing (kaggle / local — the poll-daemon snapshots stdout into the local
+/// run directory; we just keep reading from where it grows).
+fn follow_logs(
+    id: &RunId,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+    grep: Option<&str>,
+) -> Result<()> {
     let store = Store::open(db_path)
         .with_context(|| format!("failed to open store at {}", db_path.display()))?;
     let run = store
         .get_run(id)?
         .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
 
-    if run.vendor == "kaggle" {
-        // §1: Kaggle has no live streaming — show the locally pulled log file.
-        let log_path = runs_dir.join(id.to_string()).join("stdout.log");
-        if log_path.exists() {
-            let content = std::fs::read_to_string(&log_path)
-                .with_context(|| format!("failed to read log: {}", log_path.display()))?;
-            match grep {
-                Some(pattern) => {
-                    for line in content.lines() {
-                        if line.contains(pattern) {
-                            println!("{line}");
-                        }
-                    }
-                }
-                None => print!("{content}"),
-            }
-        } else {
-            eprintln!(
-                "No log available yet for Kaggle run {id}.\n\
-                 Live streaming is not supported. Run `xrun pull {id}` after the \
-                 kernel completes to download the output."
-            );
-        }
-        return Ok(());
+    if run.vendor == "kaggle" || run.vendor == "local" {
+        return follow_local_file(id, &run, db_path, runs_dir, config_dir, grep);
     }
 
     follow_remote(id, &run, db_path, grep)
+}
+
+/// Tail `runs_dir/<id>/stdout.log`, sleeping briefly between polls until the
+/// run reaches a terminal status. The poll-daemon is the producer (it pulls
+/// MLflow log chunks for Kaggle, or reads the local stdout file for local
+/// runs); this function is the consumer that streams what lands locally.
+fn follow_local_file(
+    id: &RunId,
+    run: &Run,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+    grep: Option<&str>,
+) -> Result<()> {
+    let log_path = runs_dir.join(id.to_string()).join("stdout.log");
+    let store = Store::open(db_path)
+        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+
+    let mut offset: u64 = 0;
+    let mut warned_empty = false;
+    let mut buf = String::new();
+
+    loop {
+        // Re-read terminal status each iteration so we exit promptly.
+        let current = store.get_run(id)?;
+        let status = current
+            .as_ref()
+            .map(|r| r.status.clone())
+            .unwrap_or_else(|| run.status.clone());
+        let terminal = matches!(
+            status,
+            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled
+        );
+
+        match std::fs::File::open(&log_path) {
+            Ok(mut f) => {
+                let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+                if len < offset {
+                    // File was truncated (e.g. pre-emption + restart on vast,
+                    // or rerun); start from the new beginning.
+                    offset = 0;
+                }
+                if len > offset {
+                    f.seek(SeekFrom::Start(offset))?;
+                    buf.clear();
+                    f.read_to_string(&mut buf).ok();
+                    offset = len;
+                    match grep {
+                        Some(pattern) => {
+                            for line in buf.lines() {
+                                if line.contains(pattern) {
+                                    println!("{line}");
+                                }
+                            }
+                        }
+                        None => print!("{buf}"),
+                    }
+                } else if !warned_empty && len == 0 {
+                    explain_empty_log_for(id, run, config_dir);
+                    warned_empty = true;
+                }
+            }
+            Err(_) => {
+                if !warned_empty {
+                    explain_empty_log_for(id, run, config_dir);
+                    warned_empty = true;
+                }
+            }
+        }
+
+        if terminal {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
 }
 
 /// `xrun logs -f <id>` streams the live stdout from the running instance over

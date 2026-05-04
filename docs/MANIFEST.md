@@ -221,6 +221,7 @@ mlflow:
 | `artifacts` | object | нет | Дополнительные файлы |
 | `mlflow` | object | нет | Если отсутствует — метрики только в SQLite |
 | `policy` | object | нет | Поведение при ошибках/idle |
+| `requires` | object | нет | Pre-flight floor: `ram_gb`, `disk_gb`. `xrun doctor --manifest` падает, если `vendor` известен и значения превышают аппаратный лимит (Kaggle ≈ 13 GB RAM / 73 GB working disk). Защита от 6-минутного OOM. |
 
 ### `vast`
 

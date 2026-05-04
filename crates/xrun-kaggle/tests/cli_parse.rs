@@ -330,6 +330,136 @@ fn test_username_parses_json_format() {
     assert_eq!(cli.username().unwrap(), "kartaviychert");
 }
 
+// --- dataset_push retry on transient failures -----------------------------
+
+struct MockDatasetRetry {
+    create_calls: std::sync::Arc<std::sync::Mutex<u32>>,
+    version_calls: std::sync::Arc<std::sync::Mutex<u32>>,
+    /// Number of leading attempts that should fail with a transient error.
+    create_fail_count: u32,
+    /// What the create result should be on the success attempt.
+    create_succeeds: bool,
+    /// Stderr returned for the "already exists" branch (triggers version path).
+    create_already_stderr: Option<String>,
+    /// Number of leading version attempts that should fail with a transient error.
+    version_fail_count: u32,
+}
+
+impl MockDatasetRetry {
+    fn new(create_fail_count: u32) -> Self {
+        Self {
+            create_calls: std::sync::Arc::new(std::sync::Mutex::new(0)),
+            version_calls: std::sync::Arc::new(std::sync::Mutex::new(0)),
+            create_fail_count,
+            create_succeeds: true,
+            create_already_stderr: None,
+            version_fail_count: 0,
+        }
+    }
+}
+
+impl KaggleProcess for MockDatasetRetry {
+    fn push(&self, _dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        let mut n = self.create_calls.lock().unwrap();
+        *n += 1;
+        if *n <= self.create_fail_count {
+            return Err(KaggleError::CliFailure {
+                exit_code: 1,
+                stderr: "stdout: \nstderr: HTTP 503 Service Temporarily Unavailable".to_string(),
+            });
+        }
+        if let Some(s) = &self.create_already_stderr {
+            return Err(KaggleError::CliFailure {
+                exit_code: 1,
+                stderr: s.clone(),
+            });
+        }
+        if self.create_succeeds {
+            Ok(String::new())
+        } else {
+            Err(KaggleError::CliFailure {
+                exit_code: 2,
+                stderr: "stderr: forbidden".to_string(),
+            })
+        }
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        let mut n = self.version_calls.lock().unwrap();
+        *n += 1;
+        if *n <= self.version_fail_count {
+            return Err(KaggleError::CliFailure {
+                exit_code: 1,
+                stderr: "stderr: connection reset by peer during commit".to_string(),
+            });
+        }
+        Ok(String::new())
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn test_dataset_push_retries_transient_create_failure() {
+    // Two transient 503s, then success — should not bubble up an error.
+    let mock = Box::new(MockDatasetRetry::new(2));
+    let calls = mock.create_calls.clone();
+    let cli = KaggleCli::with_process(mock);
+
+    // Use a unique tempdir so ensure_dataset_metadata writes don't collide.
+    let tmp = tempfile::tempdir().unwrap();
+    // Force shorter retry cap + zero backoff so the test stays fast.
+    std::env::set_var("XRUN_KAGGLE_DATASET_RETRIES", "3");
+    std::env::set_var("XRUN_KAGGLE_DATASET_BACKOFF_BASE_SECS", "0");
+    let res = cli.dataset_push(tmp.path(), "user/slug", Some("msg"));
+    std::env::remove_var("XRUN_KAGGLE_DATASET_RETRIES");
+    std::env::remove_var("XRUN_KAGGLE_DATASET_BACKOFF_BASE_SECS");
+
+    assert!(res.is_ok(), "expected retry to recover, got {res:?}");
+    assert_eq!(*calls.lock().unwrap(), 3, "expected 3 create attempts");
+}
+
+#[test]
+fn test_dataset_push_does_not_retry_permanent_failure() {
+    // Permanent error (forbidden) — should fail fast on attempt #1.
+    let mut mock = MockDatasetRetry::new(0);
+    mock.create_succeeds = false;
+    let mock = Box::new(mock);
+    let calls = mock.create_calls.clone();
+    let cli = KaggleCli::with_process(mock);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let res = cli.dataset_push(tmp.path(), "user/slug", None);
+
+    assert!(res.is_err());
+    assert_eq!(
+        *calls.lock().unwrap(),
+        1,
+        "must not retry on permanent error"
+    );
+}
+
 #[test]
 fn test_cli_status_parses_cancel_acknowledged_as_error() {
     let mock = Box::new(MockStatusProcess {

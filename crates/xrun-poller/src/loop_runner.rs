@@ -19,7 +19,7 @@ use xrun_core::{
 
 use crate::lock::{PollerLock, PollerLockError};
 use crate::mlflow_mirror::{MlflowMirror, MlflowMirrorConfig};
-use crate::parser::{parse_events, parse_metrics};
+use crate::parser::{parse_events, parse_metrics, parse_stdout_metrics};
 
 /// Lightweight cancellation primitive backed by an atomic flag.
 #[derive(Debug, Clone)]
@@ -231,6 +231,12 @@ impl Poller {
 
         let mut last_progress = Instant::now();
         let mut last_offset_e = offset_e;
+        // Holds the trailing partial line from the previous stdout chunk so
+        // metrics aren't dropped on chunk boundaries (line boundaries don't
+        // align with HTTP/MLflow chunk boundaries). Bounded by `MAX_STDOUT_LINE`
+        // to prevent unbounded growth on a stream with no newlines.
+        let mut stdout_line_buf: Vec<u8> = Vec::new();
+        const MAX_STDOUT_LINE: usize = 64 * 1024;
 
         loop {
             let mut progress_this_tick = false;
@@ -421,6 +427,64 @@ impl Poller {
                         let _ = f.write_all(&bytes);
                     }
                     offset_s += bytes.len() as u64;
+
+                    // Best-effort: extract `key=value` / JSONL metrics from
+                    // structured stdout. Canonical path is xrun_hook →
+                    // metrics.jsonl, but for vendors where the hook isn't
+                    // loaded (or for users who haven't adopted it), this
+                    // gives `xrun metrics --ascii` something to draw without
+                    // any manifest-side declaration. INSERT OR REPLACE on
+                    // (run_id, key, step) makes this safe to overlap with
+                    // the metrics.jsonl path.
+                    let mut new_stdout_metrics: Vec<NewMetric> = Vec::new();
+                    stdout_line_buf.extend_from_slice(&bytes);
+                    let now_ts = Utc::now();
+                    let mut consumed = 0;
+                    while let Some(nl) =
+                        stdout_line_buf[consumed..].iter().position(|&b| b == b'\n')
+                    {
+                        let end = consumed + nl;
+                        let line = &stdout_line_buf[consumed..end];
+                        for m in parse_stdout_metrics(line, now_ts) {
+                            new_stdout_metrics.push(NewMetric {
+                                step: m.step,
+                                key: m.key,
+                                value: m.value,
+                                ts: m.ts,
+                            });
+                        }
+                        consumed = end + 1;
+                    }
+                    stdout_line_buf.drain(..consumed);
+                    if stdout_line_buf.len() > MAX_STDOUT_LINE {
+                        // Pathological no-newline stream: drop the buffer
+                        // rather than grow forever. Caller can still inspect
+                        // stdout.log for the raw bytes.
+                        stdout_line_buf.clear();
+                    }
+                    if !new_stdout_metrics.is_empty() {
+                        let metrics_count = new_stdout_metrics.len();
+                        for nm in &new_stdout_metrics {
+                            let _ = self.store.append_metric(
+                                &self.run_id,
+                                NewMetric {
+                                    step: nm.step,
+                                    key: nm.key.clone(),
+                                    value: nm.value,
+                                    ts: nm.ts,
+                                },
+                            );
+                        }
+                        if let Some(ref mut mirror) = mlflow {
+                            mirror.log_metrics(&new_stdout_metrics);
+                        }
+                        self.send_update(DataUpdate::MetricsAppended(
+                            self.run_id.clone(),
+                            metrics_count,
+                        ));
+                        last_progress = Instant::now();
+                        progress_this_tick = true;
+                    }
                 }
                 Ok(_) => {}
                 Err(VendorError::Truncated) => {
@@ -431,6 +495,7 @@ impl Poller {
                             .join("stdout.log"),
                     ) {}
                     offset_s = 0;
+                    stdout_line_buf.clear();
                 }
                 Err(e) => {
                     tracing::warn!("tail stdout error: {e}");

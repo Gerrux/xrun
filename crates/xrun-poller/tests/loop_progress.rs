@@ -23,6 +23,7 @@ use xrun_poller::{
 struct MockVendor {
     events_queue: RefCell<VecDeque<Vec<u8>>>,
     metrics_queue: RefCell<VecDeque<Vec<u8>>>,
+    stdout_queue: RefCell<VecDeque<Vec<u8>>>,
     /// Optional scripted answers for `process_alive`. Each call pops one;
     /// when the queue empties, returns `None` (= adapter has no opinion).
     alive_queue: RefCell<VecDeque<Option<bool>>>,
@@ -33,12 +34,18 @@ impl MockVendor {
         Self {
             events_queue: RefCell::new(events.into()),
             metrics_queue: RefCell::new(metrics.into()),
+            stdout_queue: RefCell::new(VecDeque::new()),
             alive_queue: RefCell::new(VecDeque::new()),
         }
     }
 
     fn with_alive(self, alive: Vec<Option<bool>>) -> Self {
         *self.alive_queue.borrow_mut() = alive.into();
+        self
+    }
+
+    fn with_stdout(self, stdout: Vec<Vec<u8>>) -> Self {
+        *self.stdout_queue.borrow_mut() = stdout.into();
         self
     }
 }
@@ -72,7 +79,7 @@ impl VendorAdapter for MockVendor {
         let queue = if file.contains("metrics") {
             &self.metrics_queue
         } else if file.contains("stdout") {
-            return Ok(vec![]);
+            &self.stdout_queue
         } else {
             &self.events_queue
         };
@@ -178,6 +185,46 @@ fn test_poller_run_three_events_to_done() {
     assert_eq!(events[0].stage, "train_start");
     assert_eq!(events[1].stage, "epoch");
     assert_eq!(events[2].stage, "done");
+}
+
+#[test]
+fn test_poller_extracts_metrics_from_stdout() {
+    // Vendors without xrun_hook (or runs that pre-date it) emit metrics only
+    // through structured stdout. The poller must parse those lines and
+    // persist the numeric metrics so `xrun metrics` has something to draw.
+    let tmp = TempDir::new().unwrap();
+    let (store, run_id) = setup_store(&tmp);
+    let runs_dir = tmp.path().join("runs");
+
+    let stdout_data = b"epoch=1 loss=0.42 val_f1=0.81\nepoch=2 loss=0.31 val_f1=0.88\n".to_vec();
+    let done_event = join_lines(&[event_line("done", "ok")]);
+
+    let mock = MockVendor::new(vec![vec![], done_event], vec![]).with_stdout(vec![stdout_data]);
+    let cancel = CancellationToken::new();
+
+    let status = Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(mock),
+        make_handle(),
+        runs_dir,
+    )
+    .with_config(fast_config())
+    .run(cancel)
+    .unwrap();
+
+    assert_eq!(status, RunStatus::Done);
+
+    let store2 = Store::open(&tmp.path().join("runs.db")).unwrap();
+    let metrics = store2.list_metrics(&run_id, None).unwrap();
+    // 2 epochs × {loss, val_f1} = 4 metric rows
+    assert_eq!(
+        metrics.len(),
+        4,
+        "expected 4 metric rows from stdout parsing"
+    );
+    assert!(metrics.iter().any(|m| m.key == "loss" && m.step == 1));
+    assert!(metrics.iter().any(|m| m.key == "val_f1" && m.step == 2));
 }
 
 #[test]

@@ -21,4 +21,7 @@ pub enum KaggleError {
 
     #[error("store error: {0}")]
     Store(#[from] xrun_core::StoreError),
+
+    #[error("{0}")]
+    Other(String),
 }

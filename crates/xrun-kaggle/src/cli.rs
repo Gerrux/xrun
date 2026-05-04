@@ -125,13 +125,77 @@ impl Default for KaggleProcessReal {
     }
 }
 
+/// Default watchdog for `kaggle kernels push`. Override with
+/// `XRUN_KAGGLE_PUSH_TIMEOUT_SECS`. Picked to be longer than a slow 3 GB
+/// dataset push but short enough to surface a wedged subprocess instead of
+/// silently blocking `xrun launch --detach` forever.
+const DEFAULT_PUSH_TIMEOUT_SECS: u64 = 600;
+/// Watchdog for `kaggle datasets create|version`. Larger default because
+/// dataset uploads are commonly multi-GB and the final commit step can
+/// legitimately take several minutes on the Kaggle backend.
+const DEFAULT_DATASET_TIMEOUT_SECS: u64 = 1800;
+
+fn push_timeout() -> std::time::Duration {
+    let secs = std::env::var("XRUN_KAGGLE_PUSH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PUSH_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+fn dataset_timeout() -> std::time::Duration {
+    let secs = std::env::var("XRUN_KAGGLE_DATASET_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_DATASET_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Spawn `cmd`, wait up to `timeout` for it to finish, and on timeout kill
+/// the child and return a clear error. stdout/stderr are captured.
+fn run_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: std::time::Duration,
+    label: &str,
+) -> Result<std::process::Output, KaggleError> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| KaggleError::NotFound(format!("spawn {label}: {e}")))?;
+
+    let start = std::time::Instant::now();
+    let poll = std::time::Duration::from_millis(200);
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| KaggleError::Other(format!("wait {label}: {e}")))?
+        {
+            Some(_status) => break,
+            None => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(KaggleError::Other(format!(
+                        "{label} timed out after {}s — kaggle subprocess wedged. \
+                         Override with XRUN_KAGGLE_PUSH_TIMEOUT_SECS=N.",
+                        timeout.as_secs()
+                    )));
+                }
+                std::thread::sleep(poll);
+            }
+        }
+    }
+    child
+        .wait_with_output()
+        .map_err(|e| KaggleError::Other(format!("collect {label}: {e}")))
+}
+
 impl KaggleProcess for KaggleProcessReal {
     fn push(&self, local_dir: &Path) -> Result<String, KaggleError> {
-        let output = self
-            .cmd(&["kernels", "push", "-p"])
-            .arg(local_dir)
-            .output()
-            .map_err(|e| KaggleError::NotFound(e.to_string()))?;
+        let mut cmd = self.cmd(&["kernels", "push", "-p"]);
+        cmd.arg(local_dir);
+        let output = run_with_timeout(cmd, push_timeout(), "kaggle kernels push")?;
 
         if !output.status.success() {
             return Err(KaggleError::CliFailure {
@@ -247,13 +311,9 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn datasets_create(&self, local_dir: &Path) -> Result<String, KaggleError> {
-        let out = self
-            .cmd(&["datasets", "create", "-p"])
-            .arg(local_dir)
-            .arg("--dir-mode")
-            .arg("tar")
-            .output()
-            .map_err(|e| KaggleError::NotFound(e.to_string()))?;
+        let mut cmd = self.cmd(&["datasets", "create", "-p"]);
+        cmd.arg(local_dir).arg("--dir-mode").arg("tar");
+        let out = run_with_timeout(cmd, dataset_timeout(), "kaggle datasets create")?;
         if !out.status.success() {
             return Err(KaggleError::CliFailure {
                 exit_code: out.status.code().unwrap_or(-1),
@@ -268,15 +328,13 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn datasets_version(&self, local_dir: &Path, message: &str) -> Result<String, KaggleError> {
-        let out = self
-            .cmd(&["datasets", "version", "-p"])
-            .arg(local_dir)
+        let mut cmd = self.cmd(&["datasets", "version", "-p"]);
+        cmd.arg(local_dir)
             .arg("--dir-mode")
             .arg("tar")
             .arg("-m")
-            .arg(message)
-            .output()
-            .map_err(|e| KaggleError::NotFound(e.to_string()))?;
+            .arg(message);
+        let out = run_with_timeout(cmd, dataset_timeout(), "kaggle datasets version")?;
         if !out.status.success() {
             return Err(KaggleError::CliFailure {
                 exit_code: out.status.code().unwrap_or(-1),
@@ -375,7 +433,9 @@ impl KaggleCli {
     /// Ensures `dataset-metadata.json` exists in `local_dir` (generates one from
     /// `slug` if absent), then calls `kaggle datasets create`. On "already exists"
     /// conflict (exit non-zero + "already" in stderr), falls back to
-    /// `kaggle datasets version`.
+    /// `kaggle datasets version`. Transient errors (timeout, 5xx, connection
+    /// reset on the final `CreateDatasetVersion` commit) are retried up to
+    /// `XRUN_KAGGLE_DATASET_RETRIES` times (default 2 — total 3 attempts).
     pub fn dataset_push(
         &self,
         local_dir: &Path,
@@ -385,15 +445,42 @@ impl KaggleCli {
         ensure_dataset_metadata(local_dir, slug)?;
         let msg = message.unwrap_or("Updated via xrun");
 
-        match self.process.datasets_create(local_dir) {
-            Ok(_) => Ok(()),
-            Err(KaggleError::CliFailure { ref stderr, .. })
-                if stderr.to_lowercase().contains("already") =>
-            {
-                self.process.datasets_version(local_dir, msg)?;
-                Ok(())
+        let max_retries: u32 = std::env::var("XRUN_KAGGLE_DATASET_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+
+        let mut attempt = 0u32;
+        loop {
+            let result = match self.process.datasets_create(local_dir) {
+                Ok(_) => Ok(()),
+                Err(KaggleError::CliFailure { ref stderr, .. })
+                    if stderr.to_lowercase().contains("already") =>
+                {
+                    self.process.datasets_version(local_dir, msg).map(|_| ())
+                }
+                Err(e) => Err(e),
+            };
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(e) if is_transient_kaggle_error(&e) && attempt < max_retries => {
+                    let base_secs: u64 = std::env::var("XRUN_KAGGLE_DATASET_BACKOFF_BASE_SECS")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(10);
+                    let backoff = std::time::Duration::from_secs(base_secs * (1 << attempt));
+                    tracing::warn!(
+                        "kaggle dataset push transient error ({}/{max_retries}): {e}. \
+                         Retrying in {:?}…",
+                        attempt + 1,
+                        backoff
+                    );
+                    std::thread::sleep(backoff);
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -412,6 +499,33 @@ impl KaggleCli {
 impl Default for KaggleCli {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Heuristic for "is this likely a transient network/backend hiccup worth
+/// retrying?" Conservative — we'd rather miss a retry than retry a hard
+/// permission/auth error and burn another 3 GB of upload bandwidth.
+fn is_transient_kaggle_error(err: &KaggleError) -> bool {
+    let s = err.to_string().to_lowercase();
+    // Watchdog-killed subprocess from run_with_timeout
+    if s.contains("timed out") || s.contains("wedged") {
+        return true;
+    }
+    match err {
+        KaggleError::CliFailure { stderr, .. } => {
+            let lower = stderr.to_lowercase();
+            lower.contains("timeout")
+                || lower.contains("timed out")
+                || lower.contains("connection reset")
+                || lower.contains("connection aborted")
+                || lower.contains("connection refused")
+                || lower.contains("eof occurred")
+                || lower.contains("temporarily unavailable")
+                || lower.contains(" 502")
+                || lower.contains(" 503")
+                || lower.contains(" 504")
+        }
+        _ => false,
     }
 }
 

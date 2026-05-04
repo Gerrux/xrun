@@ -287,6 +287,7 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
         {
             kaggle_manifest_checks(manifest, config_dir, &mut checks);
         }
+        requires_checks(manifest, &mut checks);
     }
 
     let any_fail = checks.iter().any(|c| !c.ok && !c.warn_only);
@@ -658,6 +659,103 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
                 detail,
             });
         }
+    }
+}
+
+/// Known hardware caps per vendor. `(ram_gb, working_disk_gb)`.
+/// Vast hosts vary wildly so we don't assert there — vast manifests already
+/// declare `disk_gb` and the offer search filters on it.
+fn vendor_limits(vendor: Vendor) -> Option<(u32, u32)> {
+    match vendor {
+        // Kaggle P100 / T4 x2: ~13 GB RAM, ~73 GB writable on /kaggle/working.
+        // Source: kaggle.com/docs/efficient-gpu-usage and field-tested.
+        Vendor::Kaggle => Some((13, 73)),
+        Vendor::Vast | Vendor::Local | Vendor::Ssh => None,
+    }
+}
+
+fn requires_checks(manifest: &Manifest, checks: &mut Vec<Check>) {
+    let req = match &manifest.requires {
+        Some(r) => r,
+        None => return,
+    };
+    let limits = vendor_limits(manifest.vendor);
+
+    if let Some(ram) = req.ram_gb {
+        let (ok, warn_only, detail) = match limits {
+            Some((cap, _)) if ram > cap => (
+                false,
+                false,
+                format!(
+                    "manifest requires {ram} GB RAM but {} caps at ~{cap} GB — \
+                     run will likely OOM. Pick a vendor with more RAM or reduce batch size.",
+                    manifest.vendor.as_str()
+                ),
+            ),
+            Some((cap, _)) => (
+                true,
+                false,
+                format!(
+                    "RAM {ram} GB ≤ {} cap (~{cap} GB)",
+                    manifest.vendor.as_str()
+                ),
+            ),
+            None => (
+                true,
+                true,
+                format!(
+                    "RAM requirement {ram} GB declared but no static cap known for \
+                     vendor '{}' — runtime will decide",
+                    manifest.vendor.as_str()
+                ),
+            ),
+        };
+        checks.push(Check {
+            name: "requires_ram",
+            category: "manifests",
+            ok,
+            warn_only,
+            detail,
+        });
+    }
+
+    if let Some(disk) = req.disk_gb {
+        let (ok, warn_only, detail) = match limits {
+            Some((_, cap)) if disk > cap => (
+                false,
+                false,
+                format!(
+                    "manifest requires {disk} GB working-disk but {} caps at ~{cap} GB — \
+                     run will run out of space. Trim datasets, push them as a Kaggle \
+                     dataset, or pick a vendor with more disk.",
+                    manifest.vendor.as_str()
+                ),
+            ),
+            Some((_, cap)) => (
+                true,
+                false,
+                format!(
+                    "disk {disk} GB ≤ {} cap (~{cap} GB)",
+                    manifest.vendor.as_str()
+                ),
+            ),
+            None => (
+                true,
+                true,
+                format!(
+                    "disk requirement {disk} GB declared but no static cap known for \
+                     vendor '{}' — runtime will decide",
+                    manifest.vendor.as_str()
+                ),
+            ),
+        };
+        checks.push(Check {
+            name: "requires_disk",
+            category: "manifests",
+            ok,
+            warn_only,
+            detail,
+        });
     }
 }
 

@@ -242,4 +242,20 @@ pub struct Manifest {
     pub artifacts: Option<Artifacts>,
     pub mlflow: Option<MlflowSpec>,
     pub policy: Option<Policy>,
+    /// Pre-flight resource floor. `xrun doctor --manifest` compares these
+    /// against known vendor limits and fails fast when the manifest asks for
+    /// more than the target instance can deliver, so users don't burn GPU-time
+    /// learning hardware caps the hard way.
+    pub requires: Option<Requires>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Requires {
+    /// Minimum RAM the run needs (GB). Compared against the known vendor
+    /// instance limit (e.g. Kaggle P100 ≈ 13 GB, T4 x2 ≈ 13 GB).
+    pub ram_gb: Option<u32>,
+    /// Minimum free working-disk space (GB). Kaggle's writable disk on
+    /// `/kaggle/working` is ~73 GB; vast varies by host.
+    pub disk_gb: Option<u32>,
 }
