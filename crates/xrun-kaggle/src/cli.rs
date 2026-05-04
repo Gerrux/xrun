@@ -102,6 +102,13 @@ impl KaggleProcessReal {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
+        // Pin stdin to /dev/null. Without this, `kaggle` inherits our stdin
+        // and a few subcommands (notably `kernels push` and `datasets
+        // version` on a pre-existing target) prompt for confirmation —
+        // freezing `xrun launch --detach` for as long as the user stays at
+        // the keyboard. With `null` the prompt either gets EOF and aborts
+        // fast, or proceeds with the default. Either way we never hang.
+        cmd.stdin(std::process::Stdio::null());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -221,8 +228,13 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn datasets_status(&self, slug: &str) -> Result<String, KaggleError> {
+        // The `-m` (machine-readable) flag was dropped from `datasets status`
+        // in kaggle CLI 1.7.x; passing it now produces
+        // `unrecognized arguments: -m` and breaks `xrun doctor`. The plain
+        // text output ("<slug> has status: ready") is still parseable by
+        // `parse_dataset_ready`, which only looks for the word "ready".
         let out = self
-            .cmd(&["datasets", "status", slug, "-m"])
+            .cmd(&["datasets", "status", slug])
             .output()
             .map_err(|e| KaggleError::NotFound(e.to_string()))?;
         if !out.status.success() {
@@ -551,10 +563,18 @@ fn parse_username(stdout: &str) -> Result<String, KaggleError> {
             return Ok(u.to_string());
         }
     }
-    // Plain-text format: "username: kartaviychert"
+    // Plain-text format. Tolerant of:
+    //   "username: foo"
+    //   "- username: foo"      (yaml-list style)
+    //   "  username: foo"      (indented)
+    //   "Warning: ..." / version-banner lines before the real content.
     for line in trimmed.lines() {
-        if let Some(rest) = line.strip_prefix("username:") {
-            return Ok(rest.trim().to_string());
+        let stripped = line.trim_start().trim_start_matches('-').trim_start();
+        if let Some(rest) = stripped.strip_prefix("username:") {
+            let value = rest.trim().trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Ok(value.to_string());
+            }
         }
     }
     Err(KaggleError::ParseError(format!(

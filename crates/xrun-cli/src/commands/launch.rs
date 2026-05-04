@@ -359,6 +359,8 @@ fn do_launch_with_budget(
         );
         (h, true)
     } else {
+        eprintln!("[launch] provision: starting");
+        let t0 = std::time::Instant::now();
         let h = match vendor.provision(manifest) {
             Ok(h) => h,
             Err(e) => {
@@ -366,6 +368,7 @@ fn do_launch_with_budget(
                 anyhow::bail!("provision failed: {e}");
             }
         };
+        eprintln!("[launch] provision: done ({:?})", t0.elapsed());
         (h, false)
     };
 
@@ -390,6 +393,8 @@ fn do_launch_with_budget(
 
     // Upload data sources
     let sources = manifest.data.as_deref().unwrap_or(&[]).to_vec();
+    eprintln!("[launch] upload: {} source(s)", sources.len());
+    let t_upload = std::time::Instant::now();
     if let Err(e) = vendor.upload(&handle, &sources) {
         // For reused instances we don't destroy on failure — the user told us
         // to keep it alive. They can `xrun stop` explicitly when done.
@@ -399,6 +404,7 @@ fn do_launch_with_budget(
         let _ = store.update_run_status(&run_id, RunStatus::Failed);
         anyhow::bail!("upload failed: {e}");
     }
+    eprintln!("[launch] upload: done ({:?})", t_upload.elapsed());
 
     // --upload-only: provision + upload, then mark done and bail. The
     // instance keeps running so the user can `xrun launch --reuse-instance`
@@ -424,6 +430,8 @@ fn do_launch_with_budget(
     }
 
     // Execute training command
+    eprintln!("[launch] execute: starting");
+    let t_exec = std::time::Instant::now();
     if let Err(e) = vendor.execute(&handle, &manifest.run) {
         if !reused_instance {
             let _ = vendor.destroy(&handle);
@@ -431,6 +439,7 @@ fn do_launch_with_budget(
         let _ = store.update_run_status(&run_id, RunStatus::Failed);
         anyhow::bail!("execute failed: {e}");
     }
+    eprintln!("[launch] execute: done ({:?})", t_exec.elapsed());
 
     // Mark as running and record start time
     let _ = store.update_run_started_at(&run_id, Utc::now());
@@ -441,10 +450,12 @@ fn do_launch_with_budget(
     eprintln!("Run {run_id} started");
 
     if args.detach {
+        eprintln!("[launch] spawning poll-daemon");
         let pid = spawn_daemon(&run_id, db_path, runs_dir)?;
         if let Err(e) = store.update_run_poller_pid(&run_id, Some(pid as i64)) {
             tracing::warn!("could not record poller PID: {e}");
         }
+        eprintln!("[launch] detached (poller pid {pid})");
         println!("{run_id}");
         return Ok(());
     }

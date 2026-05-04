@@ -249,6 +249,87 @@ fn test_cli_status_parses_with_outdated_warning_prefix() {
     assert_eq!(status.status, KernelState::Complete);
 }
 
+// --- config view / username parsing ---
+
+struct MockConfigViewProcess {
+    stdout: String,
+}
+
+impl KaggleProcess for MockConfigViewProcess {
+    fn push(&self, _dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        Ok(self.stdout.clone())
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn test_username_parses_plain_format() {
+    let mock = Box::new(MockConfigViewProcess {
+        stdout: "username: kartaviychert\nkey: ****\n".to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    assert_eq!(cli.username().unwrap(), "kartaviychert");
+}
+
+#[test]
+fn test_username_parses_with_outdated_warning_prefix() {
+    // Real-world breakage: the version-banner caused the old parser to fail
+    // even though the config below it was fine.
+    let mock = Box::new(MockConfigViewProcess {
+        stdout: "Warning: Looks like you're using an outdated `kaggle` \
+                 version, please consider upgrading.\n\
+                 - username: kartaviychert\n\
+                 - key: ****\n"
+            .to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    assert_eq!(cli.username().unwrap(), "kartaviychert");
+}
+
+#[test]
+fn test_username_parses_indented_yaml_style() {
+    let mock = Box::new(MockConfigViewProcess {
+        stdout: "  username: kartaviychert\n  key: ****\n".to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    assert_eq!(cli.username().unwrap(), "kartaviychert");
+}
+
+#[test]
+fn test_username_parses_json_format() {
+    let mock = Box::new(MockConfigViewProcess {
+        stdout: r#"{"username": "kartaviychert", "key": "****"}"#.to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    assert_eq!(cli.username().unwrap(), "kartaviychert");
+}
+
 #[test]
 fn test_cli_status_parses_cancel_acknowledged_as_error() {
     let mock = Box::new(MockStatusProcess {

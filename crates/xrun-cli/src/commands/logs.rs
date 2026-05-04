@@ -4,11 +4,11 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use xrun_core::{vendor::InstanceHandle, RunId, Store};
+use xrun_core::{vendor::InstanceHandle, GlobalConfig, RunId, Store};
 
 use crate::cli::LogsArgs;
 
-pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
+pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
     let id: RunId = args
         .id
         .parse()
@@ -20,7 +20,16 @@ pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
 
     let log_path = runs_dir.join(id.to_string()).join("stdout.log");
 
-    if !log_path.exists() {
+    if !log_path.exists()
+        || std::fs::metadata(&log_path)
+            .map(|m| m.len() == 0)
+            .unwrap_or(true)
+    {
+        // Empty/missing log on a still-active run is the #1 thing users hit
+        // and the silent return makes it feel like xrun is broken. Tell them
+        // what we know about *why* there's nothing to show — the answer
+        // depends on the vendor and whether MLflow is wired up.
+        explain_empty_log(&id, db_path, config_dir);
         return Ok(());
     }
 
@@ -39,6 +48,58 @@ pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Diagnose why `stdout.log` is empty for the given run and print a hint to
+/// stderr. Best-effort: if anything fails to load we just stay silent.
+fn explain_empty_log(id: &RunId, db_path: &Path, config_dir: &Path) {
+    let Ok(store) = Store::open(db_path) else {
+        return;
+    };
+    let Ok(Some(run)) = store.get_run(id) else {
+        return;
+    };
+    let status_str = run.status.as_str();
+    let active = matches!(status_str, "provisioning" | "uploading" | "running");
+
+    match run.vendor.as_str() {
+        "kaggle" => {
+            let mlflow_configured = GlobalConfig::load(config_dir)
+                .map(|g| g.mlflow.url.is_some())
+                .unwrap_or(false);
+            if !mlflow_configured {
+                eprintln!(
+                    "No live log available for Kaggle run {id}. Kaggle's API has no \
+                     log-streaming endpoint, so xrun pipes logs through MLflow when \
+                     it's configured. Set `mlflow.url` in `~/.config/xrun/config.toml` \
+                     to enable live tailing, or wait for the kernel to finish and \
+                     run `xrun pull {id}` to download the output."
+                );
+            } else if active {
+                eprintln!(
+                    "No log chunks have arrived yet for Kaggle run {id}. The kernel \
+                     is still warming up — xrun_hook needs a few seconds after \
+                     `running:start` before the first chunk lands in MLflow. Try \
+                     again in ~10s."
+                );
+            } else {
+                eprintln!(
+                    "No log captured for Kaggle run {id} (status={status_str}). Run \
+                     `xrun pull {id}` to fetch the kernel output if it ever finished."
+                );
+            }
+        }
+        _ if active => {
+            eprintln!(
+                "No log captured yet for run {id} (status={status_str}). The poll-daemon \
+                 snapshots stdout every few seconds — try again shortly, or use \
+                 `xrun logs {id} --follow` to stream live."
+            );
+        }
+        _ => {
+            eprintln!("No log captured for run {id} (status={status_str}).");
+        }
+    }
 }
 
 /// Dispatch `xrun logs --follow` to either SSH streaming (vast) or local file
