@@ -111,6 +111,24 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
             Box::new(adapter)
         }
         Vendor::Kaggle => {
+            // Best-effort GPU quota check before provisioning. Only fires when
+            // the user has populated KAGGLE_GPU_QUOTA_REMAINING_HOURS — Kaggle
+            // has no public quota endpoint, so we skip silently otherwise.
+            if let (Some(remaining_h), Some(want_secs)) = (
+                std::env::var("KAGGLE_GPU_QUOTA_REMAINING_HOURS")
+                    .ok()
+                    .and_then(|s| s.trim().parse::<f64>().ok()),
+                caps.max_lifetime_secs,
+            ) {
+                let want_h = want_secs as f64 / 3600.0;
+                if want_h > remaining_h {
+                    eprintln!(
+                        "warning: --max-hours {want_h:.1} exceeds tracked Kaggle GPU \
+                         quota remainder {remaining_h:.1}h. The kernel will be killed by \
+                         Kaggle when the quota runs out, regardless of xrun caps."
+                    );
+                }
+            }
             let data_dir = db_path.parent().unwrap_or(db_path);
             let kaggle_creds = resolve_kaggle_credentials(config_dir);
             let mut adapter = KaggleAdapter::new()

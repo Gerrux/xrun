@@ -16,6 +16,18 @@ fn resolve_vast_key(config_dir: &Path) -> Option<String> {
     Credentials::import_vast_native().ok().flatten()
 }
 
+/// Best-effort Kaggle GPU/TPU quota readout. The Kaggle public API exposes
+/// no quota endpoint; users can paste their remaining hours from the Kaggle
+/// settings page (https://www.kaggle.com/settings) into the env var below.
+/// If unset we return `None` and `xrun balance` falls back to the static
+/// "30h/week" message.
+fn kaggle_quota_remaining_hours() -> Option<f64> {
+    std::env::var("KAGGLE_GPU_QUOTA_REMAINING_HOURS")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|h| (0.0..=200.0).contains(h))
+}
+
 fn kaggle_configured(config_dir: &Path) -> bool {
     // Check env var / access_token file first (no disk config needed).
     if Credentials::import_kaggle_access_token()
@@ -66,10 +78,16 @@ pub fn run(args: &BalanceArgs, config_dir: &Path) -> Result<()> {
         }
 
         if kaggle {
-            obj["kaggle"] = serde_json::json!({
+            let mut k = serde_json::json!({
                 "ok": true,
-                "note": "Kaggle is a free service. GPU quota: 30h/week (not available via API).",
+                "weekly_quota_hours": 30,
+                "note": "Kaggle has no public quota endpoint. Set KAGGLE_GPU_QUOTA_REMAINING_HOURS to override.",
             });
+            if let Some(h) = kaggle_quota_remaining_hours() {
+                k["remaining_hours"] = serde_json::json!(h);
+                k["source"] = serde_json::json!("env:KAGGLE_GPU_QUOTA_REMAINING_HOURS");
+            }
+            obj["kaggle"] = k;
         }
 
         println!("{obj}");
@@ -85,9 +103,14 @@ pub fn run(args: &BalanceArgs, config_dir: &Path) -> Result<()> {
         }
 
         if kaggle {
-            println!(
-                "kaggle     free tier — GPU quota 30h/week (exact remainder not available via API)"
-            );
+            match kaggle_quota_remaining_hours() {
+                Some(h) => println!(
+                    "kaggle     {h:.1}h GPU remaining (from KAGGLE_GPU_QUOTA_REMAINING_HOURS) of 30h/week cap"
+                ),
+                None => println!(
+                    "kaggle     free tier — GPU quota 30h/week (set KAGGLE_GPU_QUOTA_REMAINING_HOURS to track remainder)"
+                ),
+            }
         }
     }
 

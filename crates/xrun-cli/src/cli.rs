@@ -291,6 +291,12 @@ pub struct RerunArgs {
     /// Patch a run parameter (jq-style path, e.g. run.args.--lr=5e-4)
     #[arg(long)]
     pub patch: Vec<String>,
+    /// Re-push the Kaggle dataset before launch if the local staging
+    /// directory has changed since the previous push. Requires `vendor:
+    /// kaggle` and a `kaggle.dataset` slug. Pass the staging dir; it must be
+    /// the same one originally pushed for that slug.
+    #[arg(long, value_name = "DIR")]
+    pub bump_dataset: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]
@@ -345,6 +351,19 @@ pub struct DatasetStatusArgs {
 
 #[derive(Args)]
 pub struct DatasetListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args)]
+pub struct DatasetVerifyArgs {
+    /// Local staging directory whose first-level subdirs should each contain a marker file
+    pub local_dir: PathBuf,
+    /// Marker filename expected inside every first-level subdir.
+    /// Skipping this produces partial caches that look complete to a glance.
+    #[arg(long, default_value = "meta.json")]
+    pub marker: String,
     /// Output as JSON
     #[arg(long)]
     pub json: bool,

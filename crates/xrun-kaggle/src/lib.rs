@@ -8,8 +8,9 @@ pub mod http;
 pub mod ingest;
 pub mod kernel_metadata;
 pub mod log_stream;
+pub mod snapshot;
 
-pub use adapter::KaggleAdapter;
+pub use adapter::{expand_kernel_slug, KaggleAdapter};
 pub use cli::{
     DatasetListItem, KaggleCli, KaggleProcess, KernelListItem, KernelState, KernelStatus,
 };

@@ -3,9 +3,34 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use xrun_core::{vendor::InstanceHandle, RunId, Store};
+use xrun_core::{manifest::Manifest, paths, vendor::InstanceHandle, RunId, Store};
+use xrun_kaggle::snapshot;
 
 use crate::cli::ShowArgs;
+
+struct DatasetSummary {
+    slug: String,
+    files: usize,
+    total_bytes: u64,
+    captured_at: String,
+}
+
+fn dataset_summary_for(run_dir: &Path) -> Option<DatasetSummary> {
+    let manifest_path = run_dir.join("manifest.yaml");
+    let yaml = std::fs::read_to_string(&manifest_path).ok()?;
+    let manifest = Manifest::from_yaml_str(&yaml).ok()?;
+    let kaggle = manifest.kaggle.as_ref()?;
+    let slug = kaggle.dataset.as_deref()?;
+    let snapshots_dir = paths::data_dir().ok()?.join("dataset_snapshots");
+    let snap = snapshot::load(&snapshots_dir, slug)?;
+    let total_bytes: u64 = snap.files.values().map(|e| e.size).sum();
+    Some(DatasetSummary {
+        slug: snap.slug,
+        files: snap.files.len(),
+        total_bytes,
+        captured_at: snap.captured_at,
+    })
+}
 
 pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
     let id: RunId = args
@@ -40,10 +65,21 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
             _ => None,
         });
 
+    let run_dir = runs_dir.join(run.id.to_string());
+    let dataset = dataset_summary_for(&run_dir);
+
     if args.json {
         let ssh_json = ssh.as_ref().map(|(h, p, u)| {
             serde_json::json!({
                 "host": h, "port": p, "user": u, "command": format!("ssh -p {p} {u}@{h}")
+            })
+        });
+        let dataset_json = dataset.as_ref().map(|d| {
+            serde_json::json!({
+                "slug": d.slug,
+                "files": d.files,
+                "total_bytes": d.total_bytes,
+                "last_pushed_at": d.captured_at,
             })
         });
         let out = serde_json::json!({
@@ -51,6 +87,7 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
             "events": events,
             "metric_keys": metric_keys.iter().map(|(k, c)| serde_json::json!({"key": k, "count": c})).collect::<Vec<_>>(),
             "ssh": ssh_json,
+            "dataset": dataset_json,
         });
         println!("{out}");
     } else {
@@ -86,8 +123,14 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
             println!("  ssh:           {user}@{host}:{port}");
             println!("  ssh_command:   ssh -p {port} {user}@{host}");
         }
+        if let Some(d) = &dataset {
+            let mb = d.total_bytes as f64 / (1024.0 * 1024.0);
+            println!(
+                "  dataset:       {} ({} files, {:.1} MiB; last push {})",
+                d.slug, d.files, mb, d.captured_at
+            );
+        }
         println!();
-        let run_dir = runs_dir.join(run.id.to_string());
         println!("  run_dir: {}", run_dir.display());
         println!();
         println!("Events ({}):", events.len());

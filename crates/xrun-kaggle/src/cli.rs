@@ -83,6 +83,17 @@ pub trait KaggleProcess: Send + Sync {
     fn datasets_version(&self, local_dir: &Path, message: &str) -> Result<String, KaggleError>;
     /// Run `kaggle datasets list --mine -m` and return stdout.
     fn datasets_list_mine(&self) -> Result<String, KaggleError>;
+
+    /// Authenticate via the Python `kaggle` module (`KaggleApi().authenticate()`)
+    /// and return the resolved username. The default implementation parses
+    /// stdout of `config_view()` for backwards compatibility — this loses
+    /// fidelity when the CLI prints a version banner before the YAML body,
+    /// which is exactly what `kaggle config view` does today.
+    /// `KaggleProcessReal` overrides this to call Python directly.
+    fn authenticate_via_python(&self) -> Result<String, KaggleError> {
+        let stdout = self.config_view()?;
+        parse_username(&stdout)
+    }
 }
 
 /// Real implementation using the `kaggle` binary from PATH.
@@ -361,6 +372,92 @@ impl KaggleProcess for KaggleProcessReal {
         }
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
+
+    /// Use the Python `kaggle` module to authenticate, sidestepping the
+    /// stdout-parsing brittleness of `kaggle config view` (which prints a
+    /// version-update banner before the YAML body in newer CLIs and breaks
+    /// the regex). Returns the username on success.
+    fn authenticate_via_python(&self) -> Result<String, KaggleError> {
+        let script = r#"
+import sys
+try:
+    from kaggle.api.kaggle_api_extended import KaggleApi
+except Exception as e:
+    sys.stderr.write(f"import_error: {e}\n")
+    sys.exit(2)
+try:
+    api = KaggleApi()
+    api.authenticate()
+except Exception as e:
+    sys.stderr.write(f"auth_error: {e}\n")
+    sys.exit(3)
+user = (
+    getattr(api, "config_values", {}).get("username")
+    or api.read_config_environment().get("username", "")
+)
+if not user:
+    sys.stderr.write("auth_ok_no_username\n")
+    sys.exit(4)
+sys.stdout.write(user)
+"#;
+        let pythons: &[&str] = &["python", "python3", "py"];
+        let mut last_err: Option<KaggleError> = None;
+        for py in pythons {
+            let mut cmd = std::process::Command::new(py);
+            cmd.args(["-c", script]);
+            for (k, v) in &self.env {
+                cmd.env(k, v);
+            }
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            let out = match cmd.output() {
+                Ok(o) => o,
+                Err(_) => continue, // try next interpreter
+            };
+            if out.status.success() {
+                let user = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if user.is_empty() {
+                    return Err(KaggleError::ParseError(
+                        "kaggle Python module authenticated but returned no username".to_string(),
+                    ));
+                }
+                return Ok(user);
+            }
+            let code = out.status.code().unwrap_or(-1);
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            // Code 2 = python module missing → try fallback below.
+            if code == 2 {
+                last_err = Some(KaggleError::NotFound(format!(
+                    "kaggle Python module not importable: {stderr}"
+                )));
+                continue;
+            }
+            return Err(KaggleError::CliFailure {
+                exit_code: code,
+                stderr: format!("kaggle.api authenticate failed: {stderr}"),
+            });
+        }
+        // No Python interpreter or module — fall back to the legacy CLI parse.
+        let stdout = match self.config_view() {
+            Ok(s) => s,
+            Err(cli_err) => {
+                let msg = last_err
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| cli_err.to_string());
+                return Err(KaggleError::NotFound(format!(
+                    "neither python kaggle module nor `kaggle config view` available: {msg}"
+                )));
+            }
+        };
+        parse_username(&stdout)
+    }
 }
 
 pub struct KaggleCli {
@@ -420,6 +517,14 @@ impl KaggleCli {
     pub fn username(&self) -> Result<String, KaggleError> {
         let stdout = self.process.config_view()?;
         parse_username(&stdout)
+    }
+
+    /// Authenticate via the Python `kaggle` module rather than parsing
+    /// `kaggle config view` stdout. Returns the resolved username.
+    /// Use this from doctor/wizard probes — it's resilient to CLI
+    /// version-banners and dropped flags.
+    pub fn authenticate(&self) -> Result<String, KaggleError> {
+        self.process.authenticate_via_python()
     }
 
     /// Return `true` when the dataset is in `ready` state.

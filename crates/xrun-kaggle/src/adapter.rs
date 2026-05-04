@@ -340,6 +340,17 @@ impl VendorAdapter for KaggleAdapter {
             .map_err(|e| VendorError::Other(format!("failed to create staging dir: {e}")))?;
         let staging = staging_dir.path();
 
+        // Expand placeholders in kernel_slug. Supported: `{run_id}` (unique
+        // per launch — guarantees no collision on rerun) and `{date}` (today
+        // in YYYYMMDD, one collision per day worst case). Hardcoding a date
+        // suffix in YAML and editing it before each rerun is the failure mode
+        // we're closing.
+        let expanded_slug = expand_kernel_slug(
+            &kaggle.kernel_slug,
+            self.get_run_id().as_ref().map(|r| r.to_string()).as_deref(),
+        );
+        let kernel_slug = expanded_slug.as_str();
+
         let enable_gpu = kaggle.enable_gpu.unwrap_or(false);
         let enable_internet = kaggle.enable_internet.unwrap_or(false);
         let is_notebook = manifest.run.notebook.is_some();
@@ -392,7 +403,7 @@ impl VendorAdapter for KaggleAdapter {
             (
                 nb_name.to_string(),
                 KernelMetadata::new_notebook(
-                    &kaggle.kernel_slug,
+                    kernel_slug,
                     &manifest.name,
                     nb_name,
                     enable_gpu,
@@ -434,7 +445,7 @@ impl VendorAdapter for KaggleAdapter {
             (
                 "main.py".to_string(),
                 KernelMetadata::new_script(
-                    &kaggle.kernel_slug,
+                    kernel_slug,
                     &manifest.name,
                     "main.py",
                     enable_gpu,
@@ -649,7 +660,7 @@ impl VendorAdapter for KaggleAdapter {
 
     // §5: vendor_status() — confirm credentials and return account name
     fn vendor_status(&self) -> Result<VendorStatus, VendorError> {
-        match self.cli.username() {
+        match self.cli.authenticate() {
             Ok(account) => Ok(VendorStatus {
                 connected: true,
                 balance: None,
@@ -929,6 +940,31 @@ fn build_script_main(
          \x20\x20\x20\x20    sys.exit(proc.returncode)\n\
          \n\
          _run('''{setup_escaped}''', 'setup')\n\
+         \n\
+         # numpy↔torch ABI probe. If torch was pinned against numpy 1.x but the\n\
+         # environment has numpy 2.x (or vice versa), DataLoader workers blow up\n\
+         # 4 minutes into training with `RuntimeError: Numpy is not available`.\n\
+         # Surface that immediately with a clear message instead.\n\
+         def _probe_torch_numpy():\n\
+         \x20\x20\x20\x20probe = (\n\
+         \x20\x20\x20\x20    'import sys\\n'\n\
+         \x20\x20\x20\x20    'try:\\n'\n\
+         \x20\x20\x20\x20    '    import torch\\n'\n\
+         \x20\x20\x20\x20    'except Exception:\\n'\n\
+         \x20\x20\x20\x20    '    sys.exit(0)\\n'\n\
+         \x20\x20\x20\x20    'import numpy as _np\\n'\n\
+         \x20\x20\x20\x20    'torch.from_numpy(_np.zeros(1))\\n'\n\
+         \x20\x20\x20\x20)\n\
+         \x20\x20\x20\x20r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True)\n\
+         \x20\x20\x20\x20if r.returncode != 0:\n\
+         \x20\x20\x20\x20    msg = ('xrun: torch<->numpy ABI probe FAILED — pin numpy<2 if torch was '\n\
+         \x20\x20\x20\x20           'built against numpy 1.x (or upgrade torch). DataLoader workers '\n\
+         \x20\x20\x20\x20           'would crash several minutes in.\\n' + r.stderr)\n\
+         \x20\x20\x20\x20    print(msg, flush=True)\n\
+         \x20\x20\x20\x20    _LOG.write(msg + '\\n'); _LOG.flush()\n\
+         \x20\x20\x20\x20    sys.exit(r.returncode)\n\
+         _probe_torch_numpy()\n\
+         \n\
          _run('''{cmd_escaped}''', 'cmd')\n\
          \n\
          _LOG.close()\n",
@@ -939,6 +975,62 @@ fn build_script_main(
         setup_escaped = setup_escaped,
         cmd_escaped = cmd_escaped
     )
+}
+
+/// Expand `{run_id}` and `{date}` placeholders in a Kaggle kernel slug.
+/// `{run_id}` is replaced by the lowercase ULID (Kaggle slugs are
+/// case-insensitive but lowercase reads better). `{date}` is `YYYYMMDD` UTC.
+/// When `run_id` is `None` the placeholder is replaced with a millisecond
+/// timestamp — collisions across millisecond boundaries are vanishingly rare
+/// in practice and a stray fallback beats panicking on a missing run_id.
+pub fn expand_kernel_slug(slug: &str, run_id: Option<&str>) -> String {
+    if !slug.contains('{') {
+        return slug.to_string();
+    }
+    let date = chrono::Utc::now().format("%Y%m%d").to_string();
+    let rid_owned: String;
+    let rid: &str = match run_id {
+        Some(s) => s,
+        None => {
+            rid_owned = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+            rid_owned.as_str()
+        }
+    };
+    slug.replace("{run_id}", &rid.to_lowercase())
+        .replace("{date}", &date)
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::expand_kernel_slug;
+
+    #[test]
+    fn passthrough_when_no_placeholder() {
+        assert_eq!(
+            expand_kernel_slug("user/foo-bar", Some("01H...")),
+            "user/foo-bar"
+        );
+    }
+
+    #[test]
+    fn substitutes_run_id_lowercase() {
+        let s = expand_kernel_slug("user/foo-{run_id}", Some("01HABC"));
+        assert_eq!(s, "user/foo-01habc");
+    }
+
+    #[test]
+    fn substitutes_date() {
+        let s = expand_kernel_slug("user/foo-{date}", Some("01H"));
+        assert!(s.starts_with("user/foo-"));
+        assert_eq!(s.len(), "user/foo-".len() + 8);
+    }
+
+    #[test]
+    fn falls_back_when_no_run_id() {
+        let s = expand_kernel_slug("user/foo-{run_id}", None);
+        assert!(s.starts_with("user/foo-"));
+        assert!(!s.contains('{'));
+    }
 }
 
 /// Standard base64 (RFC 4648) encoder used for the embedded wheel. We avoid

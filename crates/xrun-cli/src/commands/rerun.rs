@@ -8,7 +8,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use xrun_core::{manifest::Manifest, RunId, Store};
+use xrun_core::{manifest::Manifest, paths, Credentials, RunId, Store};
+use xrun_kaggle::{snapshot, KaggleAdapter};
 
 use crate::cli::{LaunchArgs, RerunArgs};
 use crate::commands::{launch, patch};
@@ -44,6 +45,15 @@ pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
 
     let patched = patch::apply(&manifest, &args.patch)?;
 
+    if let Some(dir) = &args.bump_dataset {
+        bump_dataset(&patched, dir, config_dir).with_context(|| {
+            format!(
+                "failed to bump Kaggle dataset from staging dir {}",
+                dir.display()
+            )
+        })?;
+    }
+
     // Write patched yaml to a temp file the launch command can read by path.
     // We pass an absolute temp path so launch's `std::path::absolute` doesn't
     // resolve to the wrong dir.
@@ -56,6 +66,58 @@ pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
 
     let launch_args = launch_args_from_rerun(&tmp_path, &run.name);
     launch::run(&launch_args, db_path, runs_dir, config_dir)
+}
+
+fn bump_dataset(manifest: &Manifest, staging: &Path, config_dir: &Path) -> Result<()> {
+    let kaggle_spec = manifest.kaggle.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "--bump-dataset requires a manifest with `vendor: kaggle` and a kaggle block"
+        )
+    })?;
+    let slug = kaggle_spec
+        .dataset
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("manifest has no `kaggle.dataset` slug to bump"))?;
+    if !staging.exists() {
+        anyhow::bail!("staging dir does not exist: {}", staging.display());
+    }
+
+    let snapshots_dir = paths::data_dir().ok().map(|d| d.join("dataset_snapshots"));
+    let cur = snapshot::capture(staging, slug)
+        .with_context(|| format!("failed to fingerprint {}", staging.display()))?;
+    let prev = snapshots_dir
+        .as_deref()
+        .and_then(|d| snapshot::load(d, slug));
+    let diff = snapshot::diff(prev.as_ref(), &cur);
+
+    if prev.is_some() && diff.is_empty() {
+        eprintln!(
+            "[bump-dataset] {} unchanged vs last pushed snapshot — skipping push.",
+            slug
+        );
+        return Ok(());
+    }
+
+    eprintln!("[bump-dataset] pushing new version of {slug}…");
+    if prev.is_some() {
+        eprintln!("{}", diff.render());
+    }
+
+    let creds = Credentials::load(config_dir)
+        .map(|c| c.kaggle)
+        .unwrap_or_default();
+    let adapter = KaggleAdapter::new().with_credentials(creds);
+    let cli = adapter.cli();
+    cli.dataset_push(staging, slug, Some("bumped via xrun rerun --bump-dataset"))
+        .with_context(|| format!("failed to push dataset '{slug}'"))?;
+
+    if let Some(dir) = snapshots_dir.as_deref() {
+        if let Err(e) = snapshot::save(dir, &cur) {
+            tracing::warn!("could not save dataset snapshot for {slug}: {e}");
+        }
+    }
+    eprintln!("[bump-dataset] {slug} pushed.");
+    Ok(())
 }
 
 fn launch_args_from_rerun(manifest_path: &Path, original_name: &str) -> LaunchArgs {

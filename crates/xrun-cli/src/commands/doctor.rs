@@ -583,17 +583,28 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         .rsplit('/')
         .next()
         .unwrap_or(&kaggle_spec.kernel_slug);
-    let slug_ok = actual_suffix == expected_slug_suffix;
+    // Slugs with `{run_id}` / `{date}` placeholders intentionally diverge from
+    // the manifest name at write time and only match after expansion. Don't
+    // flag them — that's exactly the new auto-bump path.
+    let has_placeholder = actual_suffix.contains('{');
+    let slug_ok = has_placeholder || actual_suffix == expected_slug_suffix;
     checks.push(Check {
         name: "kaggle_kernel_slug",
         category: "manifests",
         ok: slug_ok,
         warn_only: true,
         detail: if slug_ok {
-            format!(
-                "kernel_slug '{}' matches manifest name",
-                kaggle_spec.kernel_slug
-            )
+            if has_placeholder {
+                format!(
+                    "kernel_slug '{}' uses placeholders ({{run_id}}/{{date}}) — auto-bumped per launch",
+                    kaggle_spec.kernel_slug
+                )
+            } else {
+                format!(
+                    "kernel_slug '{}' matches manifest name",
+                    kaggle_spec.kernel_slug
+                )
+            }
         } else {
             format!(
                 "kernel_slug suffix '{}' differs from slugified manifest name '{}' — \
@@ -607,7 +618,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
     let adapter = KaggleAdapter::new().with_credentials(creds);
     let cli = adapter.cli();
 
-    let creds_ok = match cli.username() {
+    let creds_ok = match cli.authenticate() {
         Ok(u) => {
             checks.push(Check {
                 name: "kaggle_credentials",

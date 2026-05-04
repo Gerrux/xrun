@@ -74,6 +74,14 @@ pub struct InitArgs {
     /// printed at the end.
     #[arg(long)]
     pub json: bool,
+
+    /// After writing credentials, probe each configured vendor (vast `show user`,
+    /// kaggle `KaggleApi.authenticate()`). On success implicitly sets
+    /// `wizard_completed=true` (no extra `--mark-completed` needed). On
+    /// failure exit non-zero and leave the flag untouched. Pairs with
+    /// `--non-interactive`.
+    #[arg(long)]
+    pub validate_creds: bool,
 }
 
 pub fn run(args: &InitArgs, config_dir: &Path) -> Result<()> {
@@ -228,14 +236,81 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
         }
     }
 
+    let mut probe_results: Vec<(String, Result<String, String>)> = Vec::new();
+    if args.validate_creds {
+        let creds = Credentials::load(config_dir)?;
+        if creds.vast.api_key.is_some() {
+            let key = creds.vast.api_key.clone().unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("failed to build async runtime for vast probe")?;
+            let res = match rt.block_on(xrun_vast::rest::show_user(&key)) {
+                Ok(info) => Ok(info
+                    .effective_balance()
+                    .map(|b| format!("balance ${b:.2}"))
+                    .unwrap_or_else(|| "ok".into())),
+                Err(e) => Err(e.to_string()),
+            };
+            probe_results.push(("vast".into(), res));
+        }
+        let kaggle_configured = creds.kaggle.token.is_some()
+            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some());
+        if kaggle_configured {
+            let adapter = xrun_kaggle::KaggleAdapter::new().with_credentials(creds.kaggle.clone());
+            let res = adapter
+                .cli()
+                .authenticate()
+                .map(|u| format!("authenticated as {u}"))
+                .map_err(|e| e.to_string());
+            probe_results.push(("kaggle".into(), res));
+        }
+        let any_failed = probe_results.iter().any(|(_, r)| r.is_err());
+        if !any_failed && !probe_results.is_empty() && !cfg.ui.wizard_completed {
+            cfg.ui.wizard_completed = true;
+            cfg.save(config_dir)?;
+            config_changed = true;
+        }
+        if any_failed {
+            for (vendor, r) in &probe_results {
+                if let Err(e) = r {
+                    eprintln!("vendor probe failed: {vendor}: {e}");
+                }
+            }
+            anyhow::bail!(
+                "credential validation failed — wizard_completed left unset. \
+                 Re-run `xrun init --non-interactive --validate-creds` after fixing creds."
+            );
+        }
+    }
+
     let changed = config_changed || creds_changed;
 
+    let probes_json: serde_json::Value = if probe_results.is_empty() {
+        json!(null)
+    } else {
+        serde_json::Value::Object(
+            probe_results
+                .iter()
+                .map(|(name, r)| {
+                    (
+                        name.clone(),
+                        match r {
+                            Ok(d) => json!({"ok": true, "detail": d}),
+                            Err(e) => json!({"ok": false, "error": e}),
+                        },
+                    )
+                })
+                .collect(),
+        )
+    };
     let summary = json!({
         "config_dir": config_dir.display().to_string(),
         "wizard_completed": cfg.ui.wizard_completed,
         "metrics_sinks": cfg.metrics.sinks,
         "credentials_set": creds_set,
         "changed": changed,
+        "probes": probes_json,
     });
 
     if args.json {
