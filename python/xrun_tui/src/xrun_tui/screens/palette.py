@@ -20,6 +20,7 @@ PALETTE_COMMANDS: list[tuple[str, str]] = [
     ("Go: Sweep results",            "go:sweep"),
     ("Go: Instances",                "go:instances"),
     ("Go: Vendors",                  "go:vendors"),
+    ("Go: Sinks  (metrics & logs)",  "go:sinks"),
     ("Go: Doctor (system health)",   "go:doctor"),
     ("Go: Launch manifest",          "go:launch"),
     ("Go: Settings",                 "go:settings"),
@@ -133,11 +134,14 @@ async def run_target(app, target: str) -> None:
     from xrun_tui.screens.budget import BudgetScreen
     from xrun_tui.screens.sweep  import SweepScreen
 
+    from xrun_tui.screens.sinks import SinksScreen
+
     factories: dict[str, Callable[[], Any]] = {
         "go:dashboard":  DashboardScreen,
         "go:runs":       RunsScreen,
         "go:instances":  InstancesScreen,
         "go:vendors":    VendorsScreen,
+        "go:sinks":      SinksScreen,
         "go:doctor":     DoctorScreen,
         "go:launch":     LaunchScreen,
         "go:settings":   SettingsScreen,

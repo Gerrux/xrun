@@ -31,7 +31,7 @@ SINKS = [
     ("mlflow", "MLflow",
         True,  "https://mlflow.org/docs/latest/tracking-server.html"),
     ("wandb",  "WandB",
-        False, "https://wandb.ai/authorize"),
+        True,  "https://wandb.ai/authorize"),
     ("comet",  "Comet ML",
         False, "https://www.comet.com/account-settings/apiKeys"),
 ]
