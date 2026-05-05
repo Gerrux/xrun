@@ -120,6 +120,15 @@ pub struct Run {
     /// PID of the detached poll-daemon, if one was spawned. None for foreground
     /// runs and for runs whose daemon was never started.
     pub poller_pid: Option<i64>,
+    /// Persisted MLflow run URL (resolved at sink-open time). Stored so the
+    /// TUI / `xrun show` keep a working link even if the user later edits
+    /// `mlflow.url` in config.
+    pub mlflow_run_url: Option<String>,
+    /// WandB bucket id (the GUID-like string from upsertBucket). Per-sink
+    /// columns mirror the existing `mlflow_run_id` shape; comet adds two
+    /// more in v0.8.
+    pub wandb_run_id: Option<String>,
+    pub wandb_run_url: Option<String>,
 }
 
 #[derive(Default)]
@@ -144,12 +153,16 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         mlflow_run_id: row.get(11)?,
         notes: row.get(12)?,
         poller_pid: row.get(13)?,
+        mlflow_run_url: row.get(14)?,
+        wandb_run_id: row.get(15)?,
+        wandb_run_url: row.get(16)?,
     })
 }
 
 const SELECT_RUN_COLS: &str =
     "id, name, manifest_hash, manifest_path, vendor, instance_id, status, \
-     created_at, started_at, ended_at, cost_usd, mlflow_run_id, notes, poller_pid";
+     created_at, started_at, ended_at, cost_usd, mlflow_run_id, notes, poller_pid, \
+     mlflow_run_url, wandb_run_id, wandb_run_url";
 
 impl Store {
     pub fn create_run(
@@ -276,6 +289,42 @@ impl Store {
         tx.execute(
             "UPDATE runs SET mlflow_run_id = ?1 WHERE id = ?2",
             params![mlflow_run_id, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Persist the resolved MLflow run URL (`<base>/#/experiments/<exp_id>/
+    /// runs/<run_id>`). Stored alongside `mlflow_run_id` so the TUI link
+    /// keeps working even if the user later edits `mlflow.url` in config.
+    pub fn set_mlflow_run_url(&mut self, id: &RunId, url: &str) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET mlflow_run_url = ?1 WHERE id = ?2",
+            params![url, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Set the WandB bucket id + dashboard URL together. Always paired —
+    /// upsertBucket returns both at once, and the URL is built from the
+    /// bucket's `entity/project/name` triple, so writing them in one
+    /// transaction avoids ever surfacing a half-populated row.
+    pub fn set_wandb_run(
+        &mut self,
+        id: &RunId,
+        wandb_run_id: &str,
+        wandb_run_url: &str,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE runs SET wandb_run_id = ?1, wandb_run_url = ?2 WHERE id = ?3",
+            params![wandb_run_id, wandb_run_url, id],
         )?;
         tx.commit()?;
         Ok(())

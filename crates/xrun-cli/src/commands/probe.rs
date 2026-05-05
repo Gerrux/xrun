@@ -12,6 +12,7 @@
 //! | vast    | `XRUN_PROBE_VAST_KEY`                                                     |
 //! | kaggle  | `XRUN_PROBE_KAGGLE_USERNAME` + `XRUN_PROBE_KAGGLE_KEY` *or* `..._TOKEN`   |
 //! | mlflow  | `XRUN_PROBE_MLFLOW_TOKEN` *or* `..._USERNAME` + `..._PASSWORD`            |
+//! | wandb   | `XRUN_PROBE_WANDB_KEY`                                                    |
 //! | ssh     | (none — uses `--ssh-host` / `--ssh-user` / `--ssh-port` / `--ssh-key`)    |
 //! | local   | (none)                                                                    |
 //!
@@ -35,6 +36,7 @@ use serde_json::json;
 use xrun_mlflow::{Auth, MlflowClient};
 use xrun_ssh::cmd::SshConn;
 use xrun_ssh::ssh::ssh_exec;
+use xrun_wandb::WandbClient;
 
 #[derive(Debug, Args)]
 pub struct ProbeArgs {
@@ -69,6 +71,7 @@ pub fn run(args: &ProbeArgs) -> Result<()> {
         "vast" => probe_vast(),
         "kaggle" => probe_kaggle(),
         "mlflow" => probe_mlflow(args.mlflow_url.as_deref()),
+        "wandb" => probe_wandb(),
         "ssh" => probe_ssh(args),
         "local" => probe_local(),
         other => (false, format!("unknown vendor: {other}")),
@@ -225,6 +228,26 @@ fn probe_mlflow(url: Option<&str>) -> (bool, String) {
         match client.get_or_create_experiment("__xrun_probe__").await {
             Ok(_id) => (true, format!("connected to {url}")),
             Err(xrun_mlflow::MlflowError::NotFound(_)) => (true, format!("connected to {url}")),
+            Err(e) => (false, format!("{e}")),
+        }
+    })
+}
+
+// ── wandb ───────────────────────────────────────────────────────────────────
+
+fn probe_wandb() -> (bool, String) {
+    let Some(key) = env_nonempty("XRUN_PROBE_WANDB_KEY") else {
+        return (false, "missing XRUN_PROBE_WANDB_KEY".into());
+    };
+    let rt = match build_rt() {
+        Ok(rt) => rt,
+        Err(e) => return (false, e),
+    };
+    rt.block_on(async {
+        let client = WandbClient::new(xrun_wandb::DEFAULT_API_BASE, &key);
+        match client.viewer_entity().await {
+            Ok(entity) => (true, format!("authenticated as {entity}")),
+            Err(xrun_wandb::WandbError::Auth) => (false, "rejected by WandB (401)".into()),
             Err(e) => (false, format!("{e}")),
         }
     })

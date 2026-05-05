@@ -17,11 +17,12 @@ use crate::error::StoreError;
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 
-const CURRENT_SCHEMA_VERSION: u32 = 4;
+const CURRENT_SCHEMA_VERSION: u32 = 5;
 const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
 const MIGRATION_002: &str = include_str!("migrations/002_cost_estimate.sql");
 const MIGRATION_003: &str = include_str!("migrations/003_budget.sql");
 const MIGRATION_004: &str = include_str!("migrations/004_poller_pid.sql");
+const MIGRATION_005: &str = include_str!("migrations/005_sink_run_ids.sql");
 
 pub struct Store {
     conn: Connection,
@@ -55,6 +56,7 @@ impl Store {
             tx.execute_batch(MIGRATION_002)?;
             tx.execute_batch(MIGRATION_003)?;
             tx.execute_batch(MIGRATION_004)?;
+            tx.execute_batch(MIGRATION_005)?;
             tx.commit()?;
         } else {
             let version: u32 =
@@ -85,6 +87,13 @@ impl Store {
                     .conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute_batch(MIGRATION_004)?;
+                tx.commit()?;
+            }
+            if version < 5 {
+                let tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute_batch(MIGRATION_005)?;
                 tx.commit()?;
             }
         }

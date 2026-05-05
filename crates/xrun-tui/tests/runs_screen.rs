@@ -25,6 +25,9 @@ fn make_run(name: &str, status: RunStatus) -> Run {
         mlflow_run_id: None,
         notes: None,
         poller_pid: None,
+        mlflow_run_url: None,
+        wandb_run_id: None,
+        wandb_run_url: None,
     }
 }
 

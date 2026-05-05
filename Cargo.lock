@@ -3366,6 +3366,7 @@ dependencies = [
  "xrun-ssh",
  "xrun-tui",
  "xrun-vast",
+ "xrun-wandb",
 ]
 
 [[package]]

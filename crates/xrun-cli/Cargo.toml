@@ -23,6 +23,7 @@ xrun-kaggle = { path = "../xrun-kaggle" }
 xrun-local = { path = "../xrun-local" }
 xrun-ssh = { path = "../xrun-ssh" }
 xrun-mlflow = { path = "../xrun-mlflow" }
+xrun-wandb = { path = "../xrun-wandb" }
 xrun-poller = { path = "../xrun-poller" }
 plotters = { workspace = true }
 xrun-tui = { path = "../xrun-tui", optional = true }

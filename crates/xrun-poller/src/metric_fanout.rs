@@ -164,12 +164,6 @@ impl MetricFanOut {
         let tags: HashMap<String, String> = HashMap::new();
         let run_id_str = run_id.to_string();
 
-        // Track the first MLflow run id we open so the kaggle adapter (which
-        // queries by xrun_run_id tag) and `xrun metrics --mlflow-url` keep
-        // working unchanged. WandB's bucket id is also useful but isn't
-        // persisted yet — adding `wandb_run_id` to the schema is slice 4.
-        let mut first_mlflow_id: Option<String> = None;
-
         for active in &mut self.sinks {
             let ctx = OpenRunCtx {
                 run_id: &run_id_str,
@@ -187,9 +181,12 @@ impl MetricFanOut {
                         remote_run_id = %handle.remote_run_id,
                         "metric sink run opened"
                     );
-                    if active.sink.name() == "mlflow" && first_mlflow_id.is_none() {
-                        first_mlflow_id = Some(handle.remote_run_id.clone());
-                    }
+                    // Persist sink-specific run id + URL so `xrun show` and
+                    // the TUI can render dashboard links without rebuilding
+                    // them from raw config. Failures here are warnings only
+                    // — the run continues even if the schema migration
+                    // hasn't applied yet (defensive against pre-v0.7 DBs).
+                    persist_sink_handle(store, run_id, active.sink.name(), &handle);
                     active.handle = Some(handle);
                 }
                 Err(e) => {
@@ -199,12 +196,6 @@ impl MetricFanOut {
                     );
                     active.warned = true;
                 }
-            }
-        }
-
-        if let Some(id) = first_mlflow_id {
-            if let Err(e) = store.set_mlflow_run_id(run_id, &id) {
-                tracing::warn!("could not persist mlflow_run_id: {e}");
             }
         }
     }
@@ -281,6 +272,48 @@ impl MetricFanOut {
                 ),
                 Err(e) => tracing::warn!("{} finalize failed: {e}", active.sink.name()),
             }
+        }
+    }
+}
+
+/// Persist a freshly-opened sink handle to the runs row. Sink-name routing
+/// lives here so the trait stays sink-agnostic — adding comet in v0.8 just
+/// means another match arm + two more columns in the `runs` table.
+fn persist_sink_handle(
+    store: &mut Store,
+    run_id: &RunId,
+    sink_name: &str,
+    handle: &RemoteRunHandle,
+) {
+    match sink_name {
+        "mlflow" => {
+            if let Err(e) = store.set_mlflow_run_id(run_id, &handle.remote_run_id) {
+                tracing::warn!("could not persist mlflow_run_id: {e}");
+                return;
+            }
+            if let Some(url) = handle.remote_url.as_deref() {
+                if let Err(e) = store.set_mlflow_run_url(run_id, url) {
+                    tracing::warn!("could not persist mlflow_run_url: {e}");
+                }
+            }
+        }
+        "wandb" => {
+            // WandB only stores when both id and URL are present — the
+            // setter is a single transaction so consumers never see a
+            // half-populated row.
+            let url = handle.remote_url.as_deref().unwrap_or("");
+            if let Err(e) = store.set_wandb_run(run_id, &handle.remote_run_id, url) {
+                tracing::warn!("could not persist wandb_run id/url: {e}");
+            }
+        }
+        other => {
+            // Unknown sinks (e.g. comet pre-v0.8) just don't get persisted
+            // yet. Telemetry still flows; only the dashboard-link feature
+            // is unavailable until a column lands.
+            tracing::debug!(
+                sink = %other,
+                "no persistence column wired for sink — dashboard link not stored"
+            );
         }
     }
 }
