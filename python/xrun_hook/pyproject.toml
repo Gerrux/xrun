@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xrun_hook"
-version = "0.5.3"
+version = "0.5.4"
 description = "Training hook for xrun — emits structured events and metrics"
 license = { text = "MIT" }
 requires-python = ">=3.9"

@@ -533,6 +533,66 @@ positive» — закрыты ✅ выше: stdout parser wired в poll loop,
   silently; если ABI-mismatch — fail loud с подсказкой про numpy<2 до
   старта тренировки (а не через 4 минуты в DataLoader).
 
+## Field feedback (2026-05-05, arborust v9-skipalpha kaggle launch) → v0.5.4
+
+Запустили `treetop3d-v9-skipalpha-*` сериал на Kaggle через `run.notebook`,
+training шёл нормально, но **из xrun наблюдать ничего нельзя** — все 4
+ранов показывали 0 events / 0 metrics в `xrun events` / `xrun metrics`.
+Корневая причина и три bonus-наблюдения собраны в
+`issue_2026_05_05_notebook_mode_no_livestream.md` (удалён в этом релизе,
+содержимое перешло в commit message + CHANGELOG).
+
+### Critical
+
+- [x] **Notebook-mode now ships live telemetry.** `crates/xrun-kaggle/src/
+  notebook_inject.rs` прибавляет одну bootstrap-ячейку (тег
+  `xrun-bootstrap`) в начало пользовательского `.ipynb`: base64-decode
+  wheel → `pip install --no-deps --quiet` → `os.environ['MLFLOW_*'] =
+  …`. До 0.5.4 это работало только для `run.cmd` (script-mode) — wheel
+  base64-эмбеддился в `main.py`, а notebook оставался без MLflow env
+  vars и без `xrun_hook` install. Симптом был «silent» — kernel
+  отрабатывал успешно, но `xrun events` видел только host-side
+  `queued:start` / `running:start`.
+
+- [x] **Streamed terminal promotion.** `ingest_telemetry_chunks` теперь
+  возвращает `Option<RunStatus>`, и `poll_completion` промоутит run в
+  `Failed`/`Done` + cancellит kernel, если ingestнутый event сигналит
+  `status=fail` или `stage=done`. Без этого CUDA-OOM продолжал есть
+  compute пока Kaggle-state не доедет до `Error/Complete` (минуты —
+  десятки минут).
+
+### Medium / quality of life
+
+- [x] **`xrun resume` parses kaggle `kernels list` correctly.**
+  Переключились на `--csv` с quote-aware splitting; JSON-путь
+  сохранён для существующих моков. Раньше fall-through на
+  `vendor_instances` ронял resume с `Expecting value: line 1
+  column 1 (char 0)`.
+
+- [x] **Stdout phantom metrics.** `parse_stdout_metrics` ловил
+  `numpy>` (из `numpy>=2.0`), `dropout`, `w[0]`, `tobler` etc. как
+  `count: 1` keys. Теперь требует strict Python identifier на key +
+  явный `epoch=`/`step=` anchor для `=`-формы. `:`-форма (стандартный
+  PyTorch/HF print) не тронута.
+
+- [x] **Kaggle CLI 1.8.x outdated-version banner.** Литерал-template
+  warning из `kaggle` ломал наш JSON parser. Новые
+  `strip_kaggle_cli_noise` / `annotate_kaggle_cli_failure` дропают
+  warning-line до парсера и приклеивают actionable hint
+  (`pip install --upgrade kaggle`) к финальной ошибке.
+
+- [x] **Pip-eager template caveat.** `exp/templates/README.md`
+  получил секцию «что НЕ переустанавливать»: Kaggle container уже
+  несёт scipy/sklearn/pandas/numpy/torch (cu128, sm_60+),
+  `pip install torch` стоит 15–20 минут runtime, старые
+  «P100 detected → reinstall torch 2.2.2+cu118» рецепты устарели.
+
+### TUI
+
+- [x] **Polyline overlay в metrics chart.** `render_chart_multi`
+  принимает `lines: bool`, рисует `─ ╱ ╲ │` между точками. `C` в
+  Run-detail Metrics tab переключает; toolbar пишет `lines: on/off`.
+
 
 
 - Multi-user / role-based access.

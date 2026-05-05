@@ -28,14 +28,17 @@ use crate::log_stream::{
     EVENTS_STEM, LOG_STREAM_EXPERIMENT, LOG_STREAM_FILE, METRICS_PREFIX, METRICS_STEM, TAG_RUN_ID,
     TELEMETRY_EXT,
 };
+use crate::notebook_inject;
 use xrun_core::store::{NewEvent, NewMetric};
 
 /// Wrapper script injected as `main.py` for script-mode kernels.
 pub const XRUN_KAGGLE_ENTRY_PY: &str = include_str!("../tests/data/_xrun_kaggle_entry.py");
 
 /// MLflow tracking-server config used for the live-log side channel. When
-/// present, `provision()` injects MLFLOW_* env vars into the kernel's main.py
-/// so xrun_hook can stream stdout chunks, and `tail()` pulls those chunks back.
+/// present, `provision()` injects MLFLOW_* env vars into the kernel — into
+/// the generated `main.py` for script-mode and into a prepended prelude cell
+/// for notebook-mode — so xrun_hook can stream chunks back to MLflow, where
+/// `tail()` and `ingest_telemetry_chunks()` pull them.
 #[derive(Clone, Debug)]
 pub struct MlflowConfig {
     pub url: String,
@@ -472,8 +475,26 @@ impl VendorAdapter for KaggleAdapter {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("notebook.ipynb");
-            std::fs::copy(nb_path, staging.join(nb_name))
-                .map_err(|e| VendorError::Other(format!("failed to copy notebook: {e}")))?;
+            // Read the user's notebook and prepend a synthetic xrun-bootstrap
+            // cell that installs xrun_hook + sets MLFLOW_* env vars before
+            // any user cell runs. Without this, kernel-side `xrun_hook.metric`
+            // calls silently fail (no MLFLOW_TRACKING_URI), and `xrun events`
+            // sees only host-side queue/running events.
+            let nb_bytes = std::fs::read(nb_path)
+                .map_err(|e| VendorError::Other(format!("failed to read notebook: {e}")))?;
+            let nb_str = String::from_utf8(nb_bytes)
+                .map_err(|e| VendorError::Other(format!("notebook is not valid UTF-8: {e}")))?;
+            let env_prelude = self.build_env_prelude();
+            let wheel_b64 = if !embed::XRUN_HOOK_WHEEL.is_empty() {
+                Some(base64_encode(embed::XRUN_HOOK_WHEEL))
+            } else {
+                None
+            };
+            let injected =
+                notebook_inject::inject_bootstrap_cell(&nb_str, &env_prelude, wheel_b64.as_deref())
+                    .map_err(|e| VendorError::Other(format!("notebook injection failed: {e}")))?;
+            std::fs::write(staging.join(nb_name), injected.as_bytes())
+                .map_err(|e| VendorError::Other(format!("failed to write notebook: {e}")))?;
             (
                 nb_name.to_string(),
                 KernelMetadata::new_notebook(
@@ -554,10 +575,13 @@ impl VendorAdapter for KaggleAdapter {
             }
         }
 
-        // Wheel is base64-embedded directly into main.py for script kernels
-        // (script-mode strips sibling files). For notebook-mode the user is
-        // expected to install xrun_hook via their notebook's own setup cells —
-        // we still warn at build time when the wheel is missing.
+        // The xrun_hook wheel is base64-embedded into main.py (script-mode)
+        // or into a synthetic prelude cell prepended to the user's .ipynb
+        // (notebook-mode). Both paths give kernel-side code the same MLflow
+        // env + xrun_hook install. When the wheel is missing at build time
+        // (clean checkout, no Python toolchain) the kernel still runs but
+        // xrun_hook is unavailable — warn so the empty-telemetry symptom
+        // doesn't surprise the operator.
         if embed::XRUN_HOOK_WHEEL.is_empty() {
             tracing::warn!(
                 "xrun_hook wheel not embedded — Kaggle kernel will run without xrun_hook"
@@ -835,7 +859,7 @@ impl VendorAdapter for KaggleAdapter {
         // since the last tick. No-op when MLflow isn't configured. Done
         // before the terminal-state branch so the final partial chunk is
         // still ingested if `Complete` lands on this tick.
-        self.ingest_telemetry_chunks();
+        let streamed_terminal = self.ingest_telemetry_chunks();
 
         match new_state {
             KernelState::Complete => {
@@ -870,14 +894,37 @@ impl VendorAdapter for KaggleAdapter {
                 })
             }
             KernelState::Queued | KernelState::Running | KernelState::Unknown => {
-                if events.is_empty() {
-                    None
-                } else {
-                    Some(PollCompletion {
-                        terminal_status: None,
+                // Streamed events from xrun_hook have already latched a
+                // terminal status (e.g. `train:fail` on a CUDA error) while
+                // Kaggle's coarse-grained kernel state is still Running.
+                // Promote the run now and cancel the kernel so the user
+                // doesn't keep paying for compute that's already toast.
+                if let Some(terminal) = streamed_terminal {
+                    tracing::info!(
+                        "kaggle poll_completion {slug}: promoting run to {} from streamed events \
+                         (kernel state still {:?}); cancelling kernel",
+                        terminal.as_str(),
+                        new_state,
+                    );
+                    if let Err(e) = self.destroy(h) {
+                        tracing::warn!("kaggle poll_completion: cancel after early-fail: {e}");
+                    }
+                    return Some(PollCompletion {
+                        terminal_status: Some(terminal),
                         events,
-                    })
+                    });
                 }
+                // Return Some-empty rather than None even when there's no
+                // transition. `xrun resume` distinguishes "kernel still
+                // alive, respawn" from "vendor probe failed" by whether
+                // `poll_completion` returns Some — falling through to
+                // `vendor_instances` on None breaks resume because kaggle's
+                // `kernels list` CLI doesn't emit JSON. The loop_runner is
+                // unaffected: empty events + no terminal is a no-op there.
+                Some(PollCompletion {
+                    terminal_status: None,
+                    events,
+                })
             }
         }
     }
@@ -889,26 +936,25 @@ impl KaggleAdapter {
     /// (Issue 8): xrun_hook's streamer pushes events.jsonl/metrics.jsonl
     /// chunks to MLflow as artifacts, and we tail them on every poll tick.
     ///
+    /// Returns `Some(RunStatus)` when an ingested event signals terminal
+    /// state (`status=fail` → `Failed`, `stage=done` + `status=ok` → `Done`),
+    /// so `poll_completion` can promote the run before Kaggle's coarse-grained
+    /// `KernelState` flips to `Error`/`Complete`. Otherwise `None`.
+    ///
     /// Best-effort — every error path is swallowed and tracing'd so a
     /// transient MLflow blip doesn't break the kernel-state poller.
-    fn ingest_telemetry_chunks(&self) {
-        let Some(cfg) = &self.mlflow else {
-            return;
-        };
-        let Some(xrun_run_id) = self.get_run_id() else {
-            return;
-        };
-        let Some(db_path) = self.db_path() else {
-            return;
-        };
+    fn ingest_telemetry_chunks(&self) -> Option<RunStatus> {
+        let cfg = self.mlflow.as_ref()?;
+        let xrun_run_id = self.get_run_id()?;
+        let db_path = self.db_path()?;
 
         let client = MlflowClient::new(cfg.url.clone(), cfg.auth.clone());
         let resolved = match self.resolve_mlflow_run(&client, &xrun_run_id.to_string()) {
             Ok(Some(pair)) => pair,
-            Ok(None) => return,
+            Ok(None) => return None,
             Err(e) => {
                 tracing::debug!("kaggle telemetry: mlflow run lookup failed: {e}");
-                return;
+                return None;
             }
         };
         let (_mlflow_run_id, artifact_path) = resolved;
@@ -917,9 +963,11 @@ impl KaggleAdapter {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("kaggle telemetry: store open failed: {e}");
-                return;
+                return None;
             }
         };
+
+        let mut terminal: Option<RunStatus> = None;
 
         // Events
         let events_offset = store
@@ -935,6 +983,12 @@ impl KaggleAdapter {
             let parsed = parse_event_lines(&new_bytes);
             let count = parsed.len();
             for ev in parsed {
+                // Latch the first terminal signal we see in this batch so
+                // poll_completion can promote the run before Kaggle's
+                // KernelState catches up.
+                if terminal.is_none() {
+                    terminal = detect_terminal_event(&ev);
+                }
                 if let Err(e) = store.append_event(&xrun_run_id, ev) {
                     tracing::warn!("kaggle telemetry: append_event failed: {e}");
                 }
@@ -970,6 +1024,8 @@ impl KaggleAdapter {
                 tracing::debug!("kaggle telemetry: ingested {count} live metrics");
             }
         }
+
+        terminal
     }
 
     /// List MLflow artifacts under `prefix`, sort by chunk seq, and return
@@ -1021,6 +1077,19 @@ impl KaggleAdapter {
 /// Parse `[{ts, stage, status, msg?, extra?}, …]` lines from a JSONL byte
 /// buffer streamed off MLflow into [`NewEvent`] records. Bad lines are
 /// skipped with a debug log so the rest of the chunk still ingests.
+/// Mirror of the loop_runner's terminal-status rule (`status=fail` →
+/// Failed, `stage=done` + `status=ok` → Done) so streamed-event ingestion
+/// can latch terminal state symmetrically with the tail-based vendors.
+fn detect_terminal_event(ev: &NewEvent) -> Option<RunStatus> {
+    if ev.status == "fail" {
+        Some(RunStatus::Failed)
+    } else if ev.stage == "done" && ev.status == "ok" {
+        Some(RunStatus::Done)
+    } else {
+        None
+    }
+}
+
 fn parse_event_lines(bytes: &[u8]) -> Vec<NewEvent> {
     use chrono::DateTime;
     let text = String::from_utf8_lossy(bytes);
@@ -1325,6 +1394,54 @@ pub fn expand_kernel_slug(slug: &str, run_id: Option<&str>) -> String {
     };
     slug.replace("{run_id}", &rid.to_lowercase())
         .replace("{date}", &date)
+}
+
+#[cfg(test)]
+mod terminal_detection_tests {
+    use super::{detect_terminal_event, NewEvent, RunStatus};
+    use chrono::Utc;
+
+    fn ev(stage: &str, status: &str) -> NewEvent {
+        NewEvent {
+            ts: Utc::now(),
+            stage: stage.into(),
+            status: status.into(),
+            msg: None,
+            payload_json: None,
+        }
+    }
+
+    #[test]
+    fn fail_status_promotes_to_failed() {
+        assert_eq!(
+            detect_terminal_event(&ev("train", "fail")),
+            Some(RunStatus::Failed)
+        );
+        assert_eq!(
+            detect_terminal_event(&ev("error", "fail")),
+            Some(RunStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn done_ok_promotes_to_done() {
+        assert_eq!(
+            detect_terminal_event(&ev("done", "ok")),
+            Some(RunStatus::Done)
+        );
+    }
+
+    #[test]
+    fn ok_on_other_stages_is_not_terminal() {
+        assert_eq!(detect_terminal_event(&ev("data_load", "ok")), None);
+        assert_eq!(detect_terminal_event(&ev("train", "ok")), None);
+    }
+
+    #[test]
+    fn start_and_progress_are_not_terminal() {
+        assert_eq!(detect_terminal_event(&ev("train", "start")), None);
+        assert_eq!(detect_terminal_event(&ev("epoch", "progress")), None);
+    }
 }
 
 #[cfg(test)]

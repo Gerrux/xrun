@@ -8,6 +8,7 @@ pub mod http;
 pub mod ingest;
 pub mod kernel_metadata;
 pub mod log_stream;
+pub mod notebook_inject;
 pub mod snapshot;
 
 pub use adapter::{expand_kernel_slug, KaggleAdapter};

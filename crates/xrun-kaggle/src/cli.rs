@@ -245,13 +245,11 @@ impl KaggleProcess for KaggleProcessReal {
         let output = run_with_timeout(cmd, push_timeout(), "kaggle kernels push")?;
 
         if !output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             return Err(KaggleError::CliFailure {
                 exit_code: output.status.code().unwrap_or(-1),
-                stderr: format!(
-                    "stdout: {}\nstderr: {}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ),
+                stderr: annotate_kaggle_cli_failure(&format!("stdout: {stdout}\nstderr: {stderr}")),
             });
         }
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -311,8 +309,14 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn list_mine(&self) -> Result<String, KaggleError> {
+        // `kaggle kernels list` does NOT support `--json`; the only structured
+        // option is `-v/--csv`. The historical `-m` (mine) flag returned a
+        // padded-column table that our JSON parser couldn't read, breaking
+        // `xrun resume` whenever it fell through to `vendor_instances`.
+        // Use CSV — note that `-m` here is `--mine` (the short alias) and is
+        // unrelated to the `-m` machine-readable flag on `status`/`datasets`.
         let out = self
-            .cmd(&["kernels", "list", "--mine", "-m"])
+            .cmd(&["kernels", "list", "--mine", "--csv"])
             .output()
             .map_err(|e| KaggleError::NotFound(e.to_string()))?;
         if !out.status.success() {
@@ -670,7 +674,65 @@ fn is_transient_kaggle_error(err: &KaggleError) -> bool {
     }
 }
 
+/// Append an actionable hint to a `kaggle CLI failed` body when the message
+/// matches a known kaggle-side bug, so operators don't have to web-search
+/// the cryptic native error.
+///
+/// Currently handles the kaggle CLI 1.8.x path where the CLI's own
+/// outdated-version warning gets fed through its own `json.loads` and
+/// produces `Expecting value: line 1 column 1 (char 0)` from a perfectly
+/// reasonable kernel push.
+pub(crate) fn annotate_kaggle_cli_failure(body: &str) -> String {
+    if body.contains("Expecting value: line 1 column 1 (char 0)") {
+        return format!(
+            "{body}\n\nhint: this matches a known kaggle CLI 1.8.x bug where the CLI's \
+             own outdated-version warning corrupts JSON parsing. \
+             Run `pip install --upgrade kaggle` and retry. If the upgrade \
+             isn't available in your environment, retry the launch — kaggle \
+             only emits the warning intermittently."
+        );
+    }
+    body.to_string()
+}
+
+/// Drop kaggle CLI noise lines (`Warning:` banners, literal-template version
+/// notices) from a stdout buffer before our JSON / line parsers see it.
+///
+/// kaggle CLI 1.8.3 emits a literal-template warning to **stdout** like
+/// `Warning: Looks like you're using an outdated `kaggle`` version
+/// (installed: {current_version}), …` — note the un-substituted `{…}`
+/// placeholders, which is a kaggle bug. When we then `serde_json::from_str`
+/// the buffer, we get the cryptic `Expecting value: line 1 column 1
+/// (char 0)` from a wedged-looking line. Stripping these lines up front
+/// keeps the parser path clean and gives users a real error if something
+/// else goes wrong.
+pub(crate) fn strip_kaggle_cli_noise(stdout: &str) -> String {
+    stdout
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            // Discard top-level warning banners. We deliberately keep
+            // anything indented (those are part of structured output —
+            // e.g. YAML body lines from `config view` that happen to
+            // contain the substring "warning").
+            if trimmed.len() == line.len() && trimmed.starts_with("Warning:") {
+                return false;
+            }
+            // The literal-template variant in 1.8.3 leaks the un-substituted
+            // `{current_version}` placeholder; match defensively so we
+            // don't depend on the "Warning:" prefix specifically.
+            if trimmed.contains("outdated `kaggle`") {
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn parse_push_slug(stdout: &str) -> Result<KernelSlug, KaggleError> {
+    let stdout = strip_kaggle_cli_noise(stdout);
+    let stdout = stdout.as_str();
     // Expected: "Kernel pushed: <user>/<slug>" or "Kernel already exists, new version pushed: ..."
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("Kernel pushed: ") {
@@ -719,7 +781,8 @@ fn extract_slug_from_line(line: &str) -> Option<String> {
 }
 
 fn parse_status(stdout: &str) -> Result<KernelStatus, KaggleError> {
-    let trimmed = stdout.trim();
+    let cleaned = strip_kaggle_cli_noise(stdout);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return Err(KaggleError::ParseError("empty status output".to_string()));
     }
@@ -799,19 +862,111 @@ fn extract_failure_message(stdout: &str) -> Option<String> {
 }
 
 fn parse_kernel_list(stdout: &str) -> Result<Vec<KernelListItem>, KaggleError> {
-    let trimmed = stdout.trim();
+    let cleaned = strip_kaggle_cli_noise(stdout);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() || trimmed == "[]" {
         return Ok(vec![]);
     }
-    serde_json::from_str(trimmed).map_err(|e| {
-        KaggleError::ParseError(format!(
-            "failed to parse kernel list JSON: {e}\nInput: {trimmed}"
-        ))
-    })
+    // Newer call sites pass `--csv`; older mocks/tests still feed JSON, so
+    // try JSON first and fall through to CSV when the body doesn't start
+    // like JSON. Reduces churn in the existing test suite while letting
+    // production paths swallow real kaggle output.
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        return serde_json::from_str(trimmed).map_err(|e| {
+            KaggleError::ParseError(format!(
+                "failed to parse kernel list JSON: {e}\nInput: {trimmed}"
+            ))
+        });
+    }
+    parse_kernel_list_csv(trimmed)
+}
+
+/// Parse `kaggle kernels list --csv` output.
+///
+/// Layout (kaggle CLI 1.6+):
+/// ```text
+/// ref,title,author,lastRunTime,totalVotes
+/// user/kernel-a,My Kernel,user,2026-05-05T12:00:00Z,3
+/// ```
+///
+/// `kernels list` doesn't expose status or runtime, so callers downstream of
+/// `vendor_instances` see `status: None` / `run_seconds: None` for every
+/// kaggle row. That's accurate to what the CLI tells us — better than
+/// silently fabricating a status. `xrun gc` and `xrun fix-status` only need
+/// the slug ref to detect orphans, so the missing fields are harmless there;
+/// `xrun resume` no longer reaches this path because `poll_completion`
+/// returns `Some` for healthy kernels.
+fn parse_kernel_list_csv(body: &str) -> Result<Vec<KernelListItem>, KaggleError> {
+    let mut lines = body.lines().filter(|l| !l.trim().is_empty());
+    let header = match lines.next() {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+    let cols: Vec<&str> = header.split(',').map(str::trim).collect();
+    let ref_idx = cols.iter().position(|c| *c == "ref");
+
+    let mut out = Vec::new();
+    for row in lines {
+        let fields = split_csv_row(row);
+        let slug = match ref_idx.and_then(|i| fields.get(i)) {
+            Some(s) if !s.is_empty() => s.clone(),
+            // Permissive fallback: when the header is absent or unrecognised,
+            // pick the first non-empty field that contains `/` — kaggle slugs
+            // are always `<owner>/<name>`. Avoids dropping rows on schema
+            // drift.
+            _ => match fields.iter().find(|f| f.contains('/')) {
+                Some(s) => s.clone(),
+                None => continue,
+            },
+        };
+        let title = cols
+            .iter()
+            .position(|c| *c == "title")
+            .and_then(|i| fields.get(i))
+            .filter(|s| !s.is_empty())
+            .cloned();
+        out.push(KernelListItem {
+            slug_ref: slug,
+            title,
+            status: None,
+            run_seconds: None,
+        });
+    }
+    Ok(out)
+}
+
+/// Split a CSV row, respecting double-quoted fields. Kaggle escapes embedded
+/// commas (e.g. in titles) by quoting; without quote handling we'd shift all
+/// downstream columns.
+fn split_csv_row(row: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut in_quote = false;
+    let mut chars = row.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if in_quote && chars.peek() == Some(&'"') => {
+                // Escaped double-quote inside a quoted field.
+                buf.push('"');
+                chars.next();
+            }
+            '"' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                out.push(std::mem::take(&mut buf));
+            }
+            _ => buf.push(c),
+        }
+    }
+    out.push(buf);
+    for f in &mut out {
+        *f = f.trim().to_string();
+    }
+    out
 }
 
 fn parse_username(stdout: &str) -> Result<String, KaggleError> {
-    let trimmed = stdout.trim();
+    let cleaned = strip_kaggle_cli_noise(stdout);
+    let trimmed = cleaned.trim();
     // Try JSON format: {"username": "..."}
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
         if let Some(u) = v.get("username").and_then(|u| u.as_str()) {
@@ -838,7 +993,8 @@ fn parse_username(stdout: &str) -> Result<String, KaggleError> {
 }
 
 fn parse_dataset_ready(stdout: &str) -> bool {
-    let trimmed = stdout.trim().to_lowercase();
+    let cleaned = strip_kaggle_cli_noise(stdout);
+    let trimmed = cleaned.trim().to_lowercase();
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed) {
         let status = v
             .get("status")
@@ -851,7 +1007,8 @@ fn parse_dataset_ready(stdout: &str) -> bool {
 }
 
 fn parse_dataset_list(stdout: &str) -> Result<Vec<DatasetListItem>, KaggleError> {
-    let trimmed = stdout.trim();
+    let cleaned = strip_kaggle_cli_noise(stdout);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() || trimmed == "[]" {
         return Ok(vec![]);
     }
@@ -878,4 +1035,102 @@ fn ensure_dataset_metadata(local_dir: &Path, slug: &str) -> Result<(), KaggleErr
         .map_err(|e| KaggleError::ParseError(format!("failed to serialize metadata: {e}")))?;
     std::fs::write(&meta_path, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_unit_tests {
+    use super::{annotate_kaggle_cli_failure, parse_kernel_list, strip_kaggle_cli_noise};
+
+    #[test]
+    fn strip_drops_leading_warning_line() {
+        let input = "Warning: Looks like you're using an outdated `kaggle` version, \
+                     please consider upgrading.\nuser/slug has status \"Running\"\n";
+        let cleaned = strip_kaggle_cli_noise(input);
+        assert!(!cleaned.contains("Warning:"));
+        assert!(cleaned.contains("Running"));
+    }
+
+    #[test]
+    fn strip_drops_literal_template_variant() {
+        // The 1.8.3 bug: curly-brace placeholders are emitted unsubstituted.
+        let input = "Warning: Looks like you're using an outdated `kaggle`` version \
+                     (installed: {current_version}), please consider upgrading to the \
+                     latest version ({latest_version_str})\n[]\n";
+        let cleaned = strip_kaggle_cli_noise(input);
+        assert_eq!(cleaned.trim(), "[]");
+    }
+
+    #[test]
+    fn strip_keeps_legitimate_content_with_warning_substring() {
+        // Indented `Warning:` substrings inside structured output (eg yaml
+        // body line) must not be discarded.
+        let input = "  message: \"Warning: low disk\"\n";
+        let cleaned = strip_kaggle_cli_noise(input);
+        assert!(cleaned.contains("Warning: low disk"));
+    }
+
+    #[test]
+    fn annotate_adds_hint_for_known_kaggle_bug() {
+        let body = "stdout: \nstderr: ... Expecting value: line 1 column 1 (char 0)";
+        let annotated = annotate_kaggle_cli_failure(body);
+        assert!(annotated.contains("known kaggle CLI 1.8.x bug"));
+        assert!(annotated.contains("pip install --upgrade kaggle"));
+    }
+
+    #[test]
+    fn annotate_passes_through_other_failures() {
+        let body = "stderr: 403 Forbidden";
+        let annotated = annotate_kaggle_cli_failure(body);
+        assert_eq!(annotated, body);
+    }
+
+    // Bonus #3 regression: kaggle CLI emits CSV (not JSON) for `kernels list`.
+    // Previously `parse_kernel_list` only knew JSON and crashed `xrun resume`
+    // with "Expecting value: line 1 column 1 (char 0)".
+
+    #[test]
+    fn parse_kernel_list_handles_csv() {
+        let csv = "ref,title,author,lastRunTime,totalVotes\n\
+                   user/treetop3d-v9-skipalpha-d,Treetop 3D,user,2026-05-05T12:00:00Z,0\n\
+                   other/abc-kernel,ABC,other,2026-05-04T10:00:00Z,1\n";
+        let items = parse_kernel_list(csv).expect("CSV must parse");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].slug_ref, "user/treetop3d-v9-skipalpha-d");
+        assert_eq!(items[0].title.as_deref(), Some("Treetop 3D"));
+        assert!(items[0].status.is_none(), "CSV doesn't carry status");
+        assert_eq!(items[1].slug_ref, "other/abc-kernel");
+    }
+
+    #[test]
+    fn parse_kernel_list_csv_quoted_field_with_comma() {
+        let csv = "ref,title,author\n\
+                   user/k1,\"My, kernel\",user\n";
+        let items = parse_kernel_list(csv).expect("must respect quoted commas");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].slug_ref, "user/k1");
+        assert_eq!(items[0].title.as_deref(), Some("My, kernel"));
+    }
+
+    #[test]
+    fn parse_kernel_list_csv_with_kaggle_warning_prefix() {
+        // The 1.8.3 outdated-version banner often lands on top of CSV output.
+        let csv = "Warning: Looks like you're using an outdated `kaggle`` version \
+                   (installed: {current_version}), please consider upgrading...\n\
+                   ref,title,author\n\
+                   user/k1,Title,user\n";
+        let items = parse_kernel_list(csv).expect("warning prefix must not break CSV parse");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].slug_ref, "user/k1");
+    }
+
+    #[test]
+    fn parse_kernel_list_still_accepts_json() {
+        // Backward compat: the existing test mocks feed JSON.
+        let json =
+            r#"[{"ref":"user/k1","title":"K1","status":"running","totalRunningTimeSec":42}]"#;
+        let items = parse_kernel_list(json).expect("JSON path must still work");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status.as_deref(), Some("running"));
+        assert_eq!(items[0].run_seconds, Some(42));
+    }
 }

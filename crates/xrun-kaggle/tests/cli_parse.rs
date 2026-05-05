@@ -469,3 +469,38 @@ fn test_cli_status_parses_cancel_acknowledged_as_error() {
     let status = cli.status("user/slug").expect("should parse text format");
     assert_eq!(status.status, KernelState::Error);
 }
+
+// kaggle CLI 1.8.3 ships a literal-template warning to stdout (the f-string
+// was never substituted — kaggle bug). Without filtering, this leaks into
+// our JSON parsers and shows up as a confusing `Expecting value: line 1
+// column 1 (char 0)`.
+
+#[test]
+fn test_push_slug_strips_literal_template_warning() {
+    let mock = Box::new(MockPushProcess {
+        stdout: "Warning: Looks like you're using an outdated `kaggle`` version \
+                 (installed: {current_version}), please consider upgrading to the \
+                 latest version ({latest_version_str})\n\
+                 Kernel pushed: myuser/k1\n"
+            .to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let slug = cli
+        .push(Path::new("."))
+        .expect("should ignore literal-template warning");
+    assert_eq!(slug, "myuser/k1");
+}
+
+#[test]
+fn test_status_strips_literal_template_warning() {
+    // The 1.8.3 variant where curly-brace placeholders weren't substituted.
+    let mock = Box::new(MockStatusProcess {
+        status_json: "Warning: Looks like you're using an outdated `kaggle`` version \
+                      (installed: {current_version}), please consider upgrading...\n\
+                      user/slug has status \"KernelWorkerStatus.RUNNING\"\n"
+            .to_string(),
+    });
+    let cli = KaggleCli::with_process(mock);
+    let status = cli.status("user/slug").expect("should ignore the warning");
+    assert_eq!(status.status, KernelState::Running);
+}

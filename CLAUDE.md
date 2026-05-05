@@ -136,7 +136,7 @@ printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --kaggle-token
 - `exp/templates/kaggle_smoke.yaml` — минимальный Kaggle live-telemetry smoke.
 - `exp/templates/kaggle_classification.yaml` — classification на Kaggle с live metrics.
 
-## Live-телеметрия Kaggle (с 0.5.3)
+## Live-телеметрия Kaggle (с 0.5.3, notebook-mode parity с 0.5.4)
 
 Когда `mlflow.url` настроен, `xrun_hook` стримит events / metrics / stdout
 на MLflow chunked-артефакты во время работы kernel'а. Поллер тянет новые
@@ -145,10 +145,17 @@ printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --kaggle-token
 (зеркалится через native `log-batch`). Без MLflow видны только
 синтетические `running:start` / `done`.
 
-`xrun_hook` встроен в kernel автоматически (wheel base64-эмбеддится в
-`main.py` и pip-устанавливается перед `setup`). Datasets пинятся к
-`currentVersionNumber` после readiness, чтобы kernel не подцепил
-устаревший snapshot.
+`xrun_hook` встроен в kernel автоматически:
+
+- **`run.cmd`** (script-mode): wheel base64-эмбеддится в `main.py` и
+  pip-устанавливается перед `setup`.
+- **`run.notebook`** (с 0.5.4): xrun добавляет одну bootstrap-ячейку
+  в начало `.ipynb` (тег `xrun-bootstrap`) — она base64-декодит wheel,
+  ставит его и проставляет `MLFLOW_*` env vars. До 0.5.4 notebook-mode
+  молча работал без live-телеметрии.
+
+Datasets пинятся к `currentVersionNumber` после readiness, чтобы kernel
+не подцепил устаревший snapshot.
 
 ## Типичный workflow (для Claude Code)
 

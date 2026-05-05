@@ -284,9 +284,9 @@ mlflow:
 #### Kaggle constraints
 
 - `enable_internet=false` → нельзя `pip install` на ходу. xrun автоматически кладёт `xrun_hook` wheel в staging и инжектит `sys.path` — ничего настраивать не нужно.
-- `run.notebook` указывает `.ipynb`; первая ячейка должна содержать `import xrun_hook` (или xrun добавит её автоматически через nbformat).
+- `run.notebook` указывает `.ipynb`. xrun автоматически прибавляет одну bootstrap-ячейку в начало notebook'а (тег `xrun-bootstrap`): она base64-декодит `xrun_hook` wheel, `pip install`-ит его и проставляет `MLFLOW_TRACKING_URI` / `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD` (если `mlflow.url` настроен) — ровно то же, что в script-mode `main.py`. Пользователю **не нужно** вручную ставить `xrun_hook` или экспортить MLflow env vars.
 - `kernel_slug` обязан быть в формате `<username>/<slug>` — `push` упадёт иначе.
-- Live-tail недоступен (нет SSH на Kaggle). Метрики и события восстанавливаются после завершения через `ingest` (парсинг `events.jsonl` / `metrics.jsonl` из output).
+- Live-телеметрия на Kaggle идёт через MLflow side-channel: `xrun_hook` стримит events / metrics / stdout как chunked-артефакты, поллер тянет их каждый тик. Без `mlflow.url` видны только синтетические `queued:start` / `running:start` + post-run `ingest`.
 
 ### `data[]`
 

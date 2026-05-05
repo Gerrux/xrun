@@ -11,6 +11,80 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.4] — 2026-05-05
+
+Field-feedback patch from the arborust v9-skipalpha session: closes
+`issue_2026_05_05_notebook_mode_no_livestream.md`. The headline fix
+restores live telemetry for `run.notebook` Kaggle kernels (silently
+broken since 0.5.3); four bonus observations from the same session
+(stdout phantom metrics, kaggle CLI noise, `kernels list` JSON parse,
+template pip-eagerness) are also addressed.
+
+### Added
+- `crates/xrun-kaggle/src/notebook_inject.rs` — prepends a synthetic
+  `xrun-bootstrap` cell to the user's `.ipynb` before push. The cell
+  base64-decodes the embedded `xrun_hook` wheel, pip-installs it
+  `--no-deps --quiet`, and sets `MLFLOW_TRACKING_URI` /
+  `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD` from xrun
+  config — exactly what script-mode `main.py` already does. Notebook
+  cells now have the same telemetry plumbing as `run.cmd` kernels.
+  Cell carries a `xrun-bootstrap` tag + `xrun_generated: true` metadata
+  so it's identifiable in the kernel viewer.
+- `XRUN_LOG_STREAM_DISABLE=1` env var: prevents subprocess re-imports
+  of `xrun_hook` from spawning a duplicate streamer that would push
+  to a separate MLflow run. User cells can still call `metric()` /
+  `epoch()` / `done()` — only the auto-streamer at import time is
+  suppressed.
+- Polyline overlay in TUI metrics chart: `render_chart_multi(..., lines=True)`
+  joins consecutive samples with `─ ╱ ╲ │` glyphs; press `C` in the
+  Run-detail Metrics tab to toggle. Toolbar reports `lines: on/off`.
+
+### Fixed
+- **Notebook-mode silently no live telemetry.** `xrun_hook.metric(...)`
+  calls inside notebook kernels would silently no-op because
+  `MLFLOW_TRACKING_URI` was never injected, and the wheel was only
+  base64-embedded into `main.py` (script-mode). `xrun events <id>`
+  showed only host-side `queued:start` / `running:start`, never any
+  user-side `stage:*` / metric points. Reproduced 4× during the
+  arborust v9-skipalpha launch sweep.
+- **Phantom metrics from stdout-parser.** `parse_stdout_metrics` was
+  too greedy — it would scrape `numpy>` (from `numpy>=2.0`),
+  `dropout`, `in_ch`, `w[0]`, `tobler`, etc. as `count: 1` keys with
+  no real value. Tightened to (a) require strict Python identifier
+  on the key and (b) require an explicit `epoch=`/`step=` anchor on
+  the line for the `key=value` form. The `key: value` form is
+  unchanged — it's a stronger training-output signal.
+- **`kaggle kernels list` parse failure breaking `xrun resume`.** The
+  CLI emits a tab-padded text table by default and doesn't support
+  `--json`; `xrun resume` was JSON-parsing it and failing with
+  `Expecting value: line 1 column 1 (char 0)`. Switched to `--csv`
+  with quote-aware row splitting. JSON path retained for backward
+  compat with existing test mocks.
+- **Kaggle CLI 1.8.x outdated-version banner corrupting JSON parsers.**
+  The kaggle CLI emits a literal-template warning to stdout (with
+  un-substituted `{current_version}` placeholders), which our
+  `serde_json::from_str` would choke on. New `strip_kaggle_cli_noise`
+  filter drops top-level `Warning:` lines and the literal-template
+  variant before downstream parsers see them. New
+  `annotate_kaggle_cli_failure` appends a `pip install --upgrade
+  kaggle` hint when the cryptic JSON-parse error reaches the user.
+- **Streamed terminal events not promoting Kaggle runs.**
+  `ingest_telemetry_chunks` now returns `Option<RunStatus>` and
+  `poll_completion` promotes the run + cancels the kernel when an
+  ingested event signals `status=fail` / `stage=done` — so a CUDA-OOM
+  or training crash doesn't keep burning compute while Kaggle's
+  coarse-grained `KernelState` lags behind.
+
+### Documentation
+- `docs/MANIFEST.md`: rewrote the `run.notebook` and live-tail bullets
+  to reflect 0.5.4 parity (auto-bootstrap cell, MLflow side-channel).
+- `exp/templates/README.md`: new "Kaggle: что НЕ переустанавливать"
+  section warning that `pip install torch` on Kaggle costs 15-20 min,
+  the container already ships cu128 + sm_60 support, and old
+  `P100 → reinstall torch 2.2.2+cu118` recipes are obsolete.
+
+---
+
 ## [0.5.3] — 2026-05-05
 
 Field-feedback sweep: closes the eight items in `ISSUES.md` from the

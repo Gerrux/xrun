@@ -64,3 +64,26 @@ xrun config set mlflow.password <password>
 а в MLflow UI вкладка Metrics автоматически подхватывает train_loss/val_*
 (зеркалится через `log-batch`). `xrun_hook` встроен в kernel автоматически —
 ничего ставить в notebook deps не надо.
+
+`run.notebook` работает наравне с `run.cmd`: xrun сам вставляет
+bootstrap-ячейку в начало `.ipynb`, которая ставит `xrun_hook` и проставляет
+`MLFLOW_*` env vars. До 0.5.4 notebook-mode молча работал без live-телеметрии
+— если ты застал ту версию, обнови xrun или используй `run.cmd`.
+
+## Kaggle: что НЕ переустанавливать
+
+Контейнер Kaggle уже несёт scipy / sklearn / pandas / numpy / torch (cu128,
+sm_60+) — переустанавливать тяжёлые зависимости почти всегда напрасно.
+Один `pip install torch` на Kaggle стоит **15–20 минут** runtime, а старые
+рецепты "P100 detected → reinstall torch 2.2.2+cu118" больше не нужны:
+текущий wheel уже поддерживает sm_60.
+
+Сначала пробни, потом ставь:
+
+```python
+python -c "import torch; t = torch.zeros(2, device='cuda'); print((t+1).sum())"
+```
+
+Если эта строчка работает — оставь окружение в покое. Лишний `pip install`
+в `setup`/первой ячейке съедает значительную часть бюджета 12-часовой
+сессии без всякой пользы.

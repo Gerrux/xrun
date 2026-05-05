@@ -79,11 +79,13 @@ def render_chart_multi(
     width: int = 80,
     height: int = 14,
     log_y: bool = False,
+    lines: bool = True,
 ) -> Text:
     """Overlay multiple series as colored dots with Y-axis and legend.
 
     Each item in `series` is `(name, values, color)`. Y-axis prints four ticks
     (top / two midpoints / bottom). Bottom strip lists `● name` per series.
+    When `lines` is True, consecutive samples are joined with a thin polyline.
     """
     series = [(n, list(v), c) for n, v, c in series if v]
     if not series:
@@ -107,12 +109,20 @@ def render_chart_multi(
             continue
         # Spread points evenly across the full width so few-epoch runs don't
         # cluster on the left edge. Single-point series → centred dot.
+        pts: list[tuple[int, int]] = []
         for i, v in enumerate(sampled):
             x = width // 2 if n == 1 else round(i * (width - 1) / (n - 1))
             norm = (v - lo) / (hi - lo)
             y = int(round(norm * (height - 1)))
             y = max(0, min(height - 1, y))
-            canvas[height - 1 - y][x] = ("●", color)
+            pts.append((x, height - 1 - y))
+        # Connect consecutive samples with a thin polyline; dots are drawn
+        # afterwards so they sit on top of the line at each data point.
+        if lines:
+            for (x1, r1), (x2, r2) in zip(pts, pts[1:]):
+                _draw_segment(canvas, x1, r1, x2, r2, color)
+        for x, r in pts:
+            canvas[r][x] = ("●", color)
 
     label_w = max(len(_fmt(hi)), len(_fmt(lo))) + 1
     tick_rows = {
@@ -158,6 +168,54 @@ def render_chart_multi(
         rendered.append("●", style=color)
         rendered.append(f" {name}", style="#c0caf5")
     return rendered
+
+
+def _draw_segment(
+    canvas: list[list[tuple[str, str]]],
+    x1: int, r1: int, x2: int, r2: int, color: str,
+) -> None:
+    """Draw a polyline between (x1,r1) and (x2,r2) on the cell canvas.
+
+    `r` is the canvas row (0 = top). Empty cells get a line glyph; cells
+    already painted (by another series or by the upcoming dot pass) are left
+    alone, so dots stay readable on overlap.
+    """
+    if x1 == x2 and r1 == r2:
+        return
+    if x2 < x1:
+        x1, r1, x2, r2 = x2, r2, x1, r1
+
+    h = len(canvas)
+    w = len(canvas[0]) if h else 0
+
+    def put(r: int, x: int, ch: str) -> None:
+        if 0 <= r < h and 0 <= x < w and canvas[r][x][0] == " ":
+            canvas[r][x] = (ch, color)
+
+    # Vertical-only segment (same x): fill interior rows.
+    if x1 == x2:
+        for r in range(min(r1, r2) + 1, max(r1, r2)):
+            put(r, x1, "│")
+        return
+
+    dx = x2 - x1
+    dr = r2 - r1
+    prev_r = r1
+    for x in range(x1 + 1, x2):
+        t = (x - x1) / dx
+        r = int(round(r1 + dr * t))
+        if abs(r - prev_r) > 1:
+            step = 1 if r > prev_r else -1
+            for rr in range(prev_r + step, r, step):
+                put(rr, x, "│")
+        if r == prev_r:
+            ch = "─"
+        elif r < prev_r:
+            ch = "╱"
+        else:
+            ch = "╲"
+        put(r, x, ch)
+        prev_r = r
 
 
 def _sample(values: list[float], width: int) -> list[float]:

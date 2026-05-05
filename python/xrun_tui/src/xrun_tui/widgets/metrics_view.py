@@ -82,6 +82,7 @@ class MetricsView(Vertical):
         Binding("g", "toggle_group",  "Group"),
         Binding("L", "toggle_log",    "Log-y"),
         Binding("M", "toggle_smooth", "Smooth"),
+        Binding("C", "toggle_lines",  "Lines"),
         Binding("slash", "focus_filter", "Filter"),
         Binding("P", "export_png", "Open PNG"),
     ]
@@ -94,6 +95,7 @@ class MetricsView(Vertical):
         self._group = True
         self._log = False
         self._smooth = False
+        self._lines = True
         self._filter = ""
         self._focus_key: str | None = None  # row currently selected in master
 
@@ -142,6 +144,11 @@ class MetricsView(Vertical):
 
     def action_toggle_smooth(self) -> None:
         self._smooth = not self._smooth
+        self._render_chart()
+        self._render_toolbar()
+
+    def action_toggle_lines(self) -> None:
+        self._lines = not self._lines
         self._render_chart()
         self._render_toolbar()
 
@@ -238,7 +245,9 @@ class MetricsView(Vertical):
             f"{'on' if self._log else 'off'}[/]   "
             f"[#565f89]smooth:[/] [{'#9ece6a' if self._smooth else '#565f89'}]"
             f"{'on' if self._smooth else 'off'}[/]   "
-            f"[#565f89]g · L · M · /  filter[/]"
+            f"[#565f89]lines:[/] [{'#9ece6a' if self._lines else '#565f89'}]"
+            f"{'on' if self._lines else 'off'}[/]   "
+            f"[#565f89]g · L · M · C · /  filter[/]"
             f"{live}"
         )
 
@@ -364,6 +373,7 @@ class MetricsView(Vertical):
         height = max(8, (size.height or 14) - 4)
         chart.update(render_chart_multi(
             series, width=width, height=height, log_y=self._log,
+            lines=self._lines,
         ))
 
     def on_resize(self, _event) -> None:  # type: ignore[override]
