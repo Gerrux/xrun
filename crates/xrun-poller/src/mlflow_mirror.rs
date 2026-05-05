@@ -1,10 +1,25 @@
 #![deny(unsafe_code)]
 
+//! `MlflowMirror` — thin sync wrapper around a single `MetricSink`.
+//!
+//! v0.7 introduced the `MetricSink` trait so multiple tracking servers
+//! (MLflow, WandB, …) can fan out from one poller. For backward compat the
+//! mirror's public name + API are unchanged; internally it now delegates to
+//! a `Box<dyn MetricSink>` (currently always `MlflowSink`). Slice 3 renames
+//! this struct to `MetricFanOut` and grows it to a `Vec<Box<dyn MetricSink>>`.
+//!
+//! The `block()` helper exists because the surrounding `Poller` is sync —
+//! it polls files on a 5s tick from a `std::thread`. `MetricSink` is async
+//! (every backend is HTTP), so each call crosses the sync→async boundary
+//! once. When called from inside an existing tokio runtime (kaggle adapter
+//! does this) we use `block_in_place` + `Handle::block_on`; otherwise we
+//! spin up a temporary single-thread runtime.
+
 use std::collections::HashMap;
 
-use chrono::Utc;
+use xrun_core::metric_sink::{MetricPoint, MetricSink, OpenRunCtx, RemoteRunHandle};
 use xrun_core::store::{NewMetric, RunId, RunStatus, Store};
-use xrun_mlflow::{Auth, MlflowClient, MlflowMetric, MlflowTag, RunStatus as MlflowRunStatus};
+use xrun_mlflow::{Auth, MlflowSink};
 
 /// Block on a future, either by using the current tokio runtime handle (if one
 /// exists) or by falling back to a temporary single-threaded runtime.
@@ -24,7 +39,9 @@ where
     }
 }
 
-/// Configuration for MLflow mirroring.
+/// Configuration for MLflow mirroring. Public name and field shape are
+/// unchanged from v0.5 — slice 3 will broaden this to `MetricSinksConfig`
+/// once a second sink (WandB) lands.
 #[derive(Debug, Clone)]
 pub struct MlflowMirrorConfig {
     pub url: String,
@@ -36,151 +53,129 @@ pub struct MlflowMirrorConfig {
     pub instance_id: Option<String>,
 }
 
-/// Runtime state for the MLflow mirror — holds the MLflow run_id and client.
+/// Runtime state for the metric mirror — holds an opened `RemoteRunHandle`
+/// and the underlying sink.
 pub struct MlflowMirror {
-    pub mlflow_run_id: Option<String>,
-    client: MlflowClient,
+    /// Opaque sink handle. `None` until `start()` succeeds. After a `start()`
+    /// failure stays `None` and all subsequent calls become no-ops.
+    handle: Option<RemoteRunHandle>,
+    sink: Box<dyn MetricSink>,
     config: MlflowMirrorConfig,
-    /// Track whether we've already emitted a warning for this session,
-    /// so subsequent errors are silently skipped.
+    /// One-shot warn latch — surface the first failure, swallow the rest so
+    /// the log doesn't drown in the same backend error every 5s.
     warned: bool,
 }
 
 impl MlflowMirror {
     pub fn new(config: MlflowMirrorConfig) -> Self {
-        let client = MlflowClient::new(&config.url, config.auth.clone());
+        let sink = MlflowSink::new(
+            config.url.clone(),
+            config.auth.clone(),
+            config.log_args_as_params,
+        );
         Self {
-            mlflow_run_id: None,
-            client,
+            handle: None,
+            sink: Box::new(sink),
             config,
             warned: false,
         }
     }
 
-    /// Initialize the MLflow run: get/create experiment and create a run.
-    /// On failure: emit one warning and disable mirroring silently.
+    /// Initialize the remote run. On failure: emit one warning and disable
+    /// mirroring silently (handle stays `None`, all subsequent calls no-op).
     pub fn start(
         &mut self,
         run_id: &RunId,
         store: &mut Store,
         args: Option<&HashMap<String, serde_json::Value>>,
     ) {
-        match block(self.do_start(args)) {
-            Ok(mlflow_run_id) => {
-                self.mlflow_run_id = Some(mlflow_run_id.clone());
-                if let Err(e) = set_mlflow_run_id(store, run_id, &mlflow_run_id) {
+        // OpenRunCtx borrows everything; build local owned scratch space and
+        // hand out borrows. Empty maps are fine (sink-side: skips param
+        // logging when the config map is empty).
+        let empty_args: HashMap<String, serde_json::Value> = HashMap::new();
+        let args_ref = args.unwrap_or(&empty_args);
+        let tags: HashMap<String, String> = HashMap::new();
+
+        let run_id_str = run_id.to_string();
+        let ctx = OpenRunCtx {
+            run_id: &run_id_str,
+            experiment: &self.config.experiment,
+            run_name: self.config.run_name.as_deref(),
+            vendor: &self.config.vendor,
+            instance_id: self.config.instance_id.as_deref(),
+            config: args_ref,
+            tags: &tags,
+        };
+
+        match block(self.sink.open_run(ctx)) {
+            Ok(handle) => {
+                if let Err(e) = set_mlflow_run_id(store, run_id, &handle.remote_run_id) {
                     tracing::warn!("could not persist mlflow_run_id: {e}");
                 }
-                tracing::info!(mlflow_run_id = %mlflow_run_id, "MLflow run started");
+                tracing::info!(
+                    sink = %self.sink.name(),
+                    remote_run_id = %handle.remote_run_id,
+                    "metric sink run started"
+                );
+                self.handle = Some(handle);
             }
             Err(e) => {
-                tracing::warn!("MLflow start failed (mirroring disabled for this run): {e}");
+                tracing::warn!(
+                    "{} sink open failed (mirroring disabled for this run): {e}",
+                    self.sink.name()
+                );
                 self.warned = true;
             }
         }
     }
 
-    async fn do_start(
-        &self,
-        args: Option<&HashMap<String, serde_json::Value>>,
-    ) -> Result<String, xrun_mlflow::MlflowError> {
-        let exp_id = self
-            .client
-            .get_or_create_experiment(&self.config.experiment)
-            .await?;
-
-        let mut tags = vec![MlflowTag {
-            key: "vendor".to_string(),
-            value: self.config.vendor.clone(),
-        }];
-        if let Some(ref inst) = self.config.instance_id {
-            tags.push(MlflowTag {
-                key: "instance_id".to_string(),
-                value: inst.clone(),
-            });
-        }
-        if let Some(ref name) = self.config.run_name {
-            tags.push(MlflowTag {
-                key: "mlflow.runName".to_string(),
-                value: name.clone(),
-            });
-        }
-
-        let run_id = self.client.create_run(&exp_id, &tags).await?;
-
-        if self.config.log_args_as_params {
-            if let Some(args_map) = args {
-                for (k, v) in args_map {
-                    let val = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    // Best-effort: ignore individual param errors
-                    let _ = self.client.log_param(&run_id, k, &val).await;
-                }
-            }
-        }
-
-        Ok(run_id)
-    }
-
-    /// Mirror a batch of metrics to MLflow.
-    /// On failure: warn once, then silently skip.
+    /// Mirror a batch of metrics. Empty input is a no-op; on failure, warn
+    /// once and silently skip subsequent batches.
     pub fn log_metrics(&mut self, metrics: &[NewMetric]) {
-        let Some(run_id) = self.mlflow_run_id.as_deref() else {
+        if metrics.is_empty() {
+            return;
+        }
+        let Some(handle) = self.handle.as_ref() else {
             return;
         };
 
-        let mlflow_metrics: Vec<MlflowMetric> = metrics
+        let batch: Vec<MetricPoint> = metrics
             .iter()
-            .map(|m| MlflowMetric {
+            .map(|m| MetricPoint {
                 key: m.key.clone(),
                 value: m.value,
-                timestamp: m.ts.timestamp_millis(),
+                timestamp_ms: m.ts.timestamp_millis(),
                 step: m.step,
             })
             .collect();
 
-        if mlflow_metrics.is_empty() {
-            return;
-        }
-
-        let run_id = run_id.to_string();
-        match block(self.client.log_batch(&run_id, &[], &mlflow_metrics, &[])) {
-            Ok(()) => {}
-            Err(e) => {
-                if !self.warned {
-                    tracing::warn!("MLflow log_batch failed (will not retry for this run): {e}");
-                    self.warned = true;
-                }
+        if let Err(e) = block(self.sink.log_metrics_batch(handle, &batch)) {
+            if !self.warned {
+                tracing::warn!(
+                    "{} log_metrics_batch failed (will not retry for this run): {e}",
+                    self.sink.name()
+                );
+                self.warned = true;
             }
         }
     }
 
-    /// Finalize the MLflow run with the given status.
+    /// Finalize the remote run. Best-effort — failures are logged but not
+    /// bubbled (the local store is already authoritative).
     pub fn finish(&self, status: &RunStatus) {
-        let Some(run_id) = self.mlflow_run_id.as_deref() else {
+        let Some(handle) = self.handle.as_ref() else {
             return;
         };
-
-        let mlflow_status = match status {
-            RunStatus::Done => MlflowRunStatus::Finished,
-            RunStatus::Failed => MlflowRunStatus::Failed,
-            RunStatus::Cancelled => MlflowRunStatus::Killed,
-            _ => MlflowRunStatus::Finished,
-        };
-
-        let end_time = Utc::now().timestamp_millis();
-        let run_id = run_id.to_string();
-        match block(
-            self.client
-                .update_run(&run_id, mlflow_status, Some(end_time)),
-        ) {
+        match block(self.sink.finalize(handle, status.clone())) {
             Ok(()) => {
-                tracing::info!(mlflow_run_id = %run_id, "MLflow run finalized");
+                tracing::info!(
+                    sink = %self.sink.name(),
+                    remote_run_id = %handle.remote_run_id,
+                    "metric sink run finalized"
+                );
             }
             Err(e) => {
-                tracing::warn!("MLflow update_run failed: {e}");
+                tracing::warn!("{} finalize failed: {e}", self.sink.name());
             }
         }
     }

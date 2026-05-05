@@ -389,12 +389,14 @@ fn config_set_metrics_sinks_csv() {
 
 #[test]
 fn init_non_interactive_rejects_unknown_sink() {
+    // `wandb` was the v0.5 placeholder — replaced with `comet` (still v0.8)
+    // once wandb landed as a real sink in v0.7.
     let dir = tempdir().unwrap();
     Command::cargo_bin("xrun")
         .unwrap()
         .env("XRUN_CONFIG_DIR", dir.path())
         .env("XRUN_DATA_DIR", dir.path().join("data"))
-        .args(["init", "--non-interactive", "--sink", "wandb"])
+        .args(["init", "--non-interactive", "--sink", "comet"])
         .assert()
         .failure()
         .stderr(contains("unknown sink"));

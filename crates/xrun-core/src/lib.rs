@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod manifest;
+pub mod metric_sink;
 pub mod metrics;
 pub mod paths;
 pub mod store;
@@ -18,6 +19,7 @@ pub use config::{BudgetConfig, ConfigStore, Credentials, GlobalConfig, InitResul
 pub use error::{ConfigError, JsonlError, ManifestError, StoreError, VendorError};
 pub use events::{Event, EventStatus, JsonlReader};
 pub use manifest::Manifest;
+pub use metric_sink::{MetricPoint, MetricSink, MetricSinkError, OpenRunCtx, RemoteRunHandle};
 pub use metrics::{Metric, MetricsJsonlReader};
 pub use store::{
     Instance, InstanceCaps, ListFilter, Run, RunId, RunStatus, Store, StoredEvent, StoredMetric,
