@@ -12,36 +12,31 @@ use xrun_core::{
 };
 use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
-use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller};
+use xrun_poller::{metric_fanout::MetricSinksConfig, CancellationToken, Poller};
 use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::PollDaemonArgs;
 
-fn load_mlflow_config(
+/// Load the saved manifest for `run_id` and build a `MetricSinksConfig`.
+/// Returns `None` only when the manifest file is unreadable / unparsable —
+/// otherwise returns a config that may have all sinks `None` (caller can
+/// check `is_empty()` to skip the fan-out).
+fn load_sinks_config(
     manifest_path: &Path,
-    mlflow_url: Option<&str>,
-) -> Option<MlflowMirrorConfig> {
-    let url = mlflow_url?;
+    creds: &Credentials,
+    global: &GlobalConfig,
+) -> Option<MetricSinksConfig> {
     let content = std::fs::read_to_string(manifest_path).ok()?;
     let manifest: Manifest = serde_yaml::from_str(&content).ok()?;
-    let experiment = manifest
-        .mlflow
-        .as_ref()
-        .and_then(|m| m.experiment.clone())?;
-    Some(MlflowMirrorConfig {
-        url: url.to_string(),
-        experiment,
-        auth: None,
-        log_args_as_params: manifest
-            .mlflow
-            .as_ref()
-            .and_then(|m| m.log_args_as_params)
-            .unwrap_or(true),
-        run_name: Some(manifest.name.clone()),
-        vendor: manifest.vendor.as_str().to_string(),
-        instance_id: None,
-    })
+    let run_name = manifest.name.clone();
+    Some(crate::commands::launch::build_sinks_config(
+        &manifest,
+        global.mlflow.url.as_deref(),
+        creds,
+        global,
+        &run_name,
+    ))
 }
 
 fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
@@ -220,10 +215,15 @@ pub fn run(
         poller = poller.with_config(crate::commands::launch::local_poller_config(&run_dir));
     }
 
-    // Wire MLflow mirror from saved manifest (if available and mlflow is configured).
+    // Wire metric-sink fan-out from the saved manifest. Daemons re-read
+    // creds + global config off disk so a key added between launch and the
+    // daemon's first tick still gets picked up.
     let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");
-    if let Some(cfg) = load_mlflow_config(&manifest_path, global.mlflow.url.as_deref()) {
-        poller = poller.with_mlflow(cfg);
+    let sinks_creds = Credentials::load(config_dir).unwrap_or_default();
+    if let Some(cfg) = load_sinks_config(&manifest_path, &sinks_creds, &global) {
+        if !cfg.is_empty() {
+            poller = poller.with_metric_sinks(cfg);
+        }
     }
 
     let result = poller.run(cancel);

@@ -14,7 +14,10 @@ use xrun_core::{
 };
 use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
-use xrun_poller::{mlflow_mirror::MlflowMirrorConfig, CancellationToken, Poller, PollerConfig};
+use xrun_poller::{
+    metric_fanout::{MetricSinksConfig, MlflowSubConfig, WandbSubConfig},
+    CancellationToken, Poller, PollerConfig,
+};
 use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
@@ -494,17 +497,24 @@ fn do_launch_with_budget(
     }
     let poller = poller;
 
-    // Wire MLflow mirroring when manifest declares an experiment and the
-    // global config has an MLflow URL. Silent if either is absent.
-    let mlflow_creds = Credentials::load(&config_dir)
-        .map(|c| c.mlflow)
-        .unwrap_or_default();
-    let poller = if let Some(cfg) =
-        mlflow_mirror_config(manifest, mlflow_url.as_deref(), &mlflow_creds, name)
-    {
-        poller.with_mlflow(cfg)
-    } else {
+    // Wire metric-sink fan-out: each enabled sink (mlflow / wandb) opens
+    // its own remote run and receives the same metric stream. Sinks gated
+    // by both `[metrics] sinks = [...]` and presence of credentials, so a
+    // user with `wandb` listed but no api key just gets a warning and
+    // mlflow-only mirroring (or local-only if neither is configured).
+    let creds = Credentials::load(&config_dir).unwrap_or_default();
+    let global_cfg_for_sinks = GlobalConfig::load(&config_dir).unwrap_or_default();
+    let sinks_cfg = build_sinks_config(
+        manifest,
+        mlflow_url.as_deref(),
+        &creds,
+        &global_cfg_for_sinks,
+        name,
+    );
+    let poller = if sinks_cfg.is_empty() {
         poller
+    } else {
+        poller.with_metric_sinks(sinks_cfg)
     };
 
     let result = poller.run(cancel);
@@ -585,34 +595,88 @@ pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<u
     Ok(child.id())
 }
 
-/// Build a `MlflowMirrorConfig` from the manifest's `mlflow` section, the
-/// global MLflow URL, and any auth credentials. Returns `None` when URL or
-/// experiment is absent — poller then runs without mirroring (silent degrade).
-fn mlflow_mirror_config(
+/// Build a `MetricSinksConfig` from manifest + global config + credentials.
+///
+/// Each sink (mlflow, wandb) is enabled iff:
+/// 1. its name is listed in `[metrics] sinks = […]`, AND
+/// 2. the credentials needed to talk to it are present.
+///
+/// A sink listed in config but missing credentials warns and is dropped —
+/// the run still proceeds with whatever sinks remain (including zero).
+///
+/// Returns a config that may have all sub-sinks `None` (use
+/// `MetricSinksConfig::is_empty()` to detect). The poller treats that as
+/// "local-only mirror" — SQLite is still authoritative.
+pub(crate) fn build_sinks_config(
     manifest: &Manifest,
     mlflow_url: Option<&str>,
-    mlflow_creds: &xrun_core::config::credentials::MlflowCredentials,
+    creds: &Credentials,
+    global: &GlobalConfig,
     run_name: &str,
-) -> Option<MlflowMirrorConfig> {
-    let url = mlflow_url?;
+) -> MetricSinksConfig {
+    let enabled = |name: &str| global.metrics.sinks.iter().any(|s| s == name);
     let experiment = manifest
         .mlflow
         .as_ref()
-        .and_then(|m| m.experiment.clone())?;
+        .and_then(|m| m.experiment.clone())
+        // Manifest `name` is a sensible fallback for wandb (it doesn't
+        // require an explicit `mlflow.experiment` block).
+        .unwrap_or_else(|| manifest.name.clone());
 
-    Some(MlflowMirrorConfig {
-        url: url.to_string(),
+    let mlflow_sub = if enabled("mlflow") {
+        match (
+            mlflow_url,
+            manifest.mlflow.as_ref().and_then(|m| m.experiment.clone()),
+        ) {
+            (Some(url), Some(_exp)) => Some(MlflowSubConfig {
+                url: url.to_string(),
+                auth: mlflow_auth_from_creds(&creds.mlflow),
+                log_args_as_params: manifest
+                    .mlflow
+                    .as_ref()
+                    .and_then(|m| m.log_args_as_params)
+                    .unwrap_or(true),
+            }),
+            _ => {
+                tracing::debug!(
+                    "mlflow sink enabled in config but `mlflow.url` or \
+                     `manifest.mlflow.experiment` is unset — sink skipped"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let wandb_sub = if enabled("wandb") {
+        match creds.wandb.api_key.as_deref() {
+            Some(key) => Some(WandbSubConfig {
+                api_key: key.to_string(),
+                entity: None,
+                api_base: None,
+                web_base: None,
+            }),
+            None => {
+                tracing::warn!(
+                    "wandb sink enabled in `[metrics] sinks` but no api_key in credentials \
+                     — run `xrun config set wandb.api_key <KEY>` or `xrun init --wandb-key -`"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    MetricSinksConfig {
         experiment,
-        auth: mlflow_auth_from_creds(mlflow_creds),
-        log_args_as_params: manifest
-            .mlflow
-            .as_ref()
-            .and_then(|m| m.log_args_as_params)
-            .unwrap_or(true),
         run_name: Some(run_name.to_string()),
         vendor: manifest.vendor.as_str().to_string(),
         instance_id: None,
-    })
+        mlflow: mlflow_sub,
+        wandb: wandb_sub,
+    }
 }
 
 /// Translate xrun's stored MLflow credentials into an `xrun_mlflow::Auth`.

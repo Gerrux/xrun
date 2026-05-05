@@ -18,7 +18,7 @@ use xrun_core::{
 };
 
 use crate::lock::{PollerLock, PollerLockError};
-use crate::mlflow_mirror::{MlflowMirror, MlflowMirrorConfig};
+use crate::metric_fanout::{MetricFanOut, MetricSinksConfig};
 use crate::parser::{parse_events, parse_metrics, parse_stdout_metrics};
 
 /// Lightweight cancellation primitive backed by an atomic flag.
@@ -135,9 +135,10 @@ pub struct Poller {
     /// Last UTC date we emitted a daily-budget breach event for. Reset
     /// implicitly when the date rolls over.
     daily_alert_date: Option<NaiveDate>,
-    /// Optional MLflow mirror config. Set if both manifest.mlflow.experiment
-    /// and GlobalConfig.mlflow.url are present.
-    mlflow_config: Option<MlflowMirrorConfig>,
+    /// Optional metric-sink fan-out config. Built from manifest + global
+    /// config + credentials by the CLI launch path. `None` (or empty subs)
+    /// means "local-only mirror" — SQLite is still the source of truth.
+    sinks_config: Option<MetricSinksConfig>,
     /// Cached timestamp of the `train_start` event, set the first tick we
     /// observe one. Used as the idle-timer anchor when no metric activity has
     /// fired yet, so a long-but-still-progressing setup phase doesn't trip
@@ -163,13 +164,15 @@ impl Poller {
             update_tx: None,
             budget: BudgetConfig::default(),
             daily_alert_date: None,
-            mlflow_config: None,
+            sinks_config: None,
             train_started_at: None,
         }
     }
 
-    pub fn with_mlflow(mut self, config: MlflowMirrorConfig) -> Self {
-        self.mlflow_config = Some(config);
+    /// Wire the metric-sink fan-out. Pass empty config to disable all
+    /// remote mirroring (local SQLite still authoritative).
+    pub fn with_metric_sinks(mut self, config: MetricSinksConfig) -> Self {
+        self.sinks_config = Some(config);
         self
     }
 
@@ -199,12 +202,13 @@ impl Poller {
         let pid_file = self.runs_dir.join(&run_id_str).join("poller.pid");
         let _lock = PollerLock::try_acquire(&run_id_str, pid_file)?;
 
-        // Initialize MLflow mirror if configured. MlflowMirror handles its
-        // own async runtime internally via block_in_place / fallback runtime.
-        let mut mlflow: Option<MlflowMirror> = self.mlflow_config.take().map(|cfg| {
-            let mut mirror = MlflowMirror::new(cfg);
-            mirror.start(&self.run_id, &mut self.store, None);
-            mirror
+        // Initialize the metric-sink fan-out if configured. `MetricFanOut`
+        // handles its own async runtime internally via block_in_place /
+        // fallback runtime, and silently no-ops when no sinks are enabled.
+        let mut mlflow: Option<MetricFanOut> = self.sinks_config.take().map(|cfg| {
+            let mut fanout = MetricFanOut::new(cfg);
+            fanout.start(&self.run_id, &mut self.store, None);
+            fanout
         });
 
         let mut offset_e = self

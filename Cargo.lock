@@ -3459,6 +3459,7 @@ dependencies = [
  "wiremock",
  "xrun-core",
  "xrun-mlflow",
+ "xrun-wandb",
 ]
 
 [[package]]
@@ -3515,6 +3516,23 @@ dependencies = [
  "tokio",
  "tracing",
  "which",
+ "xrun-core",
+]
+
+[[package]]
+name = "xrun-wandb"
+version = "0.5.4"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "wiremock",
  "xrun-core",
 ]
 

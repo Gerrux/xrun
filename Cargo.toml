@@ -6,6 +6,7 @@ members = [
     "crates/xrun-cli",
     "crates/xrun-tui",
     "crates/xrun-mlflow",
+    "crates/xrun-wandb",
     "crates/xrun-kaggle",
     "crates/xrun-local",
     "crates/xrun-ssh",
