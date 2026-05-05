@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::commands::{
     config_cmd::ConfigArgs, cp::CpArgs, dataset::DatasetSubcommand, init::InitArgs,
+    init_manifest::InitManifestArgs,
 };
 
 #[derive(Parser)]
@@ -83,6 +84,11 @@ pub enum Commands {
     /// logging mode. Spawns the TUI by default; use --non-interactive for
     /// scripted setup or --probe-local for capability detection.
     Init(InitArgs),
+    /// Generate a manifest skeleton for a chosen (vendor × sink) combination.
+    /// Output is a valid YAML with `TODO_<field>` tokens at every editable spot;
+    /// `grep TODO_` lights up everything that needs review before launch.
+    #[command(name = "init-manifest")]
+    InitManifest(InitManifestArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)

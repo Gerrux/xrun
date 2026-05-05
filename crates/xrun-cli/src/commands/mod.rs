@@ -11,6 +11,7 @@ pub mod events_cmd;
 pub mod fix_status;
 pub mod gc;
 pub mod init;
+pub mod init_manifest;
 pub mod launch;
 pub mod logs;
 pub mod ls;

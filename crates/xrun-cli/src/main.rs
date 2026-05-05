@@ -159,6 +159,9 @@ fn run() -> Result<()> {
             let config_dir = get_config()?;
             xrun_cli::commands::init::run(&args, &config_dir)?;
         }
+        Some(Commands::InitManifest(args)) => {
+            xrun_cli::commands::init_manifest::run(&args)?;
+        }
         Some(Commands::Tui) => {
             #[cfg(feature = "tui")]
             {
