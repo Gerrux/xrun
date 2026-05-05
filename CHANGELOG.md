@@ -11,6 +11,155 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.0] — 2026-05-05
+
+Pluggable metric sinks. WandB joins MLflow as a first-class fan-out
+target; the poller now mirrors one xrun run to N tracking servers in
+parallel, with per-sink failure isolation. Comet ML and TensorBoard
+plug into the same trait in v0.8 with no further refactor.
+
+Skipped 0.6.x — the field-feedback ramp was already absorbed into 0.5.4
+and the next milestone deserves a clear minor bump.
+
+### Added
+
+#### MetricSink trait + WandB
+
+- `xrun_core::metric_sink::MetricSink` (async via `async-trait`):
+  `name` / `open_run` / `log_metrics_batch` / `log_artifact` / `finalize`.
+  Backends are independent crates; adding one is a single
+  `impl MetricSink for X` plus a registry entry in `MetricFanOut::new`.
+- `OpenRunCtx<'_>` carries everything a tracking server needs
+  (run_id, experiment, run_name, vendor, instance_id, config, tags),
+  borrowed so callers don't clone hashmaps per tick.
+- `RemoteRunHandle { sink_name, remote_run_id, remote_url }` — the opaque
+  token. `remote_url` lets `xrun show` / `xrun metrics --mlflow-url`
+  build deep links without rebuilding from raw config (which broke when
+  the user later edited `mlflow.url`).
+- `MetricSinkError` granular enough to retry on `Network` / `Server`,
+  fail loud on `Auth` / `Config`, swallow on `Disabled`.
+
+- `crates/xrun-wandb/` — new crate. `WandbClient` wraps three operations
+  on `api.wandb.ai`:
+  - `viewer { entity }` GraphQL probe for default-entity resolution.
+  - `mutation upsertBucket` to create / reuse a run row (idempotent on
+    run name, so a daemon restart doesn't double-create).
+  - `POST /files/{entity}/{project}/{run}/file_stream` to append to
+    `wandb-history.jsonl` and signal `complete + exitcode` on finalize
+    (same path the official wandb Python SDK uses internally).
+- `WandbSink: MetricSink` groups `MetricPoint`s by step before posting
+  so multi-key updates within one training iteration land on the same
+  wandb x-axis tick. Tracks an `AtomicU64` history offset per run for
+  retry-safe appends.
+
+#### Poller fan-out
+
+- `MetricFanOut` (was `MlflowMirror`) holds `Vec<Box<dyn MetricSink>>`.
+  `start()` opens runs on every enabled sink in sequence; `log_metrics`
+  fans batches out concurrently within one `block` boundary, so total
+  latency is `max(per_sink)` not the sum. Per-sink `warned` latches
+  surface the first failure and swallow the rest.
+- `MetricSinksConfig { mlflow: Option<MlflowSubConfig>, wandb:
+  Option<WandbSubConfig>, … }` — toggle each sub independently.
+- Sinks are gated by both `[metrics] sinks = […]` (config) and
+  credential presence; a sink listed without creds warns and is dropped
+  (no fail), so a partial setup still gives the user whatever sinks
+  remain — including local-only.
+
+#### Persistence
+
+- Schema migration `005_sink_run_ids.sql`:
+  - `mlflow_run_url` (resolved at sink-open time).
+  - `wandb_run_id`, `wandb_run_url` (paired write — never half-populated).
+- `Store::set_mlflow_run_url`, `Store::set_wandb_run` setters.
+- `MetricFanOut::start` routes the new `RemoteRunHandle` back to the
+  right setter via a sink-name dispatch.
+
+#### CLI
+
+- `xrun init --wandb-key -` flag, mirrors `--vast-key` / `--kaggle-token`
+  with `-` to read trimmed line from stdin (one stdin read max per
+  invocation).
+- `xrun config probe --vendor wandb` — lands in the existing probe
+  surface, mirroring vast / kaggle / mlflow shape. Reads
+  `XRUN_PROBE_WANDB_KEY` from env so the wizard / TUI can validate a
+  pasted key without writing it to disk first. Hits `viewer { entity }`,
+  returns 401 cleanly on a bad key.
+- `xrun init-manifest --vendor <X> --sink <Y>` — generate a manifest
+  skeleton for any (vendor × sink) combination. Every editable spot
+  is marked `TODO_<field>`; `grep TODO_ <path>` lights up everything
+  needing review before launch. Vendors: `vast`, `kaggle`, `local`,
+  `ssh`. Sinks: `mlflow`, `wandb`, `none`. Closes the loop on the
+  user-facing goal — Claude Code can produce a working manifest
+  without knowing the schema.
+- `xrun init --sink wandb` now accepted (was a v0.8 rejection).
+- `xrun config show` includes `wandb.api_key` (masked unless
+  `--secrets`); `xrun config set wandb.api_key …` works through the
+  schema-driven setter.
+
+#### TUI
+
+- New `screens/sinks.py` (Python Textual). Cards: MLflow, WandB,
+  Comet ([v0.8] disabled). Status pill with five distinct states:
+  EMPTY / PAUSED / CHECK / READY / ERROR — PAUSED makes the
+  "key set but not in metrics.sinks list" mistake visible at a glance.
+  Actions: edit / test / toggle-default / revoke. Routing: `g m` chord
+  + `Go: Sinks` palette entry.
+- `SinkEditScreen` with masked inputs: 4 fields for MLflow (url goes
+  to global config, auth fields to credentials.toml), 1 for WandB
+  (entity is auto-probed at first launch).
+- Wizard catalog: wandb `available_now` flag flipped to `True`. Wizard
+  step still treats wandb as "tick to add to default list, configure
+  key on Sinks screen" — full wizard form is a follow-up.
+
+#### Schema
+
+- `WandbCredentials { api_key }` in `Credentials`.
+- `Run` carries `mlflow_run_url`, `wandb_run_id`, `wandb_run_url`
+  (`Option<String>`).
+
+### Changed
+
+- `mlflow_mirror.rs` → `metric_fanout.rs`. `MlflowMirror` →
+  `MetricFanOut`, `MlflowMirrorConfig` → `MetricSinksConfig`.
+  `Poller::with_mlflow` → `Poller::with_metric_sinks`. The wiremock-
+  based poller integration tests still validate the same wire-level
+  MLflow calls (create / log-batch / update-run) — they don't care
+  that the path goes through a trait now.
+
+### Tests
+
+- 11 new unit + wiremock tests in `xrun-wandb` covering viewer-probe,
+  upsertBucket, file_stream batching, finalize exit code, 401 auth
+  surfacing.
+- 8 unit tests in `init_manifest` covering the (vendor × sink) matrix
+  and the `TODO_` token contract.
+- 1 multi-sink integration test in `xrun-poller` runs the poller
+  end-to-end against two wiremock servers (one MLflow, one wandb) and
+  asserts both received the metric batch.
+- Full workspace: 404 passing, 0 failures across 50 suites.
+
+### Live smoke
+
+- Run `01KQWJSX0VDNEEMBQGPK8KH6HN` — quickstart.yaml with
+  `metrics.sinks = ["wandb"]`. WandB run created, finalized, page
+  exists at `https://wandb.ai/data_force/quickstart/runs/xrun-…`
+  (HTTP 200), DB row populated with `wandb_run_id` + `wandb_run_url`.
+- `xrun init-manifest --vendor local --sink mlflow` parses cleanly
+  through `xrun doctor --manifest <path>`.
+
+### Not yet shipped
+
+- WandB artifacts API — `log_artifact` returns `Disabled` for now.
+  Needs the separate `manifests + S3-presigned PUT` surface; deferred
+  to v0.7.x patch or v0.8.
+- Wizard form for wandb (just `api_key` input) — checkbox enables
+  the sink in `metrics.sinks` but credential entry still goes through
+  the Sinks screen.
+- Comet ML — slot in TUI catalog, no impl. v0.8.
+
+---
+
 ## [0.5.4] — 2026-05-05
 
 Field-feedback patch from the arborust v9-skipalpha session: closes
