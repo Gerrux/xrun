@@ -107,8 +107,8 @@ pub struct UiConfig {
 pub struct MetricsConfig {
     /// Mirror sinks to fan-out metrics to in addition to the local SQLite +
     /// JSONL store. Empty = local-only (TUI still updates live via the poller).
-    /// Currently recognised values: `"mlflow"`. `"wandb"` and `"comet"` arrive
-    /// in v0.8.
+    /// Currently recognised values: `"mlflow"`, `"wandb"`. (`"comet"` arrives
+    /// in v0.8.)
     pub sinks: Vec<String>,
 }
 

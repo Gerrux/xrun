@@ -51,10 +51,21 @@ pub struct MlflowCredentials {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
+pub struct WandbCredentials {
+    /// Personal API key from `wandb.ai/authorize` (`wandb_v1_…` or 40-hex
+    /// legacy form). Used as `Authorization: api-key …` against
+    /// `api.wandb.ai`. Per-team / per-project entity is set on the manifest,
+    /// not here — one key can publish to multiple entities the user owns.
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
 pub struct Credentials {
     pub vast: VastCredentials,
     pub kaggle: KaggleCredentials,
     pub mlflow: MlflowCredentials,
+    pub wandb: WandbCredentials,
     /// SSH hosts keyed by alias. Manifests reference these via
     /// `ssh.host_alias`. Loaded from `[vendors.ssh.<alias>]` sections.
     #[serde(rename = "ssh", default)]
@@ -70,6 +81,7 @@ impl Credentials {
             && self.mlflow.token.is_none()
             && self.mlflow.username.is_none()
             && self.mlflow.password.is_none()
+            && self.wandb.api_key.is_none()
             && self.ssh_hosts.is_empty()
     }
 

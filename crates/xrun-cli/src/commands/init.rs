@@ -13,8 +13,9 @@
 //! after the user finishes (or skips) the wizard so we don't re-prompt.
 //!
 //! Credential flags (`--vast-key`, `--kaggle-token`, `--kaggle-username`,
-//! `--kaggle-key`) accept a literal value or `-` to read one trimmed line from
-//! stdin. Only one `-` is allowed per invocation. They require `--non-interactive`.
+//! `--kaggle-key`, `--wandb-key`) accept a literal value or `-` to read one
+//! trimmed line from stdin. Only one `-` is allowed per invocation. They
+//! require `--non-interactive`.
 
 #![deny(unsafe_code)]
 
@@ -39,8 +40,8 @@ pub struct InitArgs {
     #[arg(long)]
     pub probe_local: bool,
 
-    /// Metric mirror sink to enable. Repeatable. Recognised: `mlflow`.
-    /// `wandb` and `comet` arrive in v0.8.
+    /// Metric mirror sink to enable. Repeatable. Recognised: `mlflow`,
+    /// `wandb`. (`comet` arrives in v0.8.)
     #[arg(long = "sink", value_name = "NAME")]
     pub sinks: Vec<String>,
 
@@ -69,6 +70,11 @@ pub struct InitArgs {
     /// Pass `-` to read from stdin. Requires --non-interactive.
     #[arg(long, value_name = "KEY")]
     pub kaggle_key: Option<String>,
+
+    /// WandB personal API key (`wandb_v1_…`). Pass `-` to read from stdin.
+    /// Requires --non-interactive. Get one at <https://wandb.ai/authorize>.
+    #[arg(long, value_name = "KEY")]
+    pub wandb_key: Option<String>,
 
     /// Emit machine-readable JSON. Affects `--probe-local` and the summary
     /// printed at the end.
@@ -117,6 +123,7 @@ fn has_credential_flags(args: &InitArgs) -> bool {
         || args.kaggle_token.is_some()
         || args.kaggle_username.is_some()
         || args.kaggle_key.is_some()
+        || args.wandb_key.is_some()
 }
 
 fn spawn_wizard_tui() -> Result<()> {
@@ -167,11 +174,11 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
     let mut cfg = GlobalConfig::load(config_dir)?;
     let mut config_changed = false;
 
-    let valid_sinks = ["mlflow"];
+    let valid_sinks = ["mlflow", "wandb"];
     for s in &args.sinks {
         if !valid_sinks.contains(&s.as_str()) {
             bail!(
-                "unknown sink: {s}. Recognised: {} (wandb/comet arrive in v0.8)",
+                "unknown sink: {s}. Recognised: {} (comet arrives in v0.8)",
                 valid_sinks.join(", ")
             );
         }
@@ -190,12 +197,13 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
         cfg.save(config_dir)?;
     }
 
-    // Credentials: resolve all four (one stdin read max), then save once.
+    // Credentials: resolve all (one stdin read max), then save once.
     let mut stdin_used = false;
     let vast_key = resolve_credential(&args.vast_key, &mut stdin_used)?;
     let kaggle_token = resolve_credential(&args.kaggle_token, &mut stdin_used)?;
     let kaggle_username = resolve_credential(&args.kaggle_username, &mut stdin_used)?;
     let kaggle_key = resolve_credential(&args.kaggle_key, &mut stdin_used)?;
+    let wandb_key = resolve_credential(&args.wandb_key, &mut stdin_used)?;
 
     // Sanity: kaggle_username and kaggle_key are a pair (legacy auth).
     match (&kaggle_username, &kaggle_key) {
@@ -209,7 +217,11 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
 
     let mut creds_changed = false;
     let mut creds_set: Vec<&str> = Vec::new();
-    if vast_key.is_some() || kaggle_token.is_some() || kaggle_username.is_some() {
+    if vast_key.is_some()
+        || kaggle_token.is_some()
+        || kaggle_username.is_some()
+        || wandb_key.is_some()
+    {
         let mut creds = Credentials::load(config_dir)?;
         if let Some(k) = vast_key {
             creds.vast.api_key = Some(k);
@@ -229,6 +241,11 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
         if let Some(k) = kaggle_key {
             creds.kaggle.key = Some(k);
             creds_set.push("kaggle.key");
+            creds_changed = true;
+        }
+        if let Some(k) = wandb_key {
+            creds.wandb.api_key = Some(k);
+            creds_set.push("wandb.api_key");
             creds_changed = true;
         }
         if creds_changed {

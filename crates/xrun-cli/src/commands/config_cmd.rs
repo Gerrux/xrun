@@ -81,6 +81,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                     "mlflow.token": creds.mlflow.token.is_some(),
                     "mlflow.username": creds.mlflow.username.is_some(),
                     "mlflow.password": creds.mlflow.password.is_some(),
+                    "wandb.api_key": creds.wandb.api_key.is_some(),
                 }),
             );
             if secrets {
@@ -94,6 +95,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                         "mlflow.token": creds.mlflow.token.as_deref().map(tail6),
                         "mlflow.username": creds.mlflow.username.as_deref().map(tail6),
                         "mlflow.password": creds.mlflow.password.as_deref().map(tail6),
+                        "wandb.api_key": creds.wandb.api_key.as_deref().map(tail6),
                     }),
                 );
             }
@@ -111,6 +113,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
     print_cred("mlflow.token", creds.mlflow.token.as_deref(), secrets);
     print_cred("mlflow.username", creds.mlflow.username.as_deref(), secrets);
     print_cred("mlflow.password", creds.mlflow.password.as_deref(), secrets);
+    print_cred("wandb.api_key", creds.wandb.api_key.as_deref(), secrets);
     Ok(())
 }
 
@@ -227,6 +230,7 @@ fn is_credential_key(k: &str) -> bool {
             | "mlflow.token"
             | "mlflow.username"
             | "mlflow.password"
+            | "wandb.api_key"
     )
 }
 
