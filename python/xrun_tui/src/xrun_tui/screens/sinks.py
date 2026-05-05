@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
-import sys
 from typing import Any
 
 from textual.app import ComposeResult
@@ -97,12 +96,14 @@ def _set_metrics_sinks(sinks: list[str]) -> None:
     We shell out to `xrun config set metrics.sinks "<csv>"` rather than
     editing the TOML directly: it's the one path that already knows how
     to coerce the comma-separated input into the array shape Rust expects.
+
+    Resolves the binary via PATH. On Windows we still pass the plain name
+    (`xrun`) — `_winapi.CreateProcess` honours PATHEXT, so the `.exe`
+    suffix is found automatically.
     """
     csv = ",".join(sinks)
     subprocess.run(
-        [sys.executable.replace("python.exe", "xrun.exe") if sys.platform == "win32"
-         else "xrun",
-         "config", "set", "metrics.sinks", csv],
+        ["xrun", "config", "set", "metrics.sinks", csv],
         check=False,
         capture_output=True,
         text=True,
