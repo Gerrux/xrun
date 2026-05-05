@@ -24,9 +24,11 @@ use crate::http::{self, CancelOutcome, KaggleApiClient};
 use crate::ingest::ingest_post_run;
 use crate::kernel_metadata::KernelMetadata;
 use crate::log_stream::{
-    parse_chunk_seq, slice_from_offset, ARTIFACT_PREFIX, LOG_STREAM_EXPERIMENT, LOG_STREAM_FILE,
-    TAG_RUN_ID,
+    parse_chunk_seq, parse_chunk_seq_with, slice_from_offset, ARTIFACT_PREFIX, EVENTS_PREFIX,
+    EVENTS_STEM, LOG_STREAM_EXPERIMENT, LOG_STREAM_FILE, METRICS_PREFIX, METRICS_STEM, TAG_RUN_ID,
+    TELEMETRY_EXT,
 };
+use xrun_core::store::{NewEvent, NewMetric};
 
 /// Wrapper script injected as `main.py` for script-mode kernels.
 pub const XRUN_KAGGLE_ENTRY_PY: &str = include_str!("../tests/data/_xrun_kaggle_entry.py");
@@ -128,6 +130,42 @@ impl KaggleAdapter {
         let run_id = self.get_run_id()?;
         let sp = self.store_path.as_ref()?;
         Some(sp.join("runs").join(run_id.to_string()).join("artifacts"))
+    }
+
+    /// `store_path` holds the data directory (parent of `runs.db`) so the
+    /// adapter can derive sibling paths like `runs/<id>/artifacts`. The
+    /// SQLite store itself lives at `<data_dir>/runs.db` — every callsite
+    /// that opens it must go through this helper rather than passing
+    /// `store_path` directly.
+    fn db_path(&self) -> Option<PathBuf> {
+        self.store_path.as_ref().map(|p| p.join("runs.db"))
+    }
+
+    /// Reconstruct the highest-reached kernel state from the DB so a freshly
+    /// spawned poll-daemon doesn't re-emit transitions already recorded by a
+    /// previous daemon. Returns `None` when we cannot read the store or no
+    /// transition events exist yet.
+    fn recover_last_kernel_state(&self) -> Option<KernelState> {
+        let db_path = self.db_path()?;
+        let run_id = self.get_run_id()?;
+        let store = Store::open(&db_path).ok()?;
+        let events = store.list_events(&run_id).ok()?;
+        let mut highest: Option<KernelState> = None;
+        for ev in events {
+            if ev.status != "start" {
+                continue;
+            }
+            match ev.stage.as_str() {
+                "queued" => {
+                    if highest.is_none() {
+                        highest = Some(KernelState::Queued);
+                    }
+                }
+                "running" => highest = Some(KernelState::Running),
+                _ => {}
+            }
+        }
+        highest
     }
 
     /// Build the `os.environ['…'] = '…'` block prepended to the kernel's
@@ -356,7 +394,7 @@ impl VendorAdapter for KaggleAdapter {
         let is_notebook = manifest.run.notebook.is_some();
 
         // Collect dataset slugs: legacy single `dataset` + new `datasets` list.
-        let dataset_sources: Vec<String> = {
+        let mut dataset_sources: Vec<String> = {
             let mut v: Vec<String> = kaggle.datasets.clone();
             if let Some(single) = &kaggle.dataset {
                 if !v.contains(single) {
@@ -387,6 +425,42 @@ impl VendorAdapter for KaggleAdapter {
                         // Non-fatal: proceed without readiness guarantee
                         tracing::warn!("could not check dataset status for '{slug}': {e}");
                         break;
+                    }
+                }
+            }
+        }
+
+        // §8b: Pin each dataset to its current version number.
+        //
+        // `datasets status = ready` only confirms the storage layer has the
+        // blob; the kernel-creation API resolves "latest" through a separate
+        // cache that can lag minutes behind. Without an explicit version,
+        // kernels sometimes mount the previous snapshot and crash on missing
+        // files (Issue 1 in field-issues log). Slugs that already carry a
+        // `/N` suffix are left alone — the user explicitly pinned them.
+        if let Some(auth) = http::auth_from_credentials(&self.credentials) {
+            if let Ok(client) = KaggleApiClient::new(auth) {
+                for slug in dataset_sources.iter_mut() {
+                    if has_version_suffix(slug) {
+                        continue;
+                    }
+                    match client.dataset_current_version(slug) {
+                        Ok(Some(n)) => {
+                            tracing::info!("pinning dataset '{slug}' to version {n}");
+                            *slug = format!("{slug}/{n}");
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                "could not resolve version for dataset '{slug}' — \
+                                 leaving unpinned (kernel may pick stale snapshot)"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "dataset version lookup failed for '{slug}': {e} — \
+                                 leaving unpinned"
+                            );
+                        }
                     }
                 }
             }
@@ -576,7 +650,8 @@ impl VendorAdapter for KaggleAdapter {
         // Ingest events + metrics from the downloaded output
         if let Some(run_id) = self.get_run_id() {
             if let Some(store_path) = &self.store_path {
-                match Store::open(store_path) {
+                let db_path = store_path.join("runs.db");
+                match Store::open(&db_path) {
                     Ok(mut store) => match ingest_post_run(into, &mut store, &run_id) {
                         Ok((ev, m)) => {
                             tracing::info!("kaggle ingest: {ev} events, {m} metrics");
@@ -725,6 +800,13 @@ impl VendorAdapter for KaggleAdapter {
             .last_kernel_state
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // §6: hydrate last-state from DB on first poll after a daemon restart.
+        // Without this, every restart re-emits `queued:start` / `running:start`
+        // because the in-memory transition tracker was lost with the old
+        // process. Field-issue: duplicate `running:start` events in `xrun show`.
+        if last_guard.is_none() {
+            *last_guard = self.recover_last_kernel_state();
+        }
         let prev = last_guard.clone();
         let new_state = status.status.clone();
 
@@ -748,6 +830,12 @@ impl VendorAdapter for KaggleAdapter {
 
         *last_guard = Some(new_state.clone());
         drop(last_guard);
+
+        // Pull any live event/metric chunks pushed by xrun_hook → MLflow
+        // since the last tick. No-op when MLflow isn't configured. Done
+        // before the terminal-state branch so the final partial chunk is
+        // still ingested if `Complete` lands on this tick.
+        self.ingest_telemetry_chunks();
 
         match new_state {
             KernelState::Complete => {
@@ -793,6 +881,245 @@ impl VendorAdapter for KaggleAdapter {
             }
         }
     }
+}
+
+impl KaggleAdapter {
+    /// Pull new events/metrics chunks from MLflow and ingest them into the
+    /// store. This is what closes the "no live telemetry on Kaggle" gap
+    /// (Issue 8): xrun_hook's streamer pushes events.jsonl/metrics.jsonl
+    /// chunks to MLflow as artifacts, and we tail them on every poll tick.
+    ///
+    /// Best-effort — every error path is swallowed and tracing'd so a
+    /// transient MLflow blip doesn't break the kernel-state poller.
+    fn ingest_telemetry_chunks(&self) {
+        let Some(cfg) = &self.mlflow else {
+            return;
+        };
+        let Some(xrun_run_id) = self.get_run_id() else {
+            return;
+        };
+        let Some(db_path) = self.db_path() else {
+            return;
+        };
+
+        let client = MlflowClient::new(cfg.url.clone(), cfg.auth.clone());
+        let resolved = match self.resolve_mlflow_run(&client, &xrun_run_id.to_string()) {
+            Ok(Some(pair)) => pair,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::debug!("kaggle telemetry: mlflow run lookup failed: {e}");
+                return;
+            }
+        };
+        let (_mlflow_run_id, artifact_path) = resolved;
+
+        let mut store = match Store::open(&db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("kaggle telemetry: store open failed: {e}");
+                return;
+            }
+        };
+
+        // Events
+        let events_offset = store
+            .get_poll_offset(&xrun_run_id, "telemetry_events")
+            .unwrap_or(0);
+        if let Some(new_bytes) = self.fetch_chunks_past_offset(
+            &client,
+            &artifact_path,
+            EVENTS_PREFIX,
+            EVENTS_STEM,
+            events_offset,
+        ) {
+            let parsed = parse_event_lines(&new_bytes);
+            let count = parsed.len();
+            for ev in parsed {
+                if let Err(e) = store.append_event(&xrun_run_id, ev) {
+                    tracing::warn!("kaggle telemetry: append_event failed: {e}");
+                }
+            }
+            let new_offset = events_offset + new_bytes.len() as u64;
+            let _ = store.update_poll_offset(&xrun_run_id, "telemetry_events", new_offset);
+            if count > 0 {
+                tracing::debug!("kaggle telemetry: ingested {count} live events");
+            }
+        }
+
+        // Metrics
+        let metrics_offset = store
+            .get_poll_offset(&xrun_run_id, "telemetry_metrics")
+            .unwrap_or(0);
+        if let Some(new_bytes) = self.fetch_chunks_past_offset(
+            &client,
+            &artifact_path,
+            METRICS_PREFIX,
+            METRICS_STEM,
+            metrics_offset,
+        ) {
+            let parsed = parse_metric_lines(&new_bytes);
+            let count = parsed.len();
+            for m in parsed {
+                if let Err(e) = store.append_metric(&xrun_run_id, m) {
+                    tracing::warn!("kaggle telemetry: append_metric failed: {e}");
+                }
+            }
+            let new_offset = metrics_offset + new_bytes.len() as u64;
+            let _ = store.update_poll_offset(&xrun_run_id, "telemetry_metrics", new_offset);
+            if count > 0 {
+                tracing::debug!("kaggle telemetry: ingested {count} live metrics");
+            }
+        }
+    }
+
+    /// List MLflow artifacts under `prefix`, sort by chunk seq, and return
+    /// the bytes appended past `offset`. Returns None on any HTTP/parse error
+    /// so callers leave the offset untouched and retry next tick.
+    fn fetch_chunks_past_offset(
+        &self,
+        client: &MlflowClient,
+        artifact_path: &str,
+        prefix: &str,
+        stem: &str,
+        offset: u64,
+    ) -> Option<Vec<u8>> {
+        let artifacts = match block_async(client.list_artifacts(artifact_path, Some(prefix))) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::debug!("kaggle telemetry: artifacts/list({prefix}) failed: {e}");
+                return None;
+            }
+        };
+        let mut chunks: Vec<(u32, String, u64)> = artifacts
+            .into_iter()
+            .filter_map(|(p, sz)| {
+                parse_chunk_seq_with(stem, TELEMETRY_EXT, &p).map(|seq| (seq, p, sz))
+            })
+            .collect();
+        if chunks.is_empty() {
+            return None;
+        }
+        chunks.sort_by_key(|(seq, _, _)| *seq);
+
+        let result: Result<Vec<u8>, VendorError> =
+            slice_from_offset::<VendorError>(&chunks, offset, |idx| {
+                let path = &chunks[idx].1;
+                block_async(client.download_artifact(artifact_path, path))
+                    .map_err(|e| VendorError::Other(format!("download_artifact: {e}")))
+            });
+        match result {
+            Ok(bytes) if bytes.is_empty() => None,
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                tracing::debug!("kaggle telemetry: chunk fetch failed: {e}");
+                None
+            }
+        }
+    }
+}
+
+/// Parse `[{ts, stage, status, msg?, extra?}, …]` lines from a JSONL byte
+/// buffer streamed off MLflow into [`NewEvent`] records. Bad lines are
+/// skipped with a debug log so the rest of the chunk still ingests.
+fn parse_event_lines(bytes: &[u8]) -> Vec<NewEvent> {
+    use chrono::DateTime;
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("kaggle telemetry: skip bad event line: {e}");
+                continue;
+            }
+        };
+        let ts_str = match v.get("ts").and_then(|x| x.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        let ts = match DateTime::parse_from_rfc3339(ts_str) {
+            Ok(t) => t.with_timezone(&Utc),
+            Err(_) => continue,
+        };
+        let stage = v
+            .get("stage")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let status = v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("ok")
+            .to_string();
+        let msg = v.get("msg").and_then(|x| x.as_str()).map(str::to_string);
+        let payload_json = v.get("extra").and_then(|x| {
+            if x.is_object() && x.as_object().is_some_and(|o| !o.is_empty()) {
+                Some(x.to_string())
+            } else {
+                None
+            }
+        });
+        out.push(NewEvent {
+            ts,
+            stage,
+            status,
+            msg,
+            payload_json,
+        });
+    }
+    out
+}
+
+fn parse_metric_lines(bytes: &[u8]) -> Vec<NewMetric> {
+    use chrono::DateTime;
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ts = v
+            .get("ts")
+            .and_then(|x| x.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc));
+        let key = v
+            .get("key")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let value = v.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let step = v.get("step").and_then(|x| x.as_i64()).unwrap_or(0);
+        if key.is_empty() || ts.is_none() {
+            continue;
+        }
+        out.push(NewMetric {
+            ts: ts.unwrap(),
+            step,
+            key,
+            value,
+        });
+    }
+    out
+}
+
+/// True when the slug already carries an explicit `/<version>` suffix,
+/// e.g. `alice/dataset/3`. Two slashes mean the user pinned a version.
+fn has_version_suffix(slug: &str) -> bool {
+    slug.matches('/').count() >= 2
+        && slug
+            .rsplit('/')
+            .next()
+            .is_some_and(|tail| tail.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Push the kernel with up to `max_retries` retries on 409 Conflict.

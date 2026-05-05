@@ -164,25 +164,56 @@ fn dataset_timeout() -> std::time::Duration {
 
 /// Spawn `cmd`, wait up to `timeout` for it to finish, and on timeout kill
 /// the child and return a clear error. stdout/stderr are captured.
+///
+/// Pipes are drained on background threads. Without this, a chatty subprocess
+/// (e.g. `kaggle kernels push` with progress output) fills the OS pipe buffer,
+/// blocks on write, and `try_wait` reports `None` forever — we'd then sit on
+/// `--detach` until the watchdog fires, even though the kernel started fine on
+/// the Kaggle side. Issue 3 in field-issues log.
 fn run_with_timeout(
     mut cmd: std::process::Command,
     timeout: std::time::Duration,
     label: &str,
 ) -> Result<std::process::Output, KaggleError> {
+    use std::io::Read;
+
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd
         .spawn()
         .map_err(|e| KaggleError::NotFound(format!("spawn {label}: {e}")))?;
 
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let drain = |mut h: Option<std::process::ChildStdout>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(h) = h.as_mut() {
+                let _ = h.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let drain_err = |mut h: Option<std::process::ChildStderr>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(h) = h.as_mut() {
+                let _ = h.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout_handle = drain(stdout);
+    let stderr_handle = drain_err(stderr);
+
     let start = std::time::Instant::now();
     let poll = std::time::Duration::from_millis(200);
-    loop {
+    let status = loop {
         match child
             .try_wait()
             .map_err(|e| KaggleError::Other(format!("wait {label}: {e}")))?
         {
-            Some(_status) => break,
+            Some(s) => break s,
             None => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
@@ -196,10 +227,15 @@ fn run_with_timeout(
                 std::thread::sleep(poll);
             }
         }
-    }
-    child
-        .wait_with_output()
-        .map_err(|e| KaggleError::Other(format!("collect {label}: {e}")))
+    };
+
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 impl KaggleProcess for KaggleProcessReal {

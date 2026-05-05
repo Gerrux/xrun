@@ -13,7 +13,7 @@ from xrun_tui import config
 from xrun_tui.db import Database, find_db_path
 from xrun_tui.themes import write_theme_for_app
 
-XRUN_VERSION = "0.5.0"
+XRUN_VERSION = "0.5.3"
 
 # Map: chord-leader → {key → action_name (without the "action_" prefix)}
 _CHORDS: dict[str, dict[str, str]] = {
@@ -98,9 +98,15 @@ class XrunApp(App):
         # Re-attach poll-daemons that died (reboot / blackout / killed parent).
         # Fire-and-forget — if the CLI is missing or slow, the TUI must still
         # boot. Set XRUN_TUI_NO_RESUME=1 to skip (debugging stale runs).
+        #
+        # We fire once at startup AND every 60s while the TUI is open, so a
+        # poller that dies mid-session (e.g. binary upgrade on Windows that
+        # killed the .exe) self-heals within one tick instead of forcing the
+        # user to press `S`. The CLI no-ops cheaply when nothing is stale.
         import os as _os
         if _os.environ.get("XRUN_TUI_NO_RESUME") != "1":
-            self.run_worker(self._auto_resume_runs(), exclusive=False)
+            self.run_worker(self._auto_resume_runs(quiet=False), exclusive=False)
+            self.set_interval(60.0, self._tick_auto_resume)
 
         from xrun_tui.screens.splash import SplashScreen
 
@@ -122,7 +128,16 @@ class XrunApp(App):
     async def on_unmount(self) -> None:
         await self.db.close()
 
-    async def _auto_resume_runs(self) -> None:
+    def _tick_auto_resume(self) -> None:
+        """Periodic background respawn — runs every 60s, no notifications.
+
+        Quiet mode keeps the user from being spammed every minute when there
+        is nothing to resume; the runs/dashboard refresh shows the warning
+        clearing within ~5s of a successful respawn.
+        """
+        self.run_worker(self._auto_resume_runs(quiet=True), exclusive=False)
+
+    async def _auto_resume_runs(self, quiet: bool = False) -> None:
         from xrun_tui.services import resume_runs
         try:
             ok, runs = await resume_runs()
@@ -132,6 +147,8 @@ class XrunApp(App):
             return
         respawned = [r for r in runs if r.get("outcome") == "respawned"]
         reconciled = [r for r in runs if r.get("outcome") == "reconciled"]
+        if quiet:
+            return
         if respawned:
             self.notify(
                 f"Resumed poller for {len(respawned)} run(s) after restart.",

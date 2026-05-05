@@ -24,13 +24,32 @@ pub const LOG_STREAM_FILE: &str = "__xrun_stdout.log";
 /// Prefix under which chunks live in MLflow artifact storage.
 pub const ARTIFACT_PREFIX: &str = "logs";
 
+/// Prefixes for live event/metric streaming added in 0.5.3 to close the
+/// "no telemetry on Kaggle without remote MLflow polling" gap (Issue 8).
+/// Both follow the same `<prefix>/<stem>_NNNNNN.jsonl` layout the log
+/// streamer uses, so the same chunk-reassembly logic works for all three.
+pub const EVENTS_PREFIX: &str = "events";
+pub const EVENTS_STEM: &str = "event_";
+pub const METRICS_PREFIX: &str = "metrics";
+pub const METRICS_STEM: &str = "metric_";
+pub const TELEMETRY_EXT: &str = ".jsonl";
+
 /// Parse the chunk sequence number from a path like `logs/log_000007.txt`.
 /// Returns None for any other shape (sub-directories, non-chunk artifacts) so
 /// callers can ignore them rather than panic.
 pub fn parse_chunk_seq(path: &str) -> Option<u32> {
+    parse_chunk_seq_with("log_", ".txt", path)
+}
+
+/// Generalized chunk-seq parser. The streamer formats chunks as
+/// `<prefix>/<stem-prefix>NNNNNN.<ext>` for logs (`logs/log_NNNNNN.txt`),
+/// events (`events/event_NNNNNN.jsonl`), and metrics
+/// (`metrics/metric_NNNNNN.jsonl`). This lets adapters reuse the same
+/// reassembly path for each.
+pub fn parse_chunk_seq_with(stem_prefix: &str, ext: &str, path: &str) -> Option<u32> {
     let stem = path.rsplit('/').next()?;
-    let stem = stem.strip_suffix(".txt")?;
-    let digits = stem.strip_prefix("log_")?;
+    let stem = stem.strip_suffix(ext)?;
+    let digits = stem.strip_prefix(stem_prefix)?;
     digits.parse::<u32>().ok()
 }
 

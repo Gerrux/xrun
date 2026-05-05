@@ -77,10 +77,13 @@ class ArtifactsScreen(Screen):
             return
 
         if not entries:
-            summary.update("[#414868]Artifact listing not yet available[/]")
+            summary.update(
+                "[#414868]No artifacts yet —[/] [#7aa2f7]press `a`[/] "
+                "[#565f89]to run `xrun pull --artifacts`[/]"
+            )
             table.add_row(
                 Text(""),
-                Text("xrun pull not yet implemented", style="#565f89"),
+                Text("(empty — pull to populate)", style="#565f89"),
                 Text(""), Text(""), Text(""),
             )
             return
@@ -144,6 +147,7 @@ class ArtifactsScreen(Screen):
             if ok:
                 result.update("[bold #9ece6a]✓ all artifacts pulled[/]")
                 self.notify("All artifacts pulled", severity="information")
+                await self._load()
             else:
                 result.update(f"[bold #f7768e]✗ {msg[:100]}[/]")
                 self.notify(f"Pull failed: {msg[:60]}", severity="error", timeout=8)

@@ -1,0 +1,68 @@
+name: kaggle-cls-livelog
+vendor: kaggle
+
+kaggle:
+  kernel_slug: kartaviychert/xrun-cls-livelog
+  enable_gpu: false
+  enable_internet: true
+
+run:
+  cmd: |
+    python -c "
+    import argparse, json, math, random
+    from pathlib import Path
+    import xrun_hook
+
+    EPOCHS = 8
+    LR = 5e-4
+    NUM_CLASSES = 4
+    SEED = 0
+    random.seed(SEED)
+
+    def fake_train_step(epoch, lr):
+        return 1.5 * math.exp(-0.4 * epoch) + random.uniform(-0.02, 0.02)
+
+    def fake_eval(epoch, num_classes):
+        progress = 1 - math.exp(-0.5 * (epoch + 1))
+        base = 0.4 + 0.5 * progress
+        j = lambda: random.uniform(-0.01, 0.01)
+        return {
+            'val_loss': 1.2 * (1 - progress) + j(),
+            'val_acc':  base + j(),
+            'val_f1_macro': base - 0.02 + j(),
+            'val_precision_macro': base - 0.01 + j(),
+            'val_recall_macro': base - 0.03 + j(),
+        }
+
+    with xrun_hook.stage('data_load'):
+        pass
+    with xrun_hook.stage('model_init'):
+        pass
+
+    best_f1 = -1.0
+    ckpt_dir = Path('checkpoints')
+    ckpt_dir.mkdir(exist_ok=True)
+
+    with xrun_hook.stage('train'):
+        for ep in range(EPOCHS):
+            train_loss = fake_train_step(ep, LR)
+            val = fake_eval(ep, NUM_CLASSES)
+            xrun_hook.metrics({'train_loss': train_loss, 'lr': LR, **val}, step=ep)
+            xrun_hook.epoch(ep, {'val_f1_macro': val['val_f1_macro']})
+            if val['val_f1_macro'] > best_f1:
+                best_f1 = val['val_f1_macro']
+                (ckpt_dir / f'best_e{ep}.json').write_text(
+                    json.dumps({'epoch': ep, 'val_f1_macro': best_f1}, indent=2),
+                    encoding='utf-8',
+                )
+            print(f'epoch {ep:02d} loss={train_loss:.4f} f1={val[\"val_f1_macro\"]:.4f}', flush=True)
+            import time; time.sleep(2)
+
+    with xrun_hook.stage('eval'):
+        pass
+    xrun_hook.done()
+    "
+
+artifacts:
+  patterns:
+    - "checkpoints/best*.json"

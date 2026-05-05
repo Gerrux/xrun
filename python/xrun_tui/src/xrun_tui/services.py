@@ -218,9 +218,43 @@ async def metrics(run_id: str, key: str | None = None) -> tuple[bool, Any, str]:
 
 
 async def list_artifacts(run_id: str, path: str = "") -> tuple[bool, list[dict], str]:
-    # xrun pull / artifact listing is not yet implemented in the CLI.
-    # Return empty so the screen shows the "not available" state rather than a clap error.
-    return True, [], ""
+    """Walk the run's local artifacts dir (`<data_dir>/runs/<id>/artifacts/`)
+    and return one entry per file. Pulling populates this dir — `xrun pull`
+    on a Kaggle run downloads the kernel output here, and the Vast adapter
+    rsyncs into the same place.
+
+    Returns an empty list when nothing has been pulled yet (the screen
+    surfaces an empty-state hint and the `a` binding triggers `xrun pull`).
+    """
+    from xrun_tui.db import find_db_path
+
+    db = find_db_path()
+    artifacts_dir = db.parent / "runs" / run_id / "artifacts"
+    if not artifacts_dir.is_dir():
+        return True, [], ""
+
+    out: list[dict] = []
+    for p in artifacts_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        rel = p.relative_to(artifacts_dir).as_posix()
+        if path and not rel.startswith(path):
+            continue
+        from datetime import datetime, timezone
+
+        mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        out.append({
+            "path": rel,
+            "size": stat.st_size,
+            "modified": mtime,
+            "type": "file",
+        })
+    out.sort(key=lambda e: e["path"])
+    return True, out, ""
 
 
 async def get_logs(run_id: str, last_n: int = 500) -> str:

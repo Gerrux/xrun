@@ -12,10 +12,14 @@ run:
     import time
     import xrun_hook
     print('=== livelog smoke start ===', flush=True)
-    for i in range(20):
-        print(f'tick {i:02d} t={time.time():.2f}', flush=True)
+    for i in range(15):
+        # No 'key=value' in stdout — the poller's parse_stdout_metrics regex
+        # would otherwise inject phantom metrics from the print line.
+        print(f'tick {i:02d}', flush=True)
         xrun_hook.metric('iter', float(i), step=i)
-        time.sleep(3)
+        if i % 5 == 4:
+            xrun_hook.epoch(i // 5, {'iter_so_far': i})
+        time.sleep(2)
     print('=== livelog smoke done ===', flush=True)
     xrun_hook.done()
     "

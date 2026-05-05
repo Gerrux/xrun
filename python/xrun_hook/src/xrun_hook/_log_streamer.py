@@ -44,6 +44,8 @@ DEFAULT_LOG_FILE = "__xrun_stdout.log"
 DEFAULT_INTERVAL_SEC = 5.0
 DEFAULT_EXPERIMENT = "xrun-logs"
 ARTIFACT_PREFIX = "logs"
+EVENTS_PREFIX = "events"
+METRICS_PREFIX = "metrics"
 HTTP_TIMEOUT_SEC = 15
 
 # Tag keys the poller searches by.
@@ -167,6 +169,23 @@ class _MlflowClient:
             {"run_id": run_id, "status": status_str, "end_time": end_time},
         )
 
+    def log_batch(self, run_id: str, metrics: "list[dict]") -> None:
+        """Native MLflow metric logging via /api/2.0/mlflow/runs/log-batch.
+
+        We *also* PUT the JSONL artifact (so the local poller can ingest
+        it into the xrun DB), but without this call the MLflow UI's
+        Metrics tab stays empty — it doesn't read artifacts. MLflow
+        caps batches at 1000 entries; callers are expected to chunk.
+        """
+        if not metrics:
+            return
+        status, body = _post_json(
+            f"{self.base}/api/2.0/mlflow/runs/log-batch",
+            {"run_id": run_id, "metrics": metrics},
+        )
+        if status >= 400:
+            raise RuntimeError(f"log-batch failed: HTTP {status} {body!r}")
+
     def put_artifact(
         self, artifact_path: str, remote_path: str, content: bytes
     ) -> None:
@@ -193,12 +212,51 @@ class _MlflowClient:
 # ---------------------------------------------------------------------------
 
 
-class LogStreamer:
-    """Tails a file in a background thread, pushes new chunks to MLflow.
+class _Tailer:
+    """One file, one chunk-prefix, one byte offset. Pure plumbing for the
+    streamer thread — no I/O scheduling here.
 
-    Each flush reads the bytes appended since the last read and uploads them
-    as `logs/log_NNNNNN.txt`. The poller side fetches these, sorts by N,
-    concatenates, and serves them through `tail()`.
+    The streamer holds a list of these and asks each to flush new bytes to
+    MLflow under the configured prefix on every tick. Same shape as the
+    original log-only flow; we just added events/metrics on the side.
+    """
+
+    def __init__(self, path: Path, prefix: str, ext: str) -> None:
+        self.path = path
+        self.prefix = prefix
+        self.ext = ext
+        self.offset = 0
+        self.chunk_seq = 0
+
+    def read_new(self) -> bytes:
+        if not self.path.exists():
+            return b""
+        size = self.path.stat().st_size
+        if size <= self.offset:
+            # Rotated/truncated. Reset and re-read from start on the next tick.
+            if size < self.offset:
+                self.offset = 0
+            return b""
+        with self.path.open("rb") as f:
+            f.seek(self.offset)
+            data = f.read(size - self.offset)
+        self.offset += len(data)
+        return data
+
+    def next_remote(self) -> str:
+        self.chunk_seq += 1
+        return f"{self.prefix}/{self.prefix.rstrip('s')}_{self.chunk_seq:06d}.{self.ext}"
+
+
+class LogStreamer:
+    """Tails files in a background thread, pushes new chunks to MLflow.
+
+    Always streams the stdout log (`logs/log_NNNNNN.txt`). When the writer
+    has resolved a run dir, also streams `events.jsonl` and `metrics.jsonl`
+    as `events/events_NNNNNN.jsonl` / `metrics/metrics_NNNNNN.jsonl`. The
+    poller reassembles each prefix the same way (sort by N, concatenate)
+    and ingests the events/metrics into the local DB so live telemetry on
+    Kaggle stops being a black box (Issue 8 in field-issues log).
     """
 
     def __init__(
@@ -208,16 +266,18 @@ class LogStreamer:
         log_path: Path,
         interval_sec: float,
         artifact_path: str = "",
+        run_dir: "Path | None" = None,
     ) -> None:
         self._client = client
         self._run_id = run_id
         self._artifact_path = artifact_path
-        self._path = log_path
         # Tests pass tiny intervals; production callers go through
         # start_if_configured() which clamps the env-var floor at 0.5 s.
         self._interval = max(0.01, interval_sec)
-        self._offset = 0
-        self._chunk_seq = 0
+        self._tailers: list[_Tailer] = [_Tailer(log_path, ARTIFACT_PREFIX, "txt")]
+        if run_dir is not None:
+            self._tailers.append(_Tailer(run_dir / "events.jsonl", EVENTS_PREFIX, "jsonl"))
+            self._tailers.append(_Tailer(run_dir / "metrics.jsonl", METRICS_PREFIX, "jsonl"))
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._loop, name="xrun-log-streamer", daemon=True
@@ -253,29 +313,47 @@ class LogStreamer:
 
     def _flush_once(self) -> None:
         with self._lock:
-            new_bytes = self._read_new_bytes()
-            if not new_bytes:
-                return
-            self._chunk_seq += 1
-            remote = f"{ARTIFACT_PREFIX}/log_{self._chunk_seq:06d}.txt"
-            self._client.put_artifact(self._artifact_path, remote, new_bytes)
+            for t in self._tailers:
+                new_bytes = t.read_new()
+                if not new_bytes:
+                    continue
+                self._client.put_artifact(self._artifact_path, t.next_remote(), new_bytes)
+                # Mirror metric records to MLflow's native log-batch so the
+                # Metrics tab in the UI plots them. Artifact JSONL is the
+                # source of truth for the local poller; this is purely for
+                # the human-facing dashboard.
+                if t.prefix == METRICS_PREFIX:
+                    try:
+                        self._mirror_metrics_to_mlflow(new_bytes)
+                    except Exception as e:  # noqa: BLE001 — best-effort
+                        _log.warning("xrun_hook log-batch mirror failed: %s", e)
 
-    def _read_new_bytes(self) -> bytes:
-        if not self._path.exists():
-            return b""
-        size = self._path.stat().st_size
-        if size <= self._offset:
-            # File was rotated/truncated. Reset and read from start so the
-            # next chunk captures whatever is there now.
-            if size < self._offset:
-                self._offset = 0
-            else:
-                return b""
-        with self._path.open("rb") as f:
-            f.seek(self._offset)
-            data = f.read(size - self._offset)
-        self._offset += len(data)
-        return data
+    def _mirror_metrics_to_mlflow(self, raw: bytes) -> None:
+        """Parse a metrics-chunk byte buffer and POST in ≤1000-entry batches."""
+        batch: list[dict] = []
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts_ms = _iso_to_ms(rec.get("ts")) or int(time.time() * 1000)
+            try:
+                batch.append({
+                    "key": str(rec["key"]),
+                    "value": float(rec["value"]),
+                    "step": int(rec.get("step", 0)),
+                    "timestamp": ts_ms,
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+            if len(batch) >= 1000:
+                self._client.log_batch(self._run_id, batch)
+                batch = []
+        if batch:
+            self._client.log_batch(self._run_id, batch)
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +405,23 @@ def start_if_configured() -> "LogStreamer | None":
         )
         return None
 
+    # Resolve the run dir the writer is using so events/metrics streaming
+    # tails the same files xrun_hook.metric/.epoch/.done write to.
+    run_dir: "Path | None" = None
+    try:
+        from . import _paths
+
+        run_dir = _paths.find_run_dir()
+    except Exception:
+        run_dir = None
+
     streamer = LogStreamer(
-        client, mlflow_run_id, log_path, interval, artifact_path=artifact_path
+        client,
+        mlflow_run_id,
+        log_path,
+        interval,
+        artifact_path=artifact_path,
+        run_dir=run_dir,
     )
     streamer.start()
     atexit.register(_atexit_drain, streamer, client, mlflow_run_id)
@@ -350,6 +443,26 @@ def _atexit_drain(
             client.update_run(mlflow_run_id, "FINISHED")
         except Exception:
             pass
+
+
+def _iso_to_ms(s: "str | None") -> "int | None":
+    """Parse a JSONL `ts` string into milliseconds since epoch.
+
+    xrun_hook writes either `2026-05-05T08:33:22.930Z` (writer) or RFC3339
+    with a numeric offset. We accept both. Returns None on parse failure
+    so callers can fall back to wall-clock time.
+    """
+    if not s:
+        return None
+    try:
+        # Python 3.11+ accepts the trailing Z; older versions need it
+        # rewritten to +00:00.
+        from datetime import datetime
+
+        clean = s[:-1] + "+00:00" if s.endswith("Z") else s
+        return int(datetime.fromisoformat(clean).timestamp() * 1000)
+    except (ValueError, TypeError):
+        return None
 
 
 def _parse_float(raw: "str | None", default: float) -> float:

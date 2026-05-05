@@ -159,6 +159,44 @@ impl KaggleApiClient {
         })
     }
 
+    /// Resolve the current version number for a dataset.
+    ///
+    /// Kaggle's `datasets status` CLI tells us when the latest blob is
+    /// indexed, but the *kernel-creation* API resolves "latest" via a separate
+    /// cache that lags several minutes (Issue 1 in field-issues log). To stop
+    /// kernels pinning to the previous version, we fetch the current version
+    /// number here and pass it explicitly to kernel-metadata as
+    /// `<owner>/<slug>/<N>`.
+    ///
+    /// Returns Ok(None) when the endpoint shape doesn't expose a version
+    /// (private dataset, schema drift) — caller falls back to unpinned.
+    pub fn dataset_current_version(&self, slug: &str) -> Result<Option<u32>, KaggleError> {
+        let (owner, name) = slug.split_once('/').ok_or_else(|| {
+            KaggleError::ParseError(format!(
+                "expected dataset slug in <owner>/<name> form, got: {slug}"
+            ))
+        })?;
+        let url = format!("{}/datasets/view/{}/{}", self.base, owner, name);
+        let resp = self
+            .with_auth(self.client.get(&url))
+            .send()
+            .map_err(|e| KaggleError::NotFound(format!("datasets/view request: {e}")))?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let text = resp.text().unwrap_or_default();
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let n = json
+            .get("currentVersionNumber")
+            .or_else(|| json.get("current_version_number"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+        Ok(n)
+    }
+
     /// Resolve session id for `<owner>/<slug>` and cancel it. Returns Ok even
     /// when no active session exists (treated as already-stopped).
     pub fn cancel_kernel(&self, kernel_slug: &str) -> Result<CancelOutcome, KaggleError> {

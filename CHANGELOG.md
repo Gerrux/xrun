@@ -11,6 +11,69 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.3] — 2026-05-05
+
+Field-feedback sweep: closes the eight items in `ISSUES.md` from the
+arborust evening session, plus one latent `Store::open` bug surfaced
+while wiring live telemetry. End-to-end live metrics + events on Kaggle
+now work via the existing MLflow side-channel.
+
+### Added
+- `xrun pull` is no longer a stub — resolves run → vendor adapter →
+  `adapter.pull()`, defaults destination to `runs/<id>/artifacts/`,
+  supports `--into`, and reports matching files for `--ckpt
+  best|latest|all`. (#4)
+- Live telemetry on Kaggle: `xrun_hook`'s log streamer now also tails
+  `events.jsonl` / `metrics.jsonl` and pushes them as MLflow artifact
+  chunks alongside stdout. The Kaggle adapter ingests new chunks every
+  poll tick — events and metrics appear in `xrun events`/`xrun metrics`
+  while the kernel is still running. Requires `mlflow.url` configured.
+  (#8)
+- Streamer also mirrors metric records to MLflow's native
+  `/api/2.0/mlflow/runs/log-batch` endpoint so the MLflow UI's Metrics
+  tab plots them. The artifact JSONL is still the source of truth for
+  the local poller; the native logging is purely for the human
+  dashboard. (Without it, the UI shows "No model metrics recorded".)
+- Kaggle dataset version pinning: after `datasets status = ready`, the
+  adapter resolves the dataset's `currentVersionNumber` via the REST
+  API and rewrites slugs to `owner/name/N`, so kernels never mount a
+  stale snapshot due to the kernel-creation cache lag. Slugs that
+  already carry an explicit `/N` are left alone. (#1)
+- TUI Artifacts screen: walks the run's local artifacts dir and lists
+  real files (was previously a `xrun pull not yet implemented` stub).
+  Empty state hints `press \`a\` to pull`; `a` runs the real CLI and
+  auto-refreshes. (Surfaced after #4 unblocked it.)
+
+### Fixed
+- `xrun launch --detach` no longer hangs after `kaggle kernels push`
+  finishes. The push subprocess's pipes are now drained on background
+  threads, so `try_wait` returns instead of waiting on a full OS pipe
+  buffer. (#3)
+- Duplicate `running:start` events after a poll-daemon restart. The
+  Kaggle adapter rehydrates its last kernel state from the DB on the
+  first poll so already-emitted transitions don't re-fire. (#6)
+- TUI `⚠ stale` warning for healthy runs whose poll-daemon died
+  mid-session: the app now runs auto-resume every 60 s, so a poller
+  killed by a binary upgrade self-heals without user action. (#7)
+- `xrun_hook` install path on Kaggle: the wheel is base64-embedded in
+  the kernel `main.py` and bootstrapped before user `setup`, so the
+  resolution-atomic `pip install` no longer drops siblings when
+  `xrun_hook` isn't on PyPI. (#2/#5)
+- Latent: `Store::open` was being called on the data directory in
+  three Kaggle adapter callsites (post-pull ingest, kernel-state
+  recovery, live telemetry ingest), failing silently with
+  `unable to open database file`. New `db_path()` helper appends
+  `runs.db`; without this the live-telemetry ingest never persisted
+  any events or metrics.
+
+### Changed
+- `crates/xrun-kaggle/src/log_stream.rs` exports
+  `parse_chunk_seq_with(stem, ext, path)` so adapters can reuse the
+  same chunk reassembly path for `logs/`, `events/`, and `metrics/`
+  prefixes.
+
+---
+
 ## [0.5.0] — 2026-05-03
 
 ### Added
