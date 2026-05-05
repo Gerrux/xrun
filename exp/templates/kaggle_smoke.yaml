@@ -1,8 +1,14 @@
+# Live-telemetry smoke on Kaggle.
+# Replace `<your-kaggle-username>` with your account, then:
+#   xrun launch exp/templates/kaggle_smoke.yaml --detach
+#   xrun events <id>     # see stages mid-run
+#   xrun metrics <id>    # 15 'iter' points + epoch payloads
+# Requires `mlflow.url` configured (`xrun config set mlflow.url ...`).
 name: livelog-smoke
 vendor: kaggle
 
 kaggle:
-  kernel_slug: kartaviychert/xrun-livelog-smoke
+  kernel_slug: <your-kaggle-username>/xrun-livelog-smoke
   enable_gpu: false
   enable_internet: true
 

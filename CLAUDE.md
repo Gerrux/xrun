@@ -130,9 +130,25 @@ printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --kaggle-token
 После записи — **не** читать обратно. Никаких `xrun config show --secrets`
 / `cat ~/.config/xrun/credentials.toml`.
 
-Шаблоны для копирования: `exp/templates/quickstart.yaml` (zero-config, без
-кредов и данных), `exp/templates/classification.yaml`,
-`exp/templates/regression.yaml`.
+Шаблоны для копирования:
+- `exp/templates/quickstart.yaml` — zero-config local smoke (без кредов и данных).
+- `exp/templates/classification.yaml`, `regression.yaml` — local skeletons.
+- `exp/templates/kaggle_smoke.yaml` — минимальный Kaggle live-telemetry smoke.
+- `exp/templates/kaggle_classification.yaml` — classification на Kaggle с live metrics.
+
+## Live-телеметрия Kaggle (с 0.5.3)
+
+Когда `mlflow.url` настроен, `xrun_hook` стримит events / metrics / stdout
+на MLflow chunked-артефакты во время работы kernel'а. Поллер тянет новые
+чанки на каждом тике, и `xrun events <id>` / `xrun metrics <id>` отдают
+данные мид-ран. MLflow UI вкладка Metrics тоже рисует графики
+(зеркалится через native `log-batch`). Без MLflow видны только
+синтетические `running:start` / `done`.
+
+`xrun_hook` встроен в kernel автоматически (wheel base64-эмбеддится в
+`main.py` и pip-устанавливается перед `setup`). Datasets пинятся к
+`currentVersionNumber` после readiness, чтобы kernel не подцепил
+устаревший snapshot.
 
 ## Типичный workflow (для Claude Code)
 
