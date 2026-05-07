@@ -1,5 +1,6 @@
 # Live-telemetry smoke on Kaggle.
-# Replace `<your-kaggle-username>` with your account, then:
+# Run as-is — `{user}` is auto-resolved from your Kaggle credentials at
+# launch time (works for both legacy username+key and access-token auth):
 #   xrun launch exp/templates/kaggle_smoke.yaml --detach
 #   xrun events <id>     # see stages mid-run
 #   xrun metrics <id>    # 15 'iter' points + epoch payloads
@@ -8,7 +9,7 @@ name: livelog-smoke
 vendor: kaggle
 
 kaggle:
-  kernel_slug: <your-kaggle-username>/xrun-livelog-smoke
+  kernel_slug: "{user}/xrun-livelog-smoke"
   enable_gpu: false
   enable_internet: true
 

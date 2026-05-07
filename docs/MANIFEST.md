@@ -275,7 +275,7 @@ mlflow:
 
 | Поле | Описание |
 |------|----------|
-| `kernel_slug` | `<username>/<slug>` (обязательно) |
+| `kernel_slug` | `<username>/<slug>` (обязательно). Поддерживает плейсхолдеры `{user}` (резолвится из kaggle creds — авто-fill для шаблонов), `{run_id}`, `{date}` |
 | `competition` | Название соревнования (или `null`) |
 | `dataset` | Attached dataset slug (`user/ds`) |
 | `enable_gpu` | `true` / `false` |
@@ -285,7 +285,7 @@ mlflow:
 
 - `enable_internet=false` → нельзя `pip install` на ходу. xrun автоматически кладёт `xrun_hook` wheel в staging и инжектит `sys.path` — ничего настраивать не нужно.
 - `run.notebook` указывает `.ipynb`. xrun автоматически прибавляет одну bootstrap-ячейку в начало notebook'а (тег `xrun-bootstrap`): она base64-декодит `xrun_hook` wheel, `pip install`-ит его и проставляет `MLFLOW_TRACKING_URI` / `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD` (если `mlflow.url` настроен) — ровно то же, что в script-mode `main.py`. Пользователю **не нужно** вручную ставить `xrun_hook` или экспортить MLflow env vars.
-- `kernel_slug` обязан быть в формате `<username>/<slug>` — `push` упадёт иначе.
+- `kernel_slug` обязан быть в формате `<username>/<slug>` — `push` упадёт иначе. Шаблоны (`exp/templates/kaggle_*.yaml`) используют `{user}/<slug>`, и xrun сам подставляет твой kaggle username (из `kaggle.username` или, для token-auth, через `kaggle config view`). Запасной плейсхолдер `{run_id}` гарантирует уникальный slug на каждый запуск.
 - Live-телеметрия на Kaggle идёт через MLflow side-channel: `xrun_hook` стримит events / metrics / stdout как chunked-артефакты, поллер тянет их каждый тик. Без `mlflow.url` видны только синтетические `queued:start` / `running:start` + post-run `ingest`.
 
 ### `data[]`

@@ -1,11 +1,12 @@
 # Multi-class classification skeleton running on Kaggle (CPU/T4).
-# Replace `<your-kaggle-username>` and bump `enable_gpu: true` if you want
-# a GPU kernel. Requires `mlflow.url` configured for live telemetry.
+# Run as-is — `{user}` is auto-resolved from your Kaggle credentials at
+# launch. Bump `enable_gpu: true` for a GPU kernel; requires `mlflow.url`
+# configured for live telemetry.
 name: kaggle-cls
 vendor: kaggle
 
 kaggle:
-  kernel_slug: <your-kaggle-username>/xrun-cls
+  kernel_slug: "{user}/xrun-cls"
   enable_gpu: false
   enable_internet: true
 

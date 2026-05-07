@@ -116,14 +116,58 @@ fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
     KaggleCredentials::default()
 }
 
+/// Normalise a user-supplied dataset slug into the `<owner>/<name>` form Kaggle
+/// requires. Token-only auth doesn't carry a username, so a user who pasted
+/// only an access token has no obvious way to learn what owner string to put
+/// in front of their slug — we resolve it for them, in this order:
+///   1. `kaggle.username` from xrun credentials (legacy username+key auth).
+///   2. `cli.authenticate()` — calls the Kaggle Python module, which knows
+///      the username regardless of which auth flavour is set up.
+///   3. Bail with a hint pointing at `xrun config set kaggle.username`.
+///
+/// A slug that already contains `/` is returned untouched (caller passed
+/// `owner/name` explicitly).
+fn ensure_owner_prefix(
+    slug: &str,
+    creds: &KaggleCredentials,
+    cli: &xrun_kaggle::KaggleCli,
+) -> Result<String> {
+    if slug.contains('/') {
+        return Ok(slug.to_string());
+    }
+    if let Some(user) = creds.username.as_deref() {
+        if !user.is_empty() {
+            return Ok(format!("{user}/{slug}"));
+        }
+    }
+    match cli.authenticate() {
+        Ok(user) => Ok(format!("{}/{}", user, slug)),
+        Err(e) => anyhow::bail!(
+            "dataset slug '{slug}' has no owner prefix and could not auto-resolve \
+             Kaggle username: {e}\n\
+             \n\
+             Pass the slug as 'owner/{slug}' or set the username explicitly:\n\
+             \n    xrun config set kaggle.username <your-kaggle-username>\n"
+        ),
+    }
+}
+
 pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
     let creds = resolve_kaggle_credentials(config_dir);
-    let adapter = KaggleAdapter::new().with_credentials(creds);
+    let adapter = KaggleAdapter::new().with_credentials(creds.clone());
     let cli = adapter.cli();
+
+    let slug = ensure_owner_prefix(&args.slug, &creds, &cli)?;
+    if slug != args.slug {
+        eprintln!(
+            "Resolved slug: {} → {}  (owner prefix added from kaggle credentials)",
+            args.slug, slug
+        );
+    }
 
     let snapshots_dir = paths::data_dir().map(|d| d.join("dataset_snapshots")).ok();
 
-    let cur_snap = snapshot::capture(&args.local_dir, &args.slug).with_context(|| {
+    let cur_snap = snapshot::capture(&args.local_dir, &slug).with_context(|| {
         format!(
             "failed to fingerprint staging dir {}",
             args.local_dir.display()
@@ -131,13 +175,13 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
     })?;
     let prev_snap = snapshots_dir
         .as_deref()
-        .and_then(|d| snapshot::load(d, &args.slug));
+        .and_then(|d| snapshot::load(d, &slug));
     let diff = snapshot::diff(prev_snap.as_ref(), &cur_snap);
 
     eprintln!(
         "Pushing {} as Kaggle dataset {}…",
         args.local_dir.display(),
-        args.slug
+        slug
     );
     if prev_snap.is_some() {
         eprintln!("Diff vs last pushed snapshot:");
@@ -152,32 +196,30 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
         );
     }
 
-    cli.dataset_push(&args.local_dir, &args.slug, args.message.as_deref())
-        .with_context(|| format!("failed to push dataset '{}'", args.slug))?;
+    cli.dataset_push(&args.local_dir, &slug, args.message.as_deref())
+        .with_context(|| format!("failed to push dataset '{slug}'"))?;
 
     if let Some(dir) = snapshots_dir.as_deref() {
         if let Err(e) = snapshot::save(dir, &cur_snap) {
-            tracing::warn!("could not save dataset snapshot for {}: {e}", args.slug);
+            tracing::warn!("could not save dataset snapshot for {slug}: {e}");
         }
     }
 
     if args.wait {
-        eprintln!("Waiting for dataset '{}' to be ready…", args.slug);
+        eprintln!("Waiting for dataset '{slug}' to be ready…");
         let timeout = Duration::from_secs(300);
         let started = std::time::Instant::now();
         loop {
-            match cli.is_dataset_ready(&args.slug) {
+            match cli.is_dataset_ready(&slug) {
                 Ok(true) => {
-                    eprintln!("Dataset '{}' is ready.", args.slug);
+                    eprintln!("Dataset '{slug}' is ready.");
                     break;
                 }
                 Ok(false) => {
                     if started.elapsed() > timeout {
                         anyhow::bail!(
-                            "dataset '{}' not ready after 5 minutes; \
-                             check status with `xrun dataset status {}`",
-                            args.slug,
-                            args.slug
+                            "dataset '{slug}' not ready after 5 minutes; \
+                             check status with `xrun dataset status {slug}`"
                         );
                     }
                     std::thread::sleep(Duration::from_secs(5));
@@ -189,22 +231,21 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
             }
         }
     } else {
-        eprintln!(
-            "Dataset push submitted. Check status with: xrun dataset status {}",
-            args.slug
-        );
+        eprintln!("Dataset push submitted. Check status with: xrun dataset status {slug}");
     }
     Ok(())
 }
 
 pub fn run_status(args: &DatasetStatusArgs, config_dir: &Path) -> Result<()> {
     let creds = resolve_kaggle_credentials(config_dir);
-    let adapter = KaggleAdapter::new().with_credentials(creds);
+    let adapter = KaggleAdapter::new().with_credentials(creds.clone());
     let cli = adapter.cli();
 
+    let slug = ensure_owner_prefix(&args.slug, &creds, &cli)?;
+
     let raw = cli
-        .dataset_status_raw(&args.slug)
-        .with_context(|| format!("failed to get status of dataset '{}'", args.slug))?;
+        .dataset_status_raw(&slug)
+        .with_context(|| format!("failed to get status of dataset '{slug}'"))?;
 
     if args.json {
         print!("{raw}");
@@ -217,7 +258,7 @@ pub fn run_status(args: &DatasetStatusArgs, config_dir: &Path) -> Result<()> {
                     .or_else(|| v.get("datasetStatus"))
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown");
-                println!("{:<20}  {}", args.slug, status);
+                println!("{:<20}  {}", slug, status);
             }
             Err(_) => print!("{raw}"),
         }

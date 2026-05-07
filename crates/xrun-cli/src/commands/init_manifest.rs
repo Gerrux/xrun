@@ -215,7 +215,11 @@ fn render_trailer(vendor: &str, sinks: &[String]) -> String {
         );
     }
     if vendor == "kaggle" {
-        tips.push("# - kaggle: kernel_slug must be `<your-username>/<unique-slug>`.".into());
+        tips.push(
+            "# - kaggle: kernel_slug uses `{user}/<slug>` — owner is auto-filled from your \
+             Kaggle credentials. Use a literal username if you want a fixed owner."
+                .into(),
+        );
         tips.push(
             "# - kaggle: `dataset` is optional; remove the line if you don't pin one.".into(),
         );
@@ -271,7 +275,7 @@ data:
 
 const KAGGLE_BLOCK: &str = "\
 kaggle:
-  kernel_slug: TODO_owner/TODO_kernel-slug   # owner = your kaggle username
+  kernel_slug: \"{user}/TODO_kernel-slug\"  # `{user}` auto-fills your kaggle username
   enable_gpu: true                            # T4 x2 free per session
   enable_internet: false                      # Kaggle disables pip-on-the-fly
   # dataset: TODO_owner/TODO_dataset          # uncomment to pin a dataset
@@ -350,7 +354,7 @@ mod tests {
     fn kaggle_with_wandb_includes_kaggle_block_and_wandb_note() {
         let s = render("kaggle", &["wandb"]);
         assert!(s.contains("kaggle:"));
-        assert!(s.contains("kernel_slug: TODO_owner/TODO_kernel-slug"));
+        assert!(s.contains("{user}/TODO_kernel-slug"));
         assert!(s.contains("# wandb is enabled per-host via"));
     }
 
