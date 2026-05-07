@@ -195,7 +195,9 @@ async def config_show(secrets: bool = False) -> tuple[bool, dict[str, Any], str]
 
 
 async def doctor() -> tuple[bool, dict[str, Any], str]:
-    code, out, err = await _run("doctor", "--json", timeout=10)
+    # 25s — matches probe(); Windows cold-subprocess + per-vendor checks
+    # routinely exceed 10s on first launch.
+    code, out, err = await _run("doctor", "--json", timeout=25)
     if code != 0 and not out:
         return False, {}, err.strip()
     try:
@@ -217,6 +219,51 @@ async def metrics(run_id: str, key: str | None = None) -> tuple[bool, Any, str]:
         return False, None, f"parse error: {exc}"
 
 
+def artifacts_dir(run_id: str) -> Path:
+    """Path to a run's local artifacts dir, regardless of whether it exists."""
+    from xrun_tui.db import find_db_path
+
+    return find_db_path().parent / "runs" / run_id / "artifacts"
+
+
+def reveal_in_explorer(target: Path) -> tuple[bool, str]:
+    """Open `target` in the OS file explorer. For files, select the file inside
+    its parent dir (Windows `explorer /select,`, macOS `open -R`); for dirs,
+    open them. Linux has no portable "select-file" mode, so we open the parent.
+    """
+    import subprocess
+
+    target = target.resolve()
+    if not target.exists():
+        return False, f"not found: {target}"
+
+    try:
+        if sys.platform == "win32":
+            if target.is_dir():
+                import os
+                os.startfile(str(target))  # noqa: S606
+            else:
+                # `/select,<path>` is one argument to explorer.exe — spaces in
+                # the path break list-form quoting (subprocess wraps the whole
+                # /select,... in quotes, which explorer then parses as a path).
+                # Pass as a raw command string so the comma stays unquoted.
+                subprocess.Popen(f'explorer /select,"{target}"')
+            return True, ""
+        if sys.platform == "darwin":
+            if target.is_dir():
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["open", "-R", str(target)])
+            return True, ""
+        # Linux/BSD: no portable select-file; open parent dir for files.
+        opener = "xdg-open"
+        path = target if target.is_dir() else target.parent
+        subprocess.Popen([opener, str(path)])
+        return True, ""
+    except Exception as exc:  # pragma: no cover — UX layer
+        return False, str(exc)
+
+
 async def list_artifacts(run_id: str, path: str = "") -> tuple[bool, list[dict], str]:
     """Walk the run's local artifacts dir (`<data_dir>/runs/<id>/artifacts/`)
     and return one entry per file. Pulling populates this dir — `xrun pull`
@@ -226,22 +273,19 @@ async def list_artifacts(run_id: str, path: str = "") -> tuple[bool, list[dict],
     Returns an empty list when nothing has been pulled yet (the screen
     surfaces an empty-state hint and the `a` binding triggers `xrun pull`).
     """
-    from xrun_tui.db import find_db_path
-
-    db = find_db_path()
-    artifacts_dir = db.parent / "runs" / run_id / "artifacts"
-    if not artifacts_dir.is_dir():
+    artifacts_path = artifacts_dir(run_id)
+    if not artifacts_path.is_dir():
         return True, [], ""
 
     out: list[dict] = []
-    for p in artifacts_dir.rglob("*"):
+    for p in artifacts_path.rglob("*"):
         if not p.is_file():
             continue
         try:
             stat = p.stat()
         except OSError:
             continue
-        rel = p.relative_to(artifacts_dir).as_posix()
+        rel = p.relative_to(artifacts_path).as_posix()
         if path and not rel.startswith(path):
             continue
         from datetime import datetime, timezone

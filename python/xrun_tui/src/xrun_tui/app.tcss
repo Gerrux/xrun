@@ -583,6 +583,26 @@ LoadingIndicator {
     content-align: left middle;
 }
 
+/* Health strip — Doctor + Sinks status lights between KPIs and the run
+   tables. We mirror `#dash-kpi-grid` (Grid, not Horizontal) because that
+   layout is known to distribute children evenly without per-child `width`
+   tweaks — Horizontal+Static+1fr stops respecting the flex unit when
+   cards are siblings of fixed-width status text. */
+#dash-health-row {
+    grid-size: 2 1;
+    grid-gutter: 1 1;
+    height: 5;
+    padding: 0 2 0 2;
+}
+
+.health-card {
+    background: #24283b;
+    border: tall #2d3149;
+    padding: 0 2;
+    height: 4;
+    content-align: left middle;
+}
+
 #dash-cols {
     height: 1fr;
     padding: 1 2;

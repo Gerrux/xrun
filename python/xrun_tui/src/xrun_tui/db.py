@@ -25,6 +25,16 @@ def _default_data_dir() -> Path:
 
 
 def find_db_path() -> Path:
+    # Fast path: default platform location. The Rust core writes here too,
+    # so this hits 99% of the time and saves ~1.3s of cold `xrun doctor`
+    # startup latency on every TUI launch (Windows subprocess + vendor
+    # probes inside doctor).
+    base = _default_data_dir()
+    for candidate in (base / "data" / "runs.db", base / "runs.db"):
+        if candidate.exists():
+            return candidate
+    # Fallback: user moved the DB or set a non-standard data dir we can't
+    # infer from env — ask the CLI directly. Slow but rare.
     try:
         r = subprocess.run(
             ["xrun", "doctor", "--json"],
@@ -37,11 +47,6 @@ def find_db_path() -> Path:
                 return Path(p)
     except Exception:
         pass
-    base = _default_data_dir()
-    # Try data/ subdirectory first (actual layout on Windows)
-    for candidate in (base / "data" / "runs.db", base / "runs.db"):
-        if candidate.exists():
-            return candidate
     return base / "data" / "runs.db"
 
 

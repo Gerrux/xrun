@@ -158,3 +158,84 @@ def status_dot_for(run: dict) -> Text:
     if is_stale(run):
         return Text("⚠", style="bold #e0af68")
     return status_dot(run.get("status") or "")
+
+
+# ── Sparkline + metric-key helpers ────────────────────────────────────────────
+
+# Prefer canonical training metrics. The order encodes user intent: a run that
+# logs both `loss` and `val_loss` is almost certainly more interested in the
+# training loss curve at-a-glance, with val showing on detail screens.
+_METRIC_KEY_PRIORITY: tuple[str, ...] = (
+    "loss", "train_loss", "train/loss",
+    "val_loss", "val/loss",
+    "accuracy", "acc", "val_acc", "val_accuracy",
+    "f1", "val_f1",
+)
+
+# Keys we never show on the dashboard sparkline — they're system-y or sparse.
+_METRIC_KEY_SKIP_PREFIXES: tuple[str, ...] = (
+    "system/", "sys/", "_", "step", "epoch",
+)
+
+
+def pick_metric_key(keys: list[str]) -> str | None:
+    """Pick the most useful metric key for an at-a-glance sparkline.
+
+    Priority list first; otherwise first non-system key; otherwise None.
+    """
+    if not keys:
+        return None
+    key_set = set(keys)
+    for pri in _METRIC_KEY_PRIORITY:
+        if pri in key_set:
+            return pri
+    for k in keys:
+        if not any(k.startswith(p) for p in _METRIC_KEY_SKIP_PREFIXES):
+            return k
+    return None
+
+
+_SPARK_BARS = "▁▂▃▄▅▆▇█"
+
+
+def render_sparkline(values: list[float], width: int = 10) -> str:
+    """Render a list of floats as unicode bars. Empty input → empty string.
+
+    Downsamples if there are more values than `width` slots so the line
+    stays readable on a 28-col KPI card. Uniform input renders as a flat
+    mid-height bar so users can still see "data exists, just not changing".
+    """
+    if not values:
+        return ""
+    if len(values) > width:
+        step = len(values) / width
+        sampled = [values[min(int(i * step), len(values) - 1)]
+                   for i in range(width)]
+    else:
+        sampled = values
+    lo = min(sampled)
+    hi = max(sampled)
+    if hi == lo:
+        return _SPARK_BARS[3] * len(sampled)
+    rng = hi - lo
+    n_bars = len(_SPARK_BARS)
+    return "".join(
+        _SPARK_BARS[min(int((v - lo) / rng * (n_bars - 1)), n_bars - 1)]
+        for v in sampled
+    )
+
+
+def fmt_metric_value(v: float) -> str:
+    """Compact float formatter for KPI/table cells. Picks fixed vs scientific
+    so a metric column never overflows: 0.4231 stays human, 1.2e-7 stays
+    short, 12345 stays an integer."""
+    av = abs(v)
+    if av == 0:
+        return "0"
+    if av >= 1000 or av < 0.001:
+        return f"{v:.1e}"
+    if av >= 100:
+        return f"{v:.1f}"
+    if av >= 10:
+        return f"{v:.2f}"
+    return f"{v:.3f}"

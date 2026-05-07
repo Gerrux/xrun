@@ -306,6 +306,20 @@ class RunsScreen(Screen):
             from xrun_tui.screens.run_detail import RunDetailScreen
             await self.app.push_screen(RunDetailScreen(run_id))
 
+    async def on_data_table_row_selected(
+        self, event: DataTable.RowSelected,
+    ) -> None:
+        # Mouse-click parity: keyboard `Enter` already maps to action_open_detail
+        # via the binding, but Textual delivers click-to-select as a separate
+        # event that the binding doesn't see. Without this handler the row
+        # appears clickable but does nothing.
+        # Group separator rows have auto-assigned keys and aren't in
+        # `_run_ids` — guard against opening a detail screen for them.
+        run_id = event.row_key.value if event.row_key else None
+        if run_id and run_id in self._run_ids:
+            from xrun_tui.screens.run_detail import RunDetailScreen
+            await self.app.push_screen(RunDetailScreen(run_id))
+
     async def action_sync_status(self) -> None:
         """Reconcile vendor state for stale runs (`xrun fix-status`).
 

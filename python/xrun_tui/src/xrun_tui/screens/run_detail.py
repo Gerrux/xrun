@@ -124,7 +124,19 @@ class RunDetailScreen(Screen):
             Text("Status",  style="#565f89"),
             Text("Message", style="#565f89"),
         )
-        self.call_after_refresh(self._load_run)
+        # Prime the header with the run id so the chips aren't blank for the
+        # ~tens-of-ms it takes the worker's first DB hit + render to land.
+        # Without this the screen flashes empty after push.
+        self.query_one("#run-name", Static).update(
+            f"[bold #c0caf5]{self._run_id[:16]}[/]")
+        self.query_one("#run-badge", Static).update("[#414868]loading…[/]")
+        t.loading = True
+        # Run on a worker — `call_after_refresh` awaits the coroutine on the
+        # screen's message pump, so a sequence of `query_one(...).update(...)`
+        # calls inside `_render_header` blocks all keystrokes until done.
+        # `exclusive=True` collapses overlapping refreshes on rapid actions
+        # (Sync/Stop/Refresh) into a single load.
+        self.run_worker(self._load_run(), exclusive=True, group="load")
 
     def on_unmount(self) -> None:
         self._stop_log_poll()
@@ -471,8 +483,9 @@ class RunDetailScreen(Screen):
         if not self._run:
             return
         from xrun_tui.screens.artifacts import ArtifactsScreen
-        name = self._run.get("name") or self._run_id[:12]
-        await self.app.push_screen(ArtifactsScreen(self._run_id, name))
+        name   = self._run.get("name")   or self._run_id[:12]
+        vendor = self._run.get("vendor") or ""
+        await self.app.push_screen(ArtifactsScreen(self._run_id, name, vendor))
 
     async def _do_relaunch(self) -> None:
         if not self._run:

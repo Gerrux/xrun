@@ -926,13 +926,36 @@ class VendorEditScreen(Screen):
             token    = self.query_one("#input-kaggle-token",    Input).value.strip()
             username = self.query_one("#input-kaggle-username", Input).value.strip()
             key      = self.query_one("#input-kaggle-key",      Input).value.strip()
+
+            # Auth methods are mutually exclusive: a Kaggle access token
+            # already encodes the account identity, so storing legacy
+            # username+key alongside it is at best dead weight and at worst
+            # actively wrong (stale username from a different account, the
+            # very symptom that prompted this priority rule). Enforce here:
+            # token wins; legacy fields are saved only when no token is set.
             entry: dict = {}
             if token:
                 entry["token"] = token
-            if username:
-                entry["username"] = username
-            if key:
-                entry["key"] = key
+                # Clear stale legacy fields from BOTH the saved creds AND
+                # the form so the user sees the auth mode they actually
+                # have, not a confusing token+username mix.
+                try:
+                    self.query_one("#input-kaggle-username", Input).value = ""
+                    self.query_one("#input-kaggle-key",      Input).value = ""
+                except Exception:
+                    pass
+                if username or key:
+                    self.notify(
+                        "Token set — legacy username+key cleared "
+                        "(token wins over legacy auth)",
+                        severity="information",
+                        timeout=6,
+                    )
+            else:
+                if username:
+                    entry["username"] = username
+                if key:
+                    entry["key"] = key
             creds["kaggle"] = entry
         else:
             api_key = self.query_one("#input-api-key", Input).value.strip()
