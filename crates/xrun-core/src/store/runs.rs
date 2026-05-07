@@ -77,6 +77,13 @@ impl RunStatus {
             RunStatus::Cancelled => "cancelled",
         }
     }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled
+        )
+    }
 }
 
 impl ToSql for RunStatus {
@@ -197,10 +204,21 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let rows = tx.execute(
-            "UPDATE runs SET status = ?1 WHERE id = ?2",
-            params![status, id],
-        )?;
+        // Terminal transitions also stamp `ended_at` (idempotent via
+        // COALESCE — re-marking an already-terminal row keeps the original
+        // timestamp). Non-terminal transitions leave `ended_at` untouched.
+        let rows = if status.is_terminal() {
+            let now = Utc::now();
+            tx.execute(
+                "UPDATE runs SET status = ?1, ended_at = COALESCE(ended_at, ?2) WHERE id = ?3",
+                params![status, now, id],
+            )?
+        } else {
+            tx.execute(
+                "UPDATE runs SET status = ?1 WHERE id = ?2",
+                params![status, id],
+            )?
+        };
         if rows == 0 {
             return Err(StoreError::RunNotFound(id.to_string()));
         }
