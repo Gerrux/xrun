@@ -145,6 +145,14 @@ const DEFAULT_PUSH_TIMEOUT_SECS: u64 = 600;
 /// dataset uploads are commonly multi-GB and the final commit step can
 /// legitimately take several minutes on the Kaggle backend.
 const DEFAULT_DATASET_TIMEOUT_SECS: u64 = 1800;
+/// Watchdog for `kaggle kernels output`. Without this, a slow or wedged
+/// download blocks `poll_completion` indefinitely the moment a kernel
+/// flips to Complete — and `xrun fix-status` (called from the TUI with a
+/// 60s timeout) gets killed before it ever gets to update the run status,
+/// so a finished kernel sits in `running ⚠ stale` forever. Default is
+/// large because output bundles can be multi-GB; the daemon path is fine
+/// to wait, the watchdog is here to bound the worst case.
+const DEFAULT_OUTPUT_TIMEOUT_SECS: u64 = 1800;
 
 fn push_timeout() -> std::time::Duration {
     let secs = std::env::var("XRUN_KAGGLE_PUSH_TIMEOUT_SECS")
@@ -159,6 +167,14 @@ fn dataset_timeout() -> std::time::Duration {
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_DATASET_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+fn output_timeout() -> std::time::Duration {
+    let secs = std::env::var("XRUN_KAGGLE_OUTPUT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_OUTPUT_TIMEOUT_SECS);
     std::time::Duration::from_secs(secs)
 }
 
@@ -275,11 +291,9 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn output(&self, slug: &str, into_dir: &Path) -> Result<String, KaggleError> {
-        let out = self
-            .cmd(&["kernels", "output", slug, "-p"])
-            .arg(into_dir)
-            .output()
-            .map_err(|e| KaggleError::NotFound(e.to_string()))?;
+        let mut cmd = self.cmd(&["kernels", "output", slug, "-p"]);
+        cmd.arg(into_dir);
+        let out = run_with_timeout(cmd, output_timeout(), "kaggle kernels output")?;
 
         if !out.status.success() {
             return Err(KaggleError::CliFailure {
@@ -418,15 +432,55 @@ impl KaggleProcess for KaggleProcessReal {
     /// version-update banner before the YAML body in newer CLIs and breaks
     /// the regex). Returns the username on success.
     fn authenticate_via_python(&self) -> Result<String, KaggleError> {
+        // The kaggle module prints an "outdated version" banner to STDOUT
+        // (not stderr) on import for many published versions. Wrapping our
+        // own write in an unmistakable sentinel lets us strip the noise
+        // even when it lands in the same stream.
+        //
+        // The script also enforces a strict priority: when the caller passed
+        // a `KAGGLE_API_TOKEN` env var (which `with_credentials()` does for
+        // token-auth setups), we use that token DIRECTLY via introspect_token
+        // and refuse to fall through to `~/.kaggle/kaggle.json` or
+        // `~/.kaggle/access_token` if introspection fails. The default kaggle
+        // module path silently falls through, which means a stale token cache
+        // on disk would mask a bad/expired env token and return the wrong
+        // username — the exact bug reported when changing the API key in TUI
+        // didn't change the resolved nickname.
         let script = r#"
-import sys
+import os, sys
+
+# CRITICAL: snapshot env BEFORE importing kaggle. The kaggle module's
+# import-time code calls authenticate() and pops KAGGLE_API_TOKEN out of
+# os.environ as a side-effect, so reading it after the import sees None.
+# That used to silently fall through to ~/.kaggle/access_token (cached
+# from a previous account) and return the wrong username.
+env_token = os.environ.get("KAGGLE_API_TOKEN")
+
 try:
     from kaggle.api.kaggle_api_extended import KaggleApi
 except Exception as e:
     sys.stderr.write(f"import_error: {e}\n")
     sys.exit(2)
+
+api = KaggleApi()
+
+if env_token and not os.path.exists(env_token):
+    # Env token wins. Bypass api.authenticate()'s fallback chain by going
+    # straight to _introspect_token, so a bad token errors out instead of
+    # silently using cached on-disk creds from another account.
+    try:
+        user = api._introspect_token(env_token)
+    except Exception as e:
+        sys.stderr.write(f"env_token_introspect_failed: {e}\n")
+        sys.exit(5)
+    if not user:
+        sys.stderr.write("env_token_no_username\n")
+        sys.exit(4)
+    sys.stdout.write(f"\n<<<XRUN_KAGGLE_USER:{user}>>>\n")
+    sys.exit(0)
+
+# No env token -> let kaggle module pick from its standard sources.
 try:
-    api = KaggleApi()
     api.authenticate()
 except Exception as e:
     sys.stderr.write(f"auth_error: {e}\n")
@@ -438,7 +492,7 @@ user = (
 if not user:
     sys.stderr.write("auth_ok_no_username\n")
     sys.exit(4)
-sys.stdout.write(user)
+sys.stdout.write(f"\n<<<XRUN_KAGGLE_USER:{user}>>>\n")
 "#;
         let pythons: &[&str] = &["python", "python3", "py"];
         let mut last_err: Option<KaggleError> = None;
@@ -462,7 +516,19 @@ sys.stdout.write(user)
                 Err(_) => continue, // try next interpreter
             };
             if out.status.success() {
-                let user = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                // Sentinel-extract: kaggle's import-time outdated-version
+                // banner shares stdout with our payload, so a naïve trim
+                // would yield "Warning: …\nactual-user". Look for the
+                // bracketed marker we wrote and pull the username out.
+                let user = stdout
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("<<<XRUN_KAGGLE_USER:")
+                            .and_then(|s| s.strip_suffix(">>>"))
+                            .map(|s| s.trim().to_string())
+                    })
+                    .unwrap_or_default();
                 if user.is_empty() {
                     return Err(KaggleError::ParseError(
                         "kaggle Python module authenticated but returned no username".to_string(),

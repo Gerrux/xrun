@@ -86,9 +86,26 @@ pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &P
             "kaggle" => {
                 let creds = resolve_kaggle_credentials(config_dir);
                 let data_dir = db_path.parent().unwrap_or(db_path);
-                let adapter = KaggleAdapter::new()
+                let mut adapter = KaggleAdapter::new()
                     .with_store_path(data_dir.to_path_buf())
                     .with_credentials(creds);
+                // Wire MLflow so `ingest_telemetry_chunks` (called by
+                // `poll_completion`) can backfill any events/metrics the
+                // dead poller missed before status flipped to Complete.
+                // Without this, fix-status promotes status correctly but
+                // leaves the metric tail empty for the gap between the
+                // poller's last tick and kernel completion. Mirrors the
+                // wiring in `poll_daemon.rs`.
+                if let Ok(g) = xrun_core::config::GlobalConfig::load(config_dir) {
+                    if let Some(url) = g.mlflow.url.clone() {
+                        let cred_load =
+                            xrun_core::Credentials::load(config_dir).unwrap_or_default();
+                        let auth = crate::commands::launch::mlflow_auth_from_creds(
+                            &cred_load.mlflow,
+                        );
+                        adapter = adapter.with_mlflow(url, auth);
+                    }
+                }
                 adapter.set_run_id(run_id);
                 Box::new(adapter)
             }

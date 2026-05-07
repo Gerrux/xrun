@@ -128,11 +128,26 @@ impl KaggleAdapter {
         self.run_id.read().ok().and_then(|g| g.clone())
     }
 
-    /// Derive the artifacts directory from store_path + run_id.
-    fn artifacts_dir(&self) -> Option<PathBuf> {
-        let run_id = self.get_run_id()?;
-        let sp = self.store_path.as_ref()?;
-        Some(sp.join("runs").join(run_id.to_string()).join("artifacts"))
+    /// Resolve the Kaggle username for `{user}` placeholder expansion.
+    ///
+    /// Order:
+    ///   1. `credentials.username` — legacy username+key auth carries it
+    ///      directly, no extra round-trip.
+    ///   2. `cli.authenticate()` — token-only auth has no username locally,
+    ///      so we ask the kaggle Python module which knows how to derive
+    ///      it from the access token.
+    ///
+    /// Returns `None` only if neither source produced a username — in that
+    /// case `expand_kernel_slug` leaves `{user}` literal, and the
+    /// downstream Kaggle push will fail with a clear "invalid slug" error
+    /// instead of silently uploading under a nonsensical handle.
+    fn resolve_user(&self) -> Option<String> {
+        if let Some(u) = self.credentials.username.as_deref() {
+            if !u.is_empty() {
+                return Some(u.to_string());
+            }
+        }
+        self.cli.authenticate().ok()
     }
 
     /// `store_path` holds the data directory (parent of `runs.db`) so the
@@ -329,9 +344,15 @@ impl VendorAdapter for KaggleAdapter {
             ));
         }
 
+        // Slug must carry an owner before the slash. `{user}` is allowed as
+        // a placeholder for the owner half — it's resolved from credentials
+        // at provision time. Anything past the slash is the kernel name and
+        // is otherwise validated by Kaggle's API.
         if !kaggle.kernel_slug.contains('/') {
             return Err(VendorError::Validation(
-                "kaggle.kernel_slug must be in format <username>/<slug>".to_string(),
+                "kaggle.kernel_slug must be in format <username>/<slug> \
+                 (use `{user}/<slug>` to auto-fill the owner from credentials)"
+                    .to_string(),
             ));
         }
 
@@ -350,10 +371,19 @@ impl VendorAdapter for KaggleAdapter {
             .as_ref()
             .ok_or_else(|| VendorError::Validation("no kaggle section".to_string()))?;
 
+        // Show the slug the operator will see in `xrun ls`, not the raw
+        // template. We don't have a `run_id` yet at dry-run time so `{run_id}`
+        // expands to a fallback timestamp — that's fine, it's just for display.
+        let preview_slug = expand_kernel_slug(
+            &kaggle.kernel_slug,
+            None,
+            self.resolve_user().as_deref(),
+        );
+
         Ok(DryRunPlan {
             gpu_query: format!(
                 "kaggle:{}{}",
-                kaggle.kernel_slug,
+                preview_slug,
                 if kaggle.enable_gpu.unwrap_or(false) {
                     " (GPU)"
                 } else {
@@ -382,14 +412,25 @@ impl VendorAdapter for KaggleAdapter {
         let staging = staging_dir.path();
 
         // Expand placeholders in kernel_slug. Supported: `{run_id}` (unique
-        // per launch — guarantees no collision on rerun) and `{date}` (today
-        // in YYYYMMDD, one collision per day worst case). Hardcoding a date
-        // suffix in YAML and editing it before each rerun is the failure mode
-        // we're closing.
+        // per launch — guarantees no collision on rerun), `{date}` (today
+        // in YYYYMMDD, one collision per day worst case), `{user}` (Kaggle
+        // account name, lets templates ship without the operator typing
+        // their handle into YAML). Hardcoding a date suffix in YAML and
+        // editing it before each rerun is the failure mode we're closing.
+        let resolved_user = self.resolve_user();
         let expanded_slug = expand_kernel_slug(
             &kaggle.kernel_slug,
             self.get_run_id().as_ref().map(|r| r.to_string()).as_deref(),
+            resolved_user.as_deref(),
         );
+        if expanded_slug.contains("{user}") {
+            return Err(VendorError::Validation(
+                "kernel_slug uses {user} but no Kaggle username could be resolved \
+                 from credentials. Set kaggle.username/.key (legacy) or run \
+                 `kaggle config view` to confirm token auth is healthy."
+                    .to_string(),
+            ));
+        }
         let kernel_slug = expanded_slug.as_str();
 
         let enable_gpu = kaggle.enable_gpu.unwrap_or(false);
@@ -863,14 +904,17 @@ impl VendorAdapter for KaggleAdapter {
 
         match new_state {
             KernelState::Complete => {
-                // Pull artifacts before signalling Done
-                if let Some(artifacts_dir) = self.artifacts_dir() {
-                    if let Err(e) = std::fs::create_dir_all(&artifacts_dir) {
-                        tracing::warn!("could not create artifacts dir: {e}");
-                    } else if let Err(e) = self.pull(h, "", &artifacts_dir) {
-                        tracing::warn!("kaggle poll_completion pull failed: {e}");
-                    }
-                }
+                // Promote terminal status immediately. We deliberately do NOT
+                // auto-pull `kaggle kernels output` here: that download can be
+                // multi-GB and minutes long, and the only callers that need
+                // this function to return fast (`xrun fix-status`, the TUI's
+                // `S` action with a 60s subprocess timeout) would get killed
+                // mid-pull and leave the run stuck in `running ⚠ stale`.
+                // Telemetry already lives in the configured sink (MLflow live
+                // chunks via `ingest_telemetry_chunks`, or wandb via the
+                // hook → vendor API). Heavy artifacts are pulled on demand
+                // through `xrun pull <id>`, which is the user's explicit
+                // checkpoint-fetch path.
                 events.push(SyntheticEvent {
                     stage: "done".into(),
                     status: "ok".into(),
@@ -1373,13 +1417,20 @@ fn build_script_main(
     )
 }
 
-/// Expand `{run_id}` and `{date}` placeholders in a Kaggle kernel slug.
-/// `{run_id}` is replaced by the lowercase ULID (Kaggle slugs are
-/// case-insensitive but lowercase reads better). `{date}` is `YYYYMMDD` UTC.
-/// When `run_id` is `None` the placeholder is replaced with a millisecond
-/// timestamp — collisions across millisecond boundaries are vanishingly rare
-/// in practice and a stray fallback beats panicking on a missing run_id.
-pub fn expand_kernel_slug(slug: &str, run_id: Option<&str>) -> String {
+/// Expand `{run_id}`, `{date}`, and `{user}` placeholders in a Kaggle kernel
+/// slug.
+/// - `{run_id}` is replaced by the lowercase ULID (Kaggle slugs are
+///   case-insensitive but lowercase reads better). When `run_id` is `None`
+///   the placeholder is replaced with a millisecond timestamp — collisions
+///   across millisecond boundaries are vanishingly rare in practice and a
+///   stray fallback beats panicking on a missing run_id.
+/// - `{date}` is `YYYYMMDD` UTC.
+/// - `{user}` is the Kaggle account name. Lets templates ship as
+///   `kernel_slug: {user}/xrun-foo` and "just work" without the operator
+///   editing in their handle. When `user` is `None` the placeholder is left
+///   intact so callers can detect an unresolvable slug and surface a clear
+///   error instead of pushing a kernel under a literal `{user}` namespace.
+pub fn expand_kernel_slug(slug: &str, run_id: Option<&str>, user: Option<&str>) -> String {
     if !slug.contains('{') {
         return slug.to_string();
     }
@@ -1392,8 +1443,13 @@ pub fn expand_kernel_slug(slug: &str, run_id: Option<&str>) -> String {
             rid_owned.as_str()
         }
     };
-    slug.replace("{run_id}", &rid.to_lowercase())
-        .replace("{date}", &date)
+    let mut out = slug
+        .replace("{run_id}", &rid.to_lowercase())
+        .replace("{date}", &date);
+    if let Some(u) = user {
+        out = out.replace("{user}", u);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1451,29 +1507,54 @@ mod slug_tests {
     #[test]
     fn passthrough_when_no_placeholder() {
         assert_eq!(
-            expand_kernel_slug("user/foo-bar", Some("01H...")),
+            expand_kernel_slug("user/foo-bar", Some("01H..."), Some("alice")),
             "user/foo-bar"
         );
     }
 
     #[test]
     fn substitutes_run_id_lowercase() {
-        let s = expand_kernel_slug("user/foo-{run_id}", Some("01HABC"));
+        let s = expand_kernel_slug("user/foo-{run_id}", Some("01HABC"), None);
         assert_eq!(s, "user/foo-01habc");
     }
 
     #[test]
     fn substitutes_date() {
-        let s = expand_kernel_slug("user/foo-{date}", Some("01H"));
+        let s = expand_kernel_slug("user/foo-{date}", Some("01H"), None);
         assert!(s.starts_with("user/foo-"));
         assert_eq!(s.len(), "user/foo-".len() + 8);
     }
 
     #[test]
     fn falls_back_when_no_run_id() {
-        let s = expand_kernel_slug("user/foo-{run_id}", None);
+        let s = expand_kernel_slug("user/foo-{run_id}", None, None);
         assert!(s.starts_with("user/foo-"));
         assert!(!s.contains('{'));
+    }
+
+    #[test]
+    fn substitutes_user() {
+        let s = expand_kernel_slug("{user}/foo-bar", None, Some("kartaviychert"));
+        assert_eq!(s, "kartaviychert/foo-bar");
+    }
+
+    #[test]
+    fn user_combined_with_run_id() {
+        let s = expand_kernel_slug(
+            "{user}/exp-{run_id}",
+            Some("01HABC"),
+            Some("alice"),
+        );
+        assert_eq!(s, "alice/exp-01habc");
+    }
+
+    #[test]
+    fn user_left_intact_when_unresolved() {
+        // Caller (provision) detects {user} surviving the expansion and
+        // surfaces a "no Kaggle username could be resolved" error rather
+        // than uploading under a literal {user} namespace.
+        let s = expand_kernel_slug("{user}/foo", None, None);
+        assert_eq!(s, "{user}/foo");
     }
 }
 
