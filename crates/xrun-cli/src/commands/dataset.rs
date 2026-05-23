@@ -157,7 +157,7 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
     let adapter = KaggleAdapter::new().with_credentials(creds.clone());
     let cli = adapter.cli();
 
-    let slug = ensure_owner_prefix(&args.slug, &creds, &cli)?;
+    let slug = ensure_owner_prefix(&args.slug, &creds, cli)?;
     if slug != args.slug {
         eprintln!(
             "Resolved slug: {} → {}  (owner prefix added from kaggle credentials)",
@@ -241,7 +241,7 @@ pub fn run_status(args: &DatasetStatusArgs, config_dir: &Path) -> Result<()> {
     let adapter = KaggleAdapter::new().with_credentials(creds.clone());
     let cli = adapter.cli();
 
-    let slug = ensure_owner_prefix(&args.slug, &creds, &cli)?;
+    let slug = ensure_owner_prefix(&args.slug, &creds, cli)?;
 
     let raw = cli
         .dataset_status_raw(&slug)
