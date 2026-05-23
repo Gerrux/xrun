@@ -174,10 +174,8 @@ impl KaggleAdapter {
                 continue;
             }
             match ev.stage.as_str() {
-                "queued" => {
-                    if highest.is_none() {
-                        highest = Some(KernelState::Queued);
-                    }
+                "queued" if highest.is_none() => {
+                    highest = Some(KernelState::Queued);
                 }
                 "running" => highest = Some(KernelState::Running),
                 _ => {}
