@@ -100,9 +100,8 @@ pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &P
                     if let Some(url) = g.mlflow.url.clone() {
                         let cred_load =
                             xrun_core::Credentials::load(config_dir).unwrap_or_default();
-                        let auth = crate::commands::launch::mlflow_auth_from_creds(
-                            &cred_load.mlflow,
-                        );
+                        let auth =
+                            crate::commands::launch::mlflow_auth_from_creds(&cred_load.mlflow);
                         adapter = adapter.with_mlflow(url, auth);
                     }
                 }

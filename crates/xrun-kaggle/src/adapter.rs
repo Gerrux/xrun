@@ -374,11 +374,8 @@ impl VendorAdapter for KaggleAdapter {
         // Show the slug the operator will see in `xrun ls`, not the raw
         // template. We don't have a `run_id` yet at dry-run time so `{run_id}`
         // expands to a fallback timestamp — that's fine, it's just for display.
-        let preview_slug = expand_kernel_slug(
-            &kaggle.kernel_slug,
-            None,
-            self.resolve_user().as_deref(),
-        );
+        let preview_slug =
+            expand_kernel_slug(&kaggle.kernel_slug, None, self.resolve_user().as_deref());
 
         Ok(DryRunPlan {
             gpu_query: format!(
@@ -1540,11 +1537,7 @@ mod slug_tests {
 
     #[test]
     fn user_combined_with_run_id() {
-        let s = expand_kernel_slug(
-            "{user}/exp-{run_id}",
-            Some("01HABC"),
-            Some("alice"),
-        );
+        let s = expand_kernel_slug("{user}/exp-{run_id}", Some("01HABC"), Some("alice"));
         assert_eq!(s, "alice/exp-01habc");
     }
 
