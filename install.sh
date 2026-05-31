@@ -150,8 +150,11 @@ ARCH="$(uname -m)"
 case "$OS" in
     Linux)
         case "$ARCH" in
-            x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
-            aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
+            x86_64)        TARGET="x86_64-unknown-linux-gnu" ;;
+            aarch64|arm64)
+                echo "Linux arm64 release asset is not published yet."
+                echo "Install from source instead: cargo install --git https://github.com/gerrux/xrun --branch master xrun-cli"
+                exit 1 ;;
             *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
         esac
         ;;
