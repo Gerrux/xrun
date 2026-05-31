@@ -242,19 +242,35 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
         });
     }
 
-    // ---- claude integration ----
-    let (skill_ok, skill_detail) = check_claude_skill();
+    // ---- agent integrations ----
+    let (skill_ok, skill_detail) = check_project_skill(".codex/skills/xrun/SKILL.md");
     checks.push(Check {
-        name: "claude_skill",
-        category: "claude",
+        name: "codex_skill",
+        category: "agents",
         ok: skill_ok,
         warn_only: true,
         detail: skill_detail,
     });
-    let (claude_md_ok, claude_md_detail) = check_project_claude_md();
+    let (agents_ok, agents_detail) = check_project_instruction_file("AGENTS.md");
+    checks.push(Check {
+        name: "agents_md",
+        category: "agents",
+        ok: agents_ok,
+        warn_only: true,
+        detail: agents_detail,
+    });
+    let (skill_ok, skill_detail) = check_project_skill(".claude/skills/xrun/SKILL.md");
+    checks.push(Check {
+        name: "claude_skill",
+        category: "agents",
+        ok: skill_ok,
+        warn_only: true,
+        detail: skill_detail,
+    });
+    let (claude_md_ok, claude_md_detail) = check_project_instruction_file("CLAUDE.md");
     checks.push(Check {
         name: "claude_md",
-        category: "claude",
+        category: "agents",
         ok: claude_md_ok,
         warn_only: true,
         detail: claude_md_detail,
@@ -496,42 +512,27 @@ fn check_python_hook() -> bool {
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
-fn home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
-fn check_claude_skill() -> (bool, String) {
-    let Some(home) = home_dir() else {
-        return (false, "could not resolve home directory".to_string());
+fn check_project_skill(relative: &str) -> (bool, String) {
+    let cwd = std::env::current_dir().ok();
+    let Some(skill_path) = cwd.as_deref().map(|d| d.join(relative)) else {
+        return (false, "could not resolve cwd".to_string());
     };
-    let skill_path = home
-        .join(".claude")
-        .join("skills")
-        .join("xrun")
-        .join("SKILL.md");
     if skill_path.is_file() {
         (true, format!("installed at {}", skill_path.display()))
     } else {
         (
             false,
             format!(
-                "not installed at {} (cp docs/SKILL.md → that path to enable)",
+                "not installed at {} (run `xrun install skill --codex` or `--claude`)",
                 skill_path.display()
             ),
         )
     }
 }
 
-fn check_project_claude_md() -> (bool, String) {
+fn check_project_instruction_file(name: &str) -> (bool, String) {
     let cwd = std::env::current_dir().ok();
-    let candidate = cwd.as_deref().map(|d| d.join("CLAUDE.md"));
+    let candidate = cwd.as_deref().map(|d| d.join(name));
     match candidate {
         Some(p) if p.is_file() => (true, format!("found at {}", p.display())),
         Some(p) => (false, format!("not found at {}", p.display())),

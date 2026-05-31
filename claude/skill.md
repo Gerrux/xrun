@@ -24,9 +24,8 @@ Then branch on what the user actually wants:
 
 **If the user wants a vendor that needs creds and they aren't set:**
 do NOT try to write `credentials.toml` yourself, and do NOT try to launch
-the wizard from Claude Code's bash — `xrun init` requires a TTY and will
-exit immediately under Claude Code (no `!` workaround works; Claude Code's
-shell is not a TTY).
+the wizard from a non-interactive agent shell - `xrun init` requires a TTY
+and exits immediately under non-TTY harnesses.
 
 Tell the user, in plain text, to **open a separate terminal** and run:
 
@@ -35,9 +34,9 @@ xrun init
 ```
 
 That gives the interactive Textual wizard. After it exits, the user comes
-back to Claude Code; you re-run `xrun doctor --json` and proceed.
+back to the agent; you re-run `xrun doctor --json` and proceed.
 
-If the user pastes a key into chat and asks Claude to set it, prefer the
+If the user pastes a key into chat and asks the agent to set it, prefer the
 non-interactive form (no TTY needed, key never echoed back):
 
 ```bash
@@ -213,13 +212,14 @@ xrun init             # first-run wizard (TUI), or non-interactive flags
 Navigation: `g r` Runs · `g v` Vendors · `g s` Settings · `g h` Doctor ·
 `?` Help · `:` Command palette · `q`/`Esc` back/exit.
 
-In Claude Code, do **not** try `! xrun` or `! xrun init` — the embedded
-shell has no TTY and the TUI exits immediately. Ask the user to open a
-separate terminal window and run `xrun` / `xrun init` themselves.
+In non-interactive agent shells, do **not** try to force `xrun` or
+`xrun init` through shell escapes - the embedded shell has no TTY and the
+TUI exits immediately. Ask the user to open a separate terminal window and
+run `xrun` / `xrun init` themselves.
 
 ## Docs
 
 - `docs/CLI.md` — all commands and flags
 - `docs/MANIFEST.md` — full YAML schema
 - `docs/EVENTS.md` — events.jsonl protocol + xrun_hook
-- `CLAUDE.md` — project overview for Claude Code
+- `AGENTS.md` / `CLAUDE.md` - project overview for the active agent harness

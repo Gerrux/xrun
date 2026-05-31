@@ -162,7 +162,16 @@ fn run() -> Result<()> {
         Some(Commands::InitManifest(args)) => {
             xrun_cli::commands::init_manifest::run(&args)?;
         }
+        Some(Commands::Install(args)) => {
+            xrun_cli::commands::install::run(&args)?;
+        }
+        Some(Commands::Update(args)) => {
+            xrun_cli::commands::update::run(&args)?;
+        }
         Some(Commands::Tui) => {
+            if xrun_cli::commands::update::maybe_prompt_on_startup()? {
+                return Ok(());
+            }
             #[cfg(feature = "tui")]
             {
                 let ctx = get_data_ctx()?;
@@ -179,6 +188,9 @@ fn run() -> Result<()> {
         None => {
             use std::io::IsTerminal;
             if std::io::stdout().is_terminal() {
+                if xrun_cli::commands::update::maybe_prompt_on_startup()? {
+                    return Ok(());
+                }
                 let status = std::process::Command::new("xrun-tui")
                     .status()
                     .map_err(|e| {

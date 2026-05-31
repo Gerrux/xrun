@@ -11,6 +11,25 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.1] - 2026-06-01
+
+### Added
+
+- `xrun install skill --codex|--claude` installs repository-local agent
+  instructions for Codex and Claude.
+- Installers now install the Python TUI by default, check for Python 3.11+
+  and pip, and can try `ensurepip` via `--install-pip` / `-InstallPip`.
+- `xrun update` checks GitHub Releases, prompts before installing, and runs
+  the official installer. Interactive `xrun` startup also prompts when a
+  newer release exists; set `XRUN_NO_UPDATE_CHECK=1` to skip that check.
+
+### Changed
+
+- Installer and README links now target the `master` branch.
+- The xrun agent skill text is harness-neutral instead of Claude-only.
+
+---
+
 ## [0.7.0] — 2026-05-05
 
 Pluggable metric sinks. WandB joins MLflow as a first-class fan-out

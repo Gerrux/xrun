@@ -22,64 +22,124 @@ xrun pull <id> --ckpt best               # download the best checkpoint
 ### macOS / Linux
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh
 ```
 
-Installs to `~/.local/bin/xrun`. Pass `--prefix /usr/local` to change the location.
+Installs `xrun` to `~/.local/bin/xrun` and installs the Python TUI (`xrun-tui`)
+with `pip --user`. Pass `--prefix /usr/local` to change the binary location.
+
+If Python 3.11+ is present but pip is missing, let the installer try
+`python -m ensurepip --upgrade`:
+
+```sh
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --install-pip
+```
+
+For CLI-only install without the TUI:
+
+```sh
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --no-tui
+```
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/gerrux/xrun/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1 | iex
 ```
 
-Installs to `%LOCALAPPDATA%\xrun\bin\xrun.exe` and adds it to your user `PATH`.
+Installs `xrun.exe` to `%LOCALAPPDATA%\xrun\bin\xrun.exe`, adds it to your user
+`PATH`, and installs the Python TUI (`xrun-tui`) with `pip --user`.
+
+If Python 3.11+ is present but pip is missing:
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -InstallPip
+```
+
+For CLI-only install without the TUI:
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -NoTui
+```
 
 ### Specific version
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh -s -- --version v0.4.0
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.7.1
 ```
 
 ### From source
 
 ```sh
-cargo install --git https://github.com/gerrux/xrun xrun-cli
+cargo install --git https://github.com/gerrux/xrun --branch master xrun-cli
 ```
 
-### Python TUI (optional)
+### Python TUI
 
-The interactive TUI is a separate Python package:
+The install scripts install the TUI by default because `xrun` without arguments
+opens it on a TTY. To install or repair only the TUI:
 
 ```sh
-pip install git+https://github.com/gerrux/xrun.git#subdirectory=python/xrun_tui
-# or from a local clone:
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --tui-only
+```
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -TuiOnly
+```
+
+From a local clone during development:
+
+```sh
 pip install -e python/xrun_tui
 ```
 
-After install, `xrun` without arguments opens the TUI automatically (when stdout is a TTY).
+After install, `xrun` without arguments opens the TUI automatically when stdout is a TTY.
 
-### Claude Code skill (optional)
+### Updates
 
-Teaches Claude Code how to use xrun correctly — which commands to call, how to parse output, what to avoid.
+On interactive startup (`xrun` or `xrun tui`), xrun checks GitHub Releases for a
+newer version. If one is available, it shows a confirmation prompt before
+running the official installer.
+
+```sh
+xrun update --check   # check only
+xrun update           # ask, then install
+xrun update --yes     # install without prompt
+```
+
+Use `xrun update --no-tui` to update only the Rust CLI. Set
+`XRUN_NO_UPDATE_CHECK=1` to disable the startup check in scripted environments.
+
+### Agent skill (optional)
+
+Teaches Codex or Claude Code how to use xrun correctly — which commands to call, how to parse output, what to avoid.
+
+For a repository-local install, run this inside the project that uses xrun:
+
+```sh
+xrun install skill --codex   # writes .codex/skills/xrun/SKILL.md + AGENTS.md
+xrun install skill --claude  # writes .claude/skills/xrun/SKILL.md + CLAUDE.md
+```
+
+The legacy global Claude installer is still available:
 
 ```sh
 # macOS / Linux — install binary + skill together
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh -s -- --with-skill
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --with-skill
 
 # skill only (if xrun is already installed)
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/main/install.sh | sh -s -- --skill-only
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --skill-only
 ```
 
 ```powershell
 # Windows — install binary + skill together
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/main/install.ps1'))) -WithSkill
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -WithSkill
 
 # skill only
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/main/install.ps1'))) -SkillOnly
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -SkillOnly
 ```
 
-The skill is installed to `~/.claude/skills/xrun/SKILL.md` and picked up automatically by Claude Code in any project.
+The global installer writes `~/.claude/skills/xrun/SKILL.md`.
 
 ---
 
@@ -266,7 +326,9 @@ The background poll-daemon monitors spend and destroys the instance automaticall
 
 **For the TUI:**
 - Python ≥ 3.11
-- `pip install -e python/xrun_tui` (or via git URL above)
+- pip for that Python. The install scripts can try `ensurepip` via
+  `--install-pip` / `-InstallPip`.
+- For local development: `pip install -e python/xrun_tui`
 
 **Building from source:**
 - Rust stable (≥ 1.75) — [install via rustup](https://rustup.rs)
@@ -288,7 +350,7 @@ The background poll-daemon monitors spend and destroys the instance automaticall
 
 ---
 
-## Status: v0.4.0
+## Status: v0.7.1
 
 - ✅ vast.ai: provision, upload, exec, poll, pull, destroy
 - ✅ Kaggle: kernel push, status poll, output download
@@ -298,8 +360,8 @@ The background poll-daemon monitors spend and destroys the instance automaticall
 - ✅ Python Textual TUI: 16 screens, chord navigation, Tokyo Night theme
 - ✅ `xrun events --follow`, `xrun logs --follow`
 - ✅ Install scripts for macOS, Linux, Windows
-- ✅ Claude Code skill (`claude/skill.md`)
-- ⏳ `xrun sweep` — hyperparameter grid (v0.5 backlog)
+- ✅ Agent skill (`xrun install skill --codex` / `--claude`)
+- ✅ `xrun sweep` — hyperparameter grid
 
 ---
 

@@ -257,6 +257,56 @@ max_per_hour_usd = 0.6
 --no-color
 ```
 
+## `xrun install skill`
+
+Устанавливает project-local skill/instructions для agent harness в текущий репозиторий:
+
+```bash
+xrun install skill --codex
+xrun install skill --claude
+```
+
+Codex target пишет `.codex/skills/xrun/SKILL.md` и добавляет pointer в `AGENTS.md`.
+Claude target пишет `.claude/skills/xrun/SKILL.md` и добавляет pointer в `CLAUDE.md`.
+
+Флаги:
+
+```
+--repo <DIR>    установить в другой репозиторий вместо текущего каталога
+--force         перезаписать существующий SKILL.md
+```
+
+## `xrun update`
+
+Проверяет GitHub Releases и устанавливает свежий `xrun` через официальный installer.
+
+```bash
+xrun update --check
+xrun update
+xrun update --yes
+```
+
+При интерактивном запуске `xrun` без аргументов и `xrun tui` проверка выполняется
+до открытия TUI. Если доступна новая версия, CLI показывает подтверждение
+`Install update? [y/N]`. После подтверждения запускается installer и процесс
+`xrun` завершается, чтобы новая версия стартовала чисто. На Windows updater
+запускается отдельным PowerShell-процессом, потому что запущенный `xrun.exe`
+нельзя заменить на месте.
+
+Флаги:
+
+```
+--check         только проверить наличие обновления
+-y, --yes      установить без подтверждения
+--no-tui       обновить только CLI, не трогать Python TUI
+```
+
+Отключить startup-check для CI/скриптов:
+
+```bash
+XRUN_NO_UPDATE_CHECK=1 xrun
+```
+
 ## Идиомы для skill
 
 ```bash

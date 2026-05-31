@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::commands::{
     config_cmd::ConfigArgs, cp::CpArgs, dataset::DatasetSubcommand, init::InitArgs,
-    init_manifest::InitManifestArgs,
+    init_manifest::InitManifestArgs, install::InstallArgs, update::UpdateArgs,
 };
 
 #[derive(Parser)]
@@ -89,6 +89,10 @@ pub enum Commands {
     /// `grep TODO_` lights up everything that needs review before launch.
     #[command(name = "init-manifest")]
     InitManifest(InitManifestArgs),
+    /// Install xrun agent skills/instructions into the current repository
+    Install(InstallArgs),
+    /// Check for and install a newer xrun release
+    Update(UpdateArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)

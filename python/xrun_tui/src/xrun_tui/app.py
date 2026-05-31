@@ -13,7 +13,7 @@ from xrun_tui import config
 from xrun_tui.db import Database, find_db_path
 from xrun_tui.themes import write_theme_for_app
 
-XRUN_VERSION = "0.7.0"
+XRUN_VERSION = "0.7.1"
 
 # Map: chord-leader → {key → action_name (without the "action_" prefix)}
 _CHORDS: dict[str, dict[str, str]] = {

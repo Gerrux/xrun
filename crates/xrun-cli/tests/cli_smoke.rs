@@ -90,6 +90,46 @@ fn init_probe_local_emits_json() {
 }
 
 #[test]
+fn install_skill_codex_writes_project_files() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["install", "skill", "--codex"])
+        .assert()
+        .success()
+        .stdout(contains("Codex"));
+
+    let skill = dir.path().join(".codex/skills/xrun/SKILL.md");
+    let agents = dir.path().join("AGENTS.md");
+    assert!(skill.exists(), "missing {}", skill.display());
+    assert!(agents.exists(), "missing {}", agents.display());
+    let skill_body = std::fs::read_to_string(skill).unwrap();
+    assert!(skill_body.contains("# xrun skill"));
+    let agents_body = std::fs::read_to_string(agents).unwrap();
+    assert!(agents_body.contains("<!-- xrun-skill -->"));
+}
+
+#[test]
+fn install_skill_claude_writes_project_files() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["install", "skill", "--claude"])
+        .assert()
+        .success()
+        .stdout(contains("Claude"));
+
+    let skill = dir.path().join(".claude/skills/xrun/SKILL.md");
+    let claude_md = dir.path().join("CLAUDE.md");
+    assert!(skill.exists(), "missing {}", skill.display());
+    assert!(claude_md.exists(), "missing {}", claude_md.display());
+    let claude_body = std::fs::read_to_string(claude_md).unwrap();
+    assert!(claude_body.contains(".claude/skills/xrun/SKILL.md"));
+}
+
+#[test]
 fn init_non_interactive_marks_completed_and_writes_sinks() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("xrun")
