@@ -140,7 +140,7 @@ fn metric_line(key: &str, step: i64, value: f64) -> Vec<u8> {
 fn join_lines(lines: &[Vec<u8>]) -> Vec<u8> {
     lines
         .iter()
-        .flat_map(|l| l.iter().copied().chain([b'\n']))
+        .flat_map(|l| l.iter().copied().chain(*b"\n"))
         .collect()
 }
 

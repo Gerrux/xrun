@@ -154,7 +154,7 @@ fn metric(key: &str, step: i64, value: &str) -> Vec<u8> {
 
 fn lines(v: &[Vec<u8>]) -> Vec<u8> {
     v.iter()
-        .flat_map(|l| l.iter().copied().chain([b'\n']))
+        .flat_map(|l| l.iter().copied().chain(*b"\n"))
         .collect()
 }
 
