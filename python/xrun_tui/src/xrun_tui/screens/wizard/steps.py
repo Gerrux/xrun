@@ -288,7 +288,54 @@ async def _mount_mlflow_form(screen: "WizardScreen", container: Vertical) -> Non
         ))
 
 
-# ── Step 4: recap ────────────────────────────────────────────────────────────
+# ── Step 4: notifications ────────────────────────────────────────────────────
+
+
+async def render_notify(screen: "WizardScreen", body: Vertical) -> None:
+    await body.mount(Static(
+        "[bold #c0caf5]Step 4 — Notifications[/]\n\n"
+        "[#565f89]Get a push on your phone when a run finishes, fails, or is "
+        "about to blow its budget — so you can leave a paid GPU unattended. "
+        "Recommended: [/][bold]ntfy[/][#565f89] (free, no account). More "
+        "channels (Telegram, Slack/Discord) live in [/][bold]g n[/][#565f89] later.[/]",
+        classes="wizard-text",
+    ))
+    existing = "ntfy" in screen._existing_notify
+    label = "ntfy — push to phone"
+    if existing:
+        label += "  [● configured]"
+    cb = Checkbox(label, value=screen._notify_ntfy, id="wiz-notify-cb-ntfy")
+    await body.mount(cb)
+    nform = Vertical(id="wiz-notify-form", classes="wizard-ssh-form")
+    nform.display = screen._notify_ntfy
+    await body.mount(nform)
+    await nform.mount(Static(
+        "[#565f89]1) Install the ntfy app (Android / iOS) or open ntfy.sh in a "
+        "browser.  2) Subscribe to the topic below.  3) Done — the topic is the "
+        "secret, so keep it random. Press [/][bold]o[/][#565f89] to open ntfy.sh.[/]",
+        classes="wizard-text",
+    ))
+    await nform.mount(Static(" Docs ↗  ntfy.sh ", id="wiz-open-ntfy", classes="wizard-link-btn"))
+    await nform.mount(Input(
+        value=screen._notify_topic,
+        placeholder="topic (generated for you — change if you like)",
+        id="wiz-notify-topic",
+        classes="wizard-input",
+    ))
+    await body.mount(Checkbox(
+        "Desktop toast on this machine (no setup)",
+        value=screen._notify_desktop,
+        id="wiz-notify-cb-desktop",
+    ))
+    await body.mount(Static(
+        "[#565f89]Skip this step any time — nothing is sent until a channel is on. "
+        "Watchdog scheduling (catches a dead poller while the instance keeps "
+        "billing) is one keypress in [/][bold]g n[/][#565f89].[/]",
+        classes="wizard-text",
+    ))
+
+
+# ── Step 5: recap ────────────────────────────────────────────────────────────
 
 
 async def render_recap(screen: "WizardScreen", body: Vertical) -> None:
@@ -340,8 +387,14 @@ async def render_recap(screen: "WizardScreen", body: Vertical) -> None:
 
     gpu_line = (f"[#9ece6a]{len(screen._probe.get('gpus', []))} detected[/]"
                 if screen._probe.get("gpus") else "[#e0af68]none[/]")
+    notify_bits = []
+    if screen._notify_ntfy and screen._notify_topic:
+        notify_bits.append(f"[#9ece6a]ntfy[/] [#565f89]{screen._notify_topic}[/]")
+    if screen._notify_desktop:
+        notify_bits.append("[#9ece6a]desktop[/]")
+    notify_line = ", ".join(notify_bits) if notify_bits else "[#414868]off[/]"
     lines = [
-        "[bold #c0caf5]Step 4 — Recap[/]",
+        "[bold #c0caf5]Step 5 — Recap[/]",
         "",
         f"[#565f89]Local GPU:[/]      {gpu_line}",
         f"[#565f89]Vendors:[/]        "
@@ -356,6 +409,7 @@ async def render_recap(screen: "WizardScreen", body: Vertical) -> None:
         + (", ".join(f"[#9ece6a]{s}[/]" for s in sinks)
            if sinks else "[#414868]none[/]"),
         f"[#565f89]MLflow:[/]         {mlflow_line}",
+        f"[#565f89]Notifications:[/]  {notify_line}",
         "",
         "[#565f89]Pressing [/][bold]Finish[/][#565f89] writes the config and "
         "marks the wizard as done. Re-run any time with[/] [bold]xrun init[/][#565f89].[/]",
@@ -557,7 +611,7 @@ def _probe_targets(screen: "WizardScreen") -> list[dict]:
 
 
 def stepper_markup(step: int, n_steps: int) -> str:
-    labels = ["Local", "Vendors", "Logging", "Done"]
+    labels = ["Local", "Vendors", "Logging", "Notify", "Done"]
     cells = []
     for i, lbl in enumerate(labels):
         if i < step:

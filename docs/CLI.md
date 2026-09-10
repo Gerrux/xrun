@@ -343,6 +343,122 @@ kaggle kernels push -k ...
 
 См. [SKILL.md](SKILL.md).
 
+### `xrun notify test|send|log|kinds`
+Push-уведомления. Poll-daemon шлёт их сам (run done/failed, budget
+thresholds, NaN loss, auto-destroy, cleanup failed); `xrun watchdog` — про
+мёртвый поллер и orphan-инстансы. Эта команда — проверить канал до того,
+как оставить инстанс без присмотра, и прочитать журнал.
+
+```
+xrun notify test [--channel <name>] [--json]   тестовое сообщение во все каналы; exit 1 если
+                                              каналов нет или хоть один упал
+xrun notify send <title> [-b body] [--run id] [--priority low|default|high|urgent]
+xrun notify log [--run id] [--limit n] [--json] журнал доставок (notify_log в SQLite)
+xrun notify kinds [--json]                     список kinds для [notify].events
+```
+
+Самый простой путь — TUI: `xrun` → `g n` (или визард при первом запуске,
+шаг 4). Карточки каналов, топик ntfy генерируется сам, chat id Telegram
+определяется кнопкой Detect, `t` шлёт тест. CLI-эквивалент (каналы в
+`config.toml`, секреты в `credentials.toml`):
+
+```bash
+xrun config set notify.channels ntfy,telegram,desktop
+xrun config set ntfy.topic <random-topic>          # https://ntfy.sh, приложение на телефон
+xrun config set ntfy.url https://ntfy.example.com  # self-hosted (опционально)
+xrun config set ntfy.token tk_...                  # защищённый topic (опционально)
+xrun config set telegram.bot_token 123:ABC         # @BotFather
+xrun config set telegram.chat_id 42                # getUpdates после первого сообщения боту
+xrun config set webhook.url https://hooks.slack.com/...   # Slack/Discord/свой JSON endpoint
+xrun notify test
+```
+
+`[notify]` в `config.toml`:
+
+```toml
+[notify]
+channels = ["ntfy"]
+events = ["*"]              # или ["run.failed", "budget.*", "poller.dead"]
+cost_warn_pct = [50, 80]    # budget.warn на этих % от --max-cost, по одному разу
+heartbeat_stale_min = 5     # для xrun watchdog
+dedupe_min = 60             # один и тот же dedupe_key не чаще раза в N минут
+```
+
+Настройки применяются **без перезапуска**: poll-daemon следит за mtime
+`config.toml` / `credentials.toml` и пересобирает каналы в течение одного
+тика (не чаще раза в 5 с). Канал, включённый в TUI посреди обучения,
+получит `run.done` этого же рана. Уже отправленные пороги `budget.warn`
+не повторяются.
+
+Kinds: `run.done`, `run.failed`, `run.idle`, `run.early_stopped`
+(`policy.early_stop`), `budget.warn`, `budget.auto_destroyed`,
+`budget.daily`, `budget.monthly`, `instance.cleanup_failed`,
+`instance.orphan`, `metric.anomaly` (NaN/inf или loss > 10× running-min
+после 10 точек), `poller.dead`, `user` (`xrun_hook.notify`, фильтру не
+подчиняется). Каждый канал best-effort: падение одного не
+блокирует остальные и не ломает поллер.
+
+### `xrun watchdog [flags]`
+Проверка, которую поллер не может сделать сам: жив ли он. Для каждого
+`running`-рана смотрит PID и `poller_heartbeat_at` (поллер штампует его
+каждый тик). Мёртвый → `poller.dead` уведомление + respawn (тот же путь,
+что `xrun resume`). Живой PID, но heartbeat старше `heartbeat_stale_min`
+→ `HUNG`, уведомление без respawn. Плюс инстансы с `price_per_hour`, не
+уничтоженные и без живого рана → `instance.orphan` (ничего не удаляет —
+это `xrun gc`).
+
+```
+--dry-run           только отчёт: без respawn, уведомлений и команд
+--no-respawn        уведомить, но не поднимать поллер
+--stale-min <MIN>   override [notify].heartbeat_stale_min
+--no-vendor         не ходить в API вендора за списком инстансов
+--no-commands       не обрабатывать Telegram-команды
+--json
+```
+
+Плюс кросс-проверка с вендором (vast, если есть ключ): инстанс, который
+жив у вендора, но отсутствует в БД или уже помечен там уничтоженным →
+`instance.orphan` с `source: vendor`. Это самый дорогой сценарий
+(инстанс создан, а запись в SQLite не успела) — локально его не увидеть.
+
+#### Команды из Telegram
+
+Если настроен канал `telegram`, watchdog на каждом проходе читает
+сообщения боту (`getUpdates`) и выполняет команды из **того же чата**,
+что в `telegram.chat_id`; остальные чаты игнорируются и считаются.
+
+```
+/status          running-раны: имя, id, время, стоимость, heartbeat
+/stop <id>       xrun stop — graceful stop + destroy (id — последние 8 символов)
+/pull <id>       xrun pull --ckpt best
+/help
+```
+
+Курсор `update_id` хранится в `<data_dir>/telegram.offset` и
+сдвигается до выполнения, чтобы `/stop` не повторился при падении или
+двух параллельных watchdog'ах (TUI + планировщик). Задержка = период
+watchdog: до 5 мин из планировщика, до 60 с при открытом TUI.
+
+Запускать раз в 5 минут из планировщика. TUI делает то же самое каждые
+60 с, пока открыт; дедуп по `notify_log` не даёт пингануть дважды.
+
+```
+xrun watchdog schedule [--json]                статус записи в планировщике (read-only)
+xrun watchdog schedule --install [--every-min 5]   зарегистрировать (schtasks на Windows,
+                                               crontab на Linux/macOS); путь к бинарю абсолютный
+xrun watchdog schedule --remove                удалить запись
+```
+
+То же самое одной клавишей в TUI: `g n` → карточка Watchdog → Enter.
+Ручной вариант, если планировщик нестандартный:
+
+```bash
+# Windows (Task Scheduler)
+schtasks /Create /SC MINUTE /MO 5 /TN xrun-watchdog /TR "xrun watchdog" /F
+# Linux / macOS (crontab -e)
+*/5 * * * * xrun watchdog >/dev/null 2>&1
+```
+
 ### `xrun __poll-daemon <run-id>` (hidden)
 
 Внутренняя команда, запускаемая автоматически при `--detach`. Запускает поллер событий/метрик в фоне для уже запущенного run.
@@ -388,6 +504,9 @@ xrun __poll-daemon <run-id>   # вручную из терминала, foregrou
 | `xrun doctor --all` | ✅ | Запускает все проверки даже для не сконфигурированных вендоров |
 | `xrun config probe` | ✅ | Probe вендора без записи на диск; вход через `XRUN_PROBE_*` env vars |
 | `xrun metrics --per-key --png` | ✅ | Auto-grid PNG, один subplot на ключ |
+| `xrun notify test/send/log/kinds` | ✅ | Push: ntfy / Telegram / webhook / desktop; журнал в SQLite |
+| `xrun watchdog` | ✅ | Мёртвый/зависший поллер + orphan-инстансы → уведомление + respawn |
+| `xrun watchdog schedule` | ✅ | `--install/--remove/--status`: schtasks (Windows) / crontab |
 
 ### TUI
 

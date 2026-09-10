@@ -65,7 +65,7 @@ For CLI-only install without the TUI:
 ### Specific version
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.7.2
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.8.0
 ```
 
 ### From source
@@ -285,6 +285,29 @@ xrun launch exp/foo.yaml \
 
 The background poll-daemon monitors spend and destroys the instance automatically, writing `auto_destroyed_reason` to the local DB.
 
+## Notifications
+
+In the TUI: `xrun` → `g n`. Pick a channel card, press Enter, Save & test.
+The ntfy topic is generated for you; Telegram's chat id is detected with one
+button; the Watchdog card registers the scheduler entry. The first-run wizard
+has the same as step 4. CLI equivalent:
+
+```sh
+xrun config set notify.channels ntfy,desktop   # also: telegram, webhook (Slack/Discord)
+xrun config set ntfy.topic my-random-topic     # subscribe in the ntfy app
+xrun notify test                               # exit 1 = fix the channel before launching
+xrun watchdog schedule --install               # every 5 min via schtasks / crontab
+```
+
+The poll-daemon then pushes: run done / failed / idle, 50 % and 80 % of
+`--max-cost`, auto-destroy, "could not destroy instance, still billing",
+NaN or exploding loss, `policy.early_stop` plateau stops, and whatever your
+script sends via `xrun_hook.notify(...)`. Reply `/stop <id>` to the Telegram
+bot and the watchdog kills the run. `xrun watchdog` (run it every 5 min from cron / Task
+Scheduler, and the TUI runs it every 60 s) catches the one thing the daemon
+cannot report: its own death while the instance keeps billing, plus orphan
+instances. `xrun notify log` shows what was sent where.
+
 ---
 
 ## Architecture
@@ -350,13 +373,14 @@ The background poll-daemon monitors spend and destroys the instance automaticall
 
 ---
 
-## Status: v0.7.2
+## Status: v0.8.0
 
 - ✅ vast.ai: provision, upload, exec, poll, pull, destroy
 - ✅ Kaggle: kernel push, status poll, output download
 - ✅ Live events and metrics in SQLite
 - ✅ MLflow mirror (metrics + UI link)
 - ✅ Budget guards (caps, auto-destroy, spend dashboard)
+- ✅ Push notifications (ntfy / Telegram / webhook / desktop) + `xrun watchdog`
 - ✅ Python Textual TUI: 16 screens, chord navigation, Tokyo Night theme
 - ✅ `xrun events --follow`, `xrun logs --follow`
 - ✅ Install scripts for macOS, Linux, Windows

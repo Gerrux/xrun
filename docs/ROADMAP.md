@@ -405,6 +405,73 @@ artifacts API для checkpoint-uploads. TensorBoard sink — backlog.
 - Sweep-интеграция с WandB Sweeps API (отложено в v0.9).
 - TensorBoard sink (минорный спрос; можно отдельно после v0.8).
 
+## v0.8.1 — Push notifications + watchdog ✅ done (2026-09-10)
+
+**Цель**: контроль обучения и денег, когда пользователь не за терминалом.
+Уведомления живут там, где живёт вся информация — в poll-daemon; внешний
+`xrun watchdog` закрывает единственный случай, о котором поллер не может
+сообщить сам: собственную смерть при живом инстансе.
+
+### Scope
+
+- [x] `crates/xrun-notify/`: `Notification`/`Kind`/`Priority`, каналы
+      `ntfy` (JSON publish, bearer), `telegram` (sendMessage), `webhook`
+      (Slack `text` + Discord `content` в одном payload), `desktop`
+      (notify-rust, feature `desktop` по умолчанию). Фильтр
+      `[notify].events` (`*`, exact, `prefix.*`), дедуп по `notify_log`,
+      журналирование каждой доставки. Wiremock-тесты.
+- [x] `anomaly::AnomalyDetector`: NaN/inf на любом ключе, loss-spike
+      (>10× running-min после 10 точек), один раз на ключ. Парсер
+      metrics.jsonl восстанавливает Python-овские bare `NaN`/`Infinity`
+      (раньше такие строки молча дропались) — в SQLite они по-прежнему
+      не пишутся.
+- [x] Poller hooks: `run.done` (duration + cost + `xrun pull`),
+      `run.failed` (stage + msg / PID gone), `run.idle`, `budget.warn`
+      на `[notify].cost_warn_pct` (50/80 по умолчанию, по одному разу),
+      `budget.auto_destroyed`, `budget.daily`, `instance.cleanup_failed`
+      (urgent — инстанс всё ещё биллится), `metric.anomaly`. Heartbeat
+      `runs.poller_heartbeat_at` каждый тик.
+- [x] Schema 007: `notify_log` + `runs.poller_heartbeat_at`.
+- [x] Config: `[notify] channels/events/cost_warn_pct/heartbeat_stale_min/
+      dedupe_min`; креды `[ntfy] url/topic/token`, `[telegram]
+      bot_token/chat_id`, `[webhook] url` через `xrun config set`
+      (numeric arrays теперь коэрсятся в `config set`).
+- [x] `xrun notify test|send|log|kinds`, `xrun watchdog
+      [--dry-run|--no-respawn|--stale-min|--json]`.
+- [x] TUI: 60-с тик вызывает `watchdog --json` вместо `resume --json`
+      (fallback на resume для старого бинаря); orphan-инстансы всплывают
+      toast'ом; экран Notifications (`n`) показывает журнал push-доставок
+      рядом с in-app историей.
+
+- [x] UI-настройка (тот же день): TUI-экран `g n` с карточками каналов
+      (ntfy — топик генерируется; Telegram — chat id через Detect;
+      Webhook; Desktop), формы Save & test, пресеты правил (all /
+      problems / money), карточка Watchdog → `xrun watchdog schedule
+      --install/--remove` (schtasks / crontab). Шаг «Notify» в first-run
+      визарде. `n` (история) → `s` ведёт в setup.
+- [x] Hot-reload: `Poller::with_notify_reload(config_dir)` — mtime-probe
+      раз в ≤5 с, пересборка `Notifier` без рестарта демона; латчи
+      порогов сохраняются. Wiremock-тест в `notify_hooks.rs`.
+- [x] `config.write_credentials` в TUI научился вложенным таблицам
+      (`[ssh.<alias>]`) — раньше сохранение из любого экрана могло их
+      сплющить.
+
+- [x] Фиксы по деньгам: `monthly_budget_usd` реально проверяется
+      (`budget.monthly_exceeded`, soft); `mirror.finish(Failed)` на путях
+      cost-cap / daily-hard / idle; watchdog кросс-чек с vast
+      (`instance.orphan` source=vendor).
+- [x] `policy.early_stop` (metric/patience/mode/min_delta/pull): pull →
+      destroy → `done` → `run.early_stopped`. Тесты max/min/min_delta.
+- [x] Telegram-команды `/status`, `/stop`, `/pull` через watchdog
+      (`telegram_ctl.rs`, offset-файл, только свой chat_id).
+- [x] `xrun_hook.notify()` → kind `user`, мимо фильтра.
+
+### Не входит
+
+- Sweep-дайджест (нужен `sweep_id` в БД — backlog v0.9).
+- Доп. каналы (Pushover, email, Matrix); launchd на macOS (сейчас cron).
+- Anomaly: overfit detection (train↓ val↑), per-manifest пороги.
+
 ## v0.9+ (backlog)
 - RunPod (`crates/xrun-runpod/`): REST + SSH, копия `xrun-vast` с другим API.
 - Lambda Labs (`crates/xrun-lambda/`): REST + SSH; стабильные цены, проще
@@ -412,7 +479,9 @@ artifacts API для checkpoint-uploads. TensorBoard sink — backlog.
 - Lightning AI (`crates/xrun-lightning/`): poll-стиль (как Kaggle), 80
   GPU-ч/мес бесплатно — нужна проверка REST.
 - `xrun diff <run-a> <run-b>` — манифесты + метрики side-by-side.
-- Anomaly detection в poller (loss взлетел → notification).
+- Anomaly detection: plateau / overfit / per-manifest пороги (NaN и loss
+  spike — уже в v0.8.1).
+- Notify-каналы: Pushover, email (SMTP), Matrix; wizard-форма.
 - Cost forecasting (по средней стоимости похожих ранов).
 - Native vast.ai REST вместо CLI subprocess (стабильнее на ошибках).
 - Web UI рядом с TUI (тот же state, для шаринга по сети).

@@ -441,3 +441,171 @@ fn init_non_interactive_rejects_unknown_sink() {
         .failure()
         .stderr(contains("unknown sink"));
 }
+
+// ---------------------------------------------------------------------------
+// xrun notify / xrun watchdog
+// ---------------------------------------------------------------------------
+
+#[test]
+fn notify_kinds_lists_every_kind() {
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .args(["notify", "kinds"])
+        .assert()
+        .success()
+        .stdout(contains("run.done"))
+        .stdout(contains("poller.dead"))
+        .stdout(contains("instance.cleanup_failed"));
+}
+
+#[test]
+fn notify_test_without_channels_exits_1_with_hint() {
+    let dir = init_dir();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["notify", "test"])
+        .assert()
+        .failure()
+        .stdout(contains("no channels configured"))
+        .stdout(contains("xrun config set notify.channels"));
+}
+
+#[test]
+fn notify_channel_config_and_creds_roundtrip_without_leaking() {
+    let dir = init_dir();
+    set(&dir, "notify.channels", "ntfy,telegram").success();
+    set(&dir, "notify.cost_warn_pct", "25,50,75").success();
+    set(&dir, "ntfy.topic", "xrun-super-secret-topic").success();
+    set(&dir, "telegram.bot_token", "123456:ABCDEF").success();
+
+    let toml = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(toml.contains("[notify]"), "{toml}");
+    assert!(toml.contains("\"ntfy\""), "{toml}");
+    assert!(toml.contains("\"telegram\""), "{toml}");
+    assert!(
+        !toml.contains("super-secret"),
+        "topic must live in credentials.toml, not config.toml:\n{toml}"
+    );
+    let creds = std::fs::read_to_string(dir.path().join("credentials.toml")).unwrap();
+    assert!(creds.contains("xrun-super-secret-topic"), "{creds}");
+    assert!(creds.contains("123456:ABCDEF"), "{creds}");
+
+    // `config show` reports presence only.
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(contains("ntfy.topic: <set>"))
+        .stdout(contains("telegram.bot_token: <set>"))
+        .stdout(contains("telegram.chat_id: <unset>"))
+        .stdout(predicates::prelude::PredicateBooleanExt::not(contains(
+            "super-secret",
+        )))
+        .stdout(predicates::prelude::PredicateBooleanExt::not(contains(
+            "ABCDEF",
+        )));
+
+    // Telegram is missing chat_id → reported as a warning, ntfy is tried
+    // (and fails to reach the network-less test host or a real server —
+    // either way the command must not panic and must exit non-zero).
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["notify", "test", "--channel", "telegram"])
+        .assert()
+        .failure()
+        .stdout(contains("telegram.chat_id"));
+}
+
+#[test]
+fn notify_test_rejects_channel_not_in_config() {
+    let dir = init_dir();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["notify", "test", "--channel", "ntfy"])
+        .assert()
+        .failure()
+        .stderr(contains("not in [notify].channels"));
+}
+
+#[test]
+fn notify_log_empty_and_json() {
+    let dir = init_dir();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["notify", "log"])
+        .assert()
+        .success()
+        .stdout(contains("no notifications sent yet"));
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["notify", "log", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("[]"));
+}
+
+#[test]
+fn watchdog_on_empty_db_reports_zero_runs() {
+    let dir = init_dir();
+    let out = Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["watchdog", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["checked_runs"], 0);
+    assert_eq!(v["orphans"].as_array().unwrap().len(), 0);
+
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["watchdog", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("0 running run(s)"))
+        .stdout(contains("dry run"));
+}
+
+#[test]
+fn watchdog_schedule_status_is_read_only_and_json() {
+    let dir = init_dir();
+    let out = Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .args(["watchdog", "schedule", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert!(v["installed"].is_boolean());
+    assert!(!v["backend"].as_str().unwrap().is_empty());
+    assert!(v["entry"].as_str().unwrap().contains("watchdog"));
+    // --install and --remove are mutually exclusive.
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .args(["watchdog", "schedule", "--install", "--remove"])
+        .assert()
+        .failure();
+}

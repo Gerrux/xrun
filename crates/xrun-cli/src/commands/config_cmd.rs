@@ -82,6 +82,11 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                     "mlflow.username": creds.mlflow.username.is_some(),
                     "mlflow.password": creds.mlflow.password.is_some(),
                     "wandb.api_key": creds.wandb.api_key.is_some(),
+                    "ntfy.topic": creds.ntfy.topic.is_some(),
+                    "ntfy.token": creds.ntfy.token.is_some(),
+                    "telegram.bot_token": creds.telegram.bot_token.is_some(),
+                    "telegram.chat_id": creds.telegram.chat_id.is_some(),
+                    "webhook.url": creds.webhook.url.is_some(),
                 }),
             );
             if secrets {
@@ -96,6 +101,11 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                         "mlflow.username": creds.mlflow.username.as_deref().map(tail6),
                         "mlflow.password": creds.mlflow.password.as_deref().map(tail6),
                         "wandb.api_key": creds.wandb.api_key.as_deref().map(tail6),
+                        "ntfy.topic": creds.ntfy.topic.as_deref().map(tail6),
+                        "ntfy.token": creds.ntfy.token.as_deref().map(tail6),
+                        "telegram.bot_token": creds.telegram.bot_token.as_deref().map(tail6),
+                        "telegram.chat_id": creds.telegram.chat_id.as_deref().map(tail6),
+                        "webhook.url": creds.webhook.url.as_deref().map(tail6),
                     }),
                 );
             }
@@ -114,6 +124,19 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
     print_cred("mlflow.username", creds.mlflow.username.as_deref(), secrets);
     print_cred("mlflow.password", creds.mlflow.password.as_deref(), secrets);
     print_cred("wandb.api_key", creds.wandb.api_key.as_deref(), secrets);
+    print_cred("ntfy.topic", creds.ntfy.topic.as_deref(), secrets);
+    print_cred("ntfy.token", creds.ntfy.token.as_deref(), secrets);
+    print_cred(
+        "telegram.bot_token",
+        creds.telegram.bot_token.as_deref(),
+        secrets,
+    );
+    print_cred(
+        "telegram.chat_id",
+        creds.telegram.chat_id.as_deref(),
+        secrets,
+    );
+    print_cred("webhook.url", creds.webhook.url.as_deref(), secrets);
     Ok(())
 }
 
@@ -231,6 +254,12 @@ fn is_credential_key(k: &str) -> bool {
             | "mlflow.username"
             | "mlflow.password"
             | "wandb.api_key"
+            | "ntfy.url"
+            | "ntfy.topic"
+            | "ntfy.token"
+            | "telegram.bot_token"
+            | "telegram.chat_id"
+            | "webhook.url"
     )
 }
 
@@ -359,14 +388,32 @@ fn coerce_scalar(key: &str, raw: &str, hint: Option<&Value>) -> Result<Value> {
             let parsed: f64 = raw.parse().context("expected number")?;
             Ok(serde_json::json!(parsed))
         }
-        Some(Value::Array(_)) => {
-            // CSV — trimmed, empty entries dropped. Always strings; numeric
-            // arrays would round-trip via serde later if any field needed it.
-            let items: Vec<String> = raw
+        Some(Value::Array(existing)) => {
+            // CSV — trimmed, empty entries dropped. Element type follows the
+            // current (or default) array: a numeric array (e.g.
+            // `notify.cost_warn_pct = [50, 80]`) coerces each entry to a
+            // number, anything else stays a string.
+            let items: Vec<&str> = raw
                 .split(',')
-                .map(|s| s.trim().to_string())
+                .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .collect();
+            let numeric = existing.first().map(Value::is_number).unwrap_or(false);
+            if numeric {
+                let nums: Vec<Value> = items
+                    .iter()
+                    .map(|s| {
+                        if let Ok(i) = s.parse::<i64>() {
+                            Ok(serde_json::json!(i))
+                        } else {
+                            s.parse::<f64>()
+                                .map(|f| serde_json::json!(f))
+                                .with_context(|| format!("expected number in list, got: {s}"))
+                        }
+                    })
+                    .collect::<Result<_>>()?;
+                return Ok(Value::Array(nums));
+            }
             Ok(serde_json::json!(items))
         }
         Some(Value::Object(_)) => {

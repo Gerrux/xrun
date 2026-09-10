@@ -59,6 +59,36 @@ pub struct WandbCredentials {
     pub api_key: Option<String>,
 }
 
+/// ntfy.sh (or self-hosted ntfy) push channel. The topic is effectively a
+/// secret — anyone who knows it can subscribe — so it lives here, not in
+/// `config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct NtfyCredentials {
+    /// Server base URL. Defaults to `https://ntfy.sh` when unset.
+    pub url: Option<String>,
+    pub topic: Option<String>,
+    /// Optional access token for protected topics (`tk_…`).
+    pub token: Option<String>,
+}
+
+/// Telegram bot channel. Create a bot via @BotFather, then message it once
+/// and read your chat id from `getUpdates`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct TelegramCredentials {
+    pub bot_token: Option<String>,
+    pub chat_id: Option<String>,
+}
+
+/// Generic JSON webhook (Slack / Discord incoming-webhook URLs, or your
+/// own endpoint). Slack/Discord URLs embed a secret, hence credentials.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct WebhookCredentials {
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Credentials {
@@ -66,6 +96,9 @@ pub struct Credentials {
     pub kaggle: KaggleCredentials,
     pub mlflow: MlflowCredentials,
     pub wandb: WandbCredentials,
+    pub ntfy: NtfyCredentials,
+    pub telegram: TelegramCredentials,
+    pub webhook: WebhookCredentials,
     /// SSH hosts keyed by alias. Manifests reference these via
     /// `ssh.host_alias`. Loaded from `[vendors.ssh.<alias>]` sections.
     #[serde(rename = "ssh", default)]
@@ -82,6 +115,10 @@ impl Credentials {
             && self.mlflow.username.is_none()
             && self.mlflow.password.is_none()
             && self.wandb.api_key.is_none()
+            && self.ntfy.topic.is_none()
+            && self.ntfy.token.is_none()
+            && self.telegram.bot_token.is_none()
+            && self.webhook.url.is_none()
             && self.ssh_hosts.is_empty()
     }
 

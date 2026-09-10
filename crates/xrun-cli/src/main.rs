@@ -168,6 +168,16 @@ fn run() -> Result<()> {
         Some(Commands::Update(args)) => {
             xrun_cli::commands::update::run(&args)?;
         }
+        Some(Commands::Notify(args)) => {
+            let ctx = get_data_ctx()?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::notify_cmd::run(&args, &ctx.db_path, &config_dir)?;
+        }
+        Some(Commands::Watchdog(args)) => {
+            let ctx = get_data_ctx()?;
+            let config_dir = get_config()?;
+            xrun_cli::commands::watchdog::run(&args, &ctx.db_path, &ctx.runs_dir, &config_dir)?;
+        }
         Some(Commands::Tui) => {
             if xrun_cli::commands::update::maybe_prompt_on_startup()? {
                 return Ok(());

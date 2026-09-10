@@ -32,17 +32,42 @@ def read_credentials() -> dict:
         return {}
 
 
+def _toml_scalar(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def write_credentials(creds: dict) -> None:
+    """Serialise the credentials dict back to TOML.
+
+    Handles one level of nesting (`[ssh.<alias>]` host tables) so saving from
+    one screen never flattens what another screen wrote. Scalars keep their
+    type (`port = 22` stays an integer).
+    """
     path = config_dir() / "credentials.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for section, values in creds.items():
-        lines.append(f"[{section}]")
-        for k, v in values.items():
-            if v is not None:
-                escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
-                lines.append(f'{k} = "{escaped}"')
-        lines.append("")
+        if not isinstance(values, dict):
+            continue
+        scalars = {k: v for k, v in values.items()
+                   if v is not None and not isinstance(v, dict)}
+        tables = {k: v for k, v in values.items() if isinstance(v, dict)}
+        if scalars or not tables:
+            lines.append(f"[{section}]")
+            for k, v in scalars.items():
+                lines.append(f"{k} = {_toml_scalar(v)}")
+            lines.append("")
+        for sub_name, sub_values in tables.items():
+            lines.append(f"[{section}.{sub_name}]")
+            for k, v in sub_values.items():
+                if v is not None and not isinstance(v, dict):
+                    lines.append(f"{k} = {_toml_scalar(v)}")
+            lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 

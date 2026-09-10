@@ -11,6 +11,60 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.0] - 2026-09-10
+
+### Added
+
+- Push notifications from the poll-daemon (`crates/xrun-notify`): ntfy,
+  Telegram, generic JSON webhook (Slack/Discord-compatible) and desktop
+  toast channels. Kinds: `run.done`, `run.failed`, `run.idle`,
+  `budget.warn` (50 % / 80 % of `--max-cost`), `budget.auto_destroyed`,
+  `budget.daily`, `instance.cleanup_failed`, `instance.orphan`,
+  `metric.anomaly` (NaN/inf or loss spike), `poller.dead`. Configure with
+  `xrun config set notify.channels ntfy` + `ntfy.topic`, verify with
+  `xrun notify test`; journal via `xrun notify log`.
+- `xrun watchdog`: detects dead or hung pollers via a new per-tick
+  heartbeat (`runs.poller_heartbeat_at`) and orphan billable instances,
+  notifies, and respawns through the `resume` path. The TUI's 60 s tick now
+  runs it; the Notifications screen shows the push journal.
+- Schema migration 007 (`notify_log` table, heartbeat column). An older
+  `xrun` binary refuses a DB opened by this version — update the binary.
+- TUI: `g n` Notifications setup screen (channel cards with generated ntfy
+  topic, Telegram chat-id detection, Save & test, rule presets, one-key
+  watchdog scheduling) and a "Notify" step in the first-run wizard.
+- `xrun watchdog schedule --install | --remove | --status` registers the
+  watchdog in Task Scheduler (Windows) or the user crontab.
+- `policy.early_stop` in the manifest: stop when a metric plateaus for
+  `patience` evaluations, pull the best checkpoint first, mark the run
+  `done`, push `run.early_stopped`.
+- Telegram control: reply `/status`, `/stop <id>`, `/pull <id>` to the bot;
+  `xrun watchdog` executes them (same chat only, offset persisted).
+- `xrun watchdog` cross-checks vast's instance list and reports instances
+  the DB doesn't know about (or already thinks are dead) as
+  `instance.orphan` (`source: vendor`).
+- `xrun_hook.notify(title, body, priority)` pushes a message from the
+  training script through the configured channels.
+- Notification settings hot-reload: running pollers re-read
+  `config.toml` / `credentials.toml` on mtime change (≤ 5 s), so channels
+  configured mid-run apply to that run.
+
+### Fixed
+
+- Metric lines with Python-style bare `NaN` / `Infinity` were silently
+  dropped by the JSONL parser; they are now recovered for anomaly
+  detection (still never written to SQLite).
+- `xrun config set` on a numeric list field (e.g. `notify.cost_warn_pct`)
+  now coerces each entry to a number instead of failing.
+- TUI credential writer preserves nested `[ssh.<alias>]` tables and scalar
+  types instead of flattening them on save.
+- `[budget].monthly_budget_usd` was accepted but never evaluated; the
+  poller now emits `budget.monthly_exceeded` (soft alert, once per month).
+- Auto-destroy paths (cost cap, daily hard stop, idle timeout) left the
+  MLflow / WandB mirror run in RUNNING forever; they now finish it as
+  FAILED.
+
+---
+
 ## [0.7.2] - 2026-09-10
 
 ### Fixed

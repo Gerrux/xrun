@@ -169,6 +169,40 @@ xrun launch exp/foo.yaml --max-cost 5.0 --max-hours 8 --idle-timeout 30
 xrun launch exp/foo.yaml --yes      # skip billable confirm in scripts
 ```
 
+Cheaper than any cap: stop when the metric plateaus. In the manifest:
+
+```yaml
+policy:
+  early_stop: {metric: val_f1, patience: 5, mode: max}   # pulls best ckpt, then destroys
+```
+
+The run ends `done` with an `early_stop` event (`xrun events <id>`); the
+checkpoint is in `xrun show <id>` → artifacts. Prefer this over long
+`--max-hours` when the script logs a validation metric via `xrun_hook`.
+
+## Notifications — set up before leaving a paid instance unattended
+
+```bash
+xrun config set notify.channels ntfy        # or ntfy,telegram,webhook,desktop
+xrun config set ntfy.topic <random-topic>   # user installs the ntfy app and subscribes
+xrun notify test                            # exit 1 = channel misconfigured; fix first
+xrun notify log --json                      # what was sent, where, ok/error
+```
+
+The poll-daemon then pushes `run.done` / `run.failed` / `budget.warn`
+(50 % and 80 % of `--max-cost`) / `metric.anomaly` (NaN or loss spike) /
+`budget.auto_destroyed` / `instance.cleanup_failed` on its own. Never ask
+the user for `ntfy.topic` or `telegram.bot_token` values in chat if they
+already exist — `xrun config show` prints `<set>` / `<unset>` only.
+
+`xrun watchdog --json` finds dead/hung pollers and orphan billable
+instances, notifies, and respawns. `xrun watchdog schedule --install`
+registers it in Task Scheduler / crontab — run it only when the user asks
+(it changes system settings); `xrun watchdog schedule --json` is the
+read-only status. If the user prefers a UI, point them to `xrun` → `g n`
+(channel cards, generated ntfy topic, Telegram chat-id Detect, test,
+watchdog scheduling).
+
 ## Parsing output — always prefer `--json`
 
 ```bash

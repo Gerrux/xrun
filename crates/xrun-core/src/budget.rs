@@ -120,6 +120,35 @@ pub fn daily_spend(store: &Store, day: NaiveDate, now: DateTime<Utc>) -> Result<
     Ok(total)
 }
 
+/// `(year, month)` of `now` in UTC — the key for the monthly soft alert.
+pub fn month_utc(now: DateTime<Utc>) -> (i32, u32) {
+    (now.year(), now.month())
+}
+
+/// Month-to-date spend: closed runs by their recorded cost, live instances
+/// by projected cost. Mirrors [`daily_spend`].
+pub fn monthly_spend(
+    store: &Store,
+    year: i32,
+    month: u32,
+    now: DateTime<Utc>,
+) -> Result<f64, StoreError> {
+    let mut total = store.sum_run_cost_for_month(year, month)?;
+    for inst in store.list_instances()? {
+        let Some(created) = inst.created_at else {
+            continue;
+        };
+        if (created.year(), created.month()) != (year, month) {
+            continue;
+        }
+        if inst.destroyed_at.is_some() {
+            continue;
+        }
+        total += accumulate_cost(&inst, now);
+    }
+    Ok(total)
+}
+
 /// Total live burn rate $/hr across active instances. Used by the dashboard
 /// "Burn" card and by the runway calculation in the status bar.
 pub fn active_hourly_burn(store: &Store) -> Result<f64, StoreError> {

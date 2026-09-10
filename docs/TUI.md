@@ -10,6 +10,10 @@ Python Textual. Single-window app с chord-навигацией, command palette
 
 ### 0. First-run wizard (auto / `xrun init`)
 
+Пять шагов: Local → Vendors → Logging → **Notify** → Done. Шаг Notify
+предлагает ntfy с уже сгенерированным топиком и desktop-toast; «Next,
+Next, Finish» даёт рабочий push без ввода текста.
+
 Запускается автоматически при первом старте TUI (когда
 `[ui] wizard_completed = false` в `config.toml`) или явно через `xrun init`.
 Один экран, четыре шага: **Local** → **Vendors** → **Logging** → **Done**.
@@ -137,6 +141,40 @@ Picker по `exp/`. Превью манифеста справа. Enter → conf
 
 Браузер артефактов по всем runs (не только текущего). `P` — pull.
 
+### 11. Notifications setup (`g n`)
+
+Карточки каналов: **ntfy** (push на телефон, топик генерируется сам),
+**Telegram** (токен от @BotFather, chat id определяется кнопкой Detect
+после первого сообщения боту), **Webhook** (Slack/Discord/свой JSON),
+**Desktop** (toast, без настройки). Плюс карточка **Rules** (пресеты:
+всё / только проблемы / только деньги; проценты budget.warn; порог
+heartbeat) и **Watchdog** (Enter регистрирует/снимает запись в Task
+Scheduler / crontab через `xrun watchdog schedule`).
+
+| Key | Action |
+|-----|--------|
+| `Enter` / `e` | Форма канала (Save & test включает канал и сразу шлёт тест) |
+| `Space` / `d` | Включить / выключить канал |
+| `t` | Тестовое уведомление через этот канал |
+| `r` | Забыть креды канала |
+| `h` | История уведомлений |
+
+Секреты пишутся в `credentials.toml`, список каналов и правила — через
+`xrun config set`, так что CLI и TUI видят одно и то же. Работающие
+поллеры подхватывают изменения сами в течение ~5 с — перезапускать
+обучение не нужно.
+
+### 12. Notifications history (`n`)
+
+История in-app toast'ов плюс журнал push-уведомлений (`xrun notify log`):
+что poll-daemon / watchdog отправили на телефон, в какой канал и дошло ли
+(`push/error` с текстом ошибки, если канал сломан). `c` — очистить in-app
+историю (журнал в SQLite остаётся).
+
+Каждые 60 с TUI вызывает `xrun watchdog --json`: мёртвые поллеры
+поднимаются, orphan-инстансы всплывают toast'ом (один раз за сессию) и
+уходят в push-каналы.
+
 ## Биндинги
 
 ### Глобальные
@@ -158,6 +196,8 @@ Picker по `exp/`. Превью манифеста справа. Enter → conf
 | `g s` | Settings |
 | `g l` | Launch |
 | `g h` | Doctor |
+| `g m` | Sinks |
+| `g n` | Notifications setup |
 
 ### Прямые клавиши (из Runs)
 

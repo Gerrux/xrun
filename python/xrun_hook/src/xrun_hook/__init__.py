@@ -7,7 +7,7 @@ from typing import Any
 
 from . import _log_streamer, _paths, _writer
 
-__all__ = ["stage", "metric", "metrics", "epoch", "fail", "done"]
+__all__ = ["stage", "metric", "metrics", "epoch", "fail", "done", "notify"]
 
 # ---------------------------------------------------------------------------
 # Module-level lazy state
@@ -155,6 +155,29 @@ def fail(msg: str, extra: "dict | None" = None) -> None:
     _write_event("error", "fail", msg=msg, extra=extra)
     _reset()
     sys.exit(1)
+
+
+def notify(
+    title: str,
+    body: "str | None" = None,
+    priority: str = "default",
+    extra: "dict | None" = None,
+) -> None:
+    """Push a message to the user's phone / chat via xrun's notification
+    channels (ntfy, Telegram, ...). The script decides what matters:
+
+        xrun_hook.notify("epoch 10", f"val_f1={f1:.3f}, saved best.pt")
+
+    Written as a `stage="notify"` event; the poller relays it verbatim to
+    every enabled channel. `priority` is one of low / default / high /
+    urgent. Silently a no-op when no channel is configured on the host.
+    """
+    merged: dict[str, Any] = {"priority": priority}
+    if body is not None:
+        merged["body"] = str(body)
+    if extra:
+        merged.update(extra)
+    _write_event("notify", "ok", msg=str(title), extra=merged)
 
 
 def done() -> None:

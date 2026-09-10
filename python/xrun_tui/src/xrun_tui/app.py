@@ -13,7 +13,7 @@ from xrun_tui import config
 from xrun_tui.db import Database, find_db_path
 from xrun_tui.themes import write_theme_for_app
 
-XRUN_VERSION = "0.7.2"
+XRUN_VERSION = "0.8.0"
 
 # Map: chord-leader → {key → action_name (without the "action_" prefix)}
 _CHORDS: dict[str, dict[str, str]] = {
@@ -23,6 +23,7 @@ _CHORDS: dict[str, dict[str, str]] = {
         "i": "goto_instances",
         "v": "goto_vendors",
         "m": "goto_sinks",
+        "n": "goto_notify",
         "h": "goto_doctor",
         "l": "goto_launch",
         "s": "goto_settings",
@@ -79,6 +80,8 @@ class XrunApp(App):
         # Resolved at splash time from `xrun config show --json` (defaults.exp_dir).
         self._exp_dir: str | None = None
         self._notif_history: deque[dict[str, Any]] = deque(maxlen=200)
+        # Watchdog findings already shown this session (orphan instance ids).
+        self._watchdog_seen: set[str] = set()
         self._chord_leader: str | None = None
         self._chord_expires: float = 0.0
         self._compare_selection: list[str] = []
@@ -139,15 +142,34 @@ class XrunApp(App):
         self.run_worker(self._auto_resume_runs(quiet=True), exclusive=False)
 
     async def _auto_resume_runs(self, quiet: bool = False) -> None:
-        from xrun_tui.services import resume_runs
+        # `watchdog` is `resume` plus push notifications (poller.dead,
+        # instance.orphan) and heartbeat-based detection of hung pollers.
+        # Dedupe lives in the CLI's notify_log, so ticking every 60s while a
+        # scheduler also runs the watchdog does not double-ping the phone.
+        from xrun_tui.services import watchdog_runs
         try:
-            ok, runs = await resume_runs()
+            ok, runs = await watchdog_runs()
         except Exception:
             return
         if not ok or not runs:
             return
         respawned = [r for r in runs if r.get("outcome") == "respawned"]
         reconciled = [r for r in runs if r.get("outcome") == "reconciled"]
+        orphans = [r for r in runs if r.get("outcome") == "orphan"]
+        # Orphans are money leaking right now — surface them even on quiet
+        # ticks (once per orphan per session, the deque dedupes visually).
+        for o in orphans:
+            key = f"orphan:{o.get('instance_id')}"
+            if key in self._watchdog_seen:
+                continue
+            self._watchdog_seen.add(key)
+            self.notify(
+                f"Orphan {o.get('vendor')} instance {o.get('instance_id')} "
+                f"(${float(o.get('cost_usd') or 0):.2f} so far). `xrun gc` destroys it.",
+                title="xrun watchdog",
+                severity="error",
+                timeout=15,
+            )
         if quiet:
             return
         if respawned:
@@ -258,6 +280,7 @@ class XrunApp(App):
             "goto_instances":  "go:instances",
             "goto_vendors":    "go:vendors",
             "goto_sinks":      "go:sinks",
+            "goto_notify":     "go:notify",
             "goto_doctor":     "go:doctor",
             "goto_launch":     "go:launch",
             "goto_settings":   "go:settings",

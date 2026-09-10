@@ -59,6 +59,8 @@ xrun config init|show|set <key> <val>
 xrun config probe --vendor <name>                  # валидация кредов из XRUN_PROBE_* env (для wizard)
 xrun doctor [--manifest path]... [--all] [--json]  # проверка окружения, group by category
 xrun gc                                            # удалить orphan инстансы
+xrun notify test|send|log|kinds                    # push-уведомления (ntfy/telegram/webhook/desktop)
+xrun watchdog [--json] [--dry-run]                 # мёртвый поллер / orphan инстанс → уведомить + respawn
 ```
 
 Все read-команды поддерживают `--json` для парсинга.
@@ -68,7 +70,7 @@ xrun gc                                            # удалить orphan ин�
 ```
 g d → Dashboard     g r → Runs          g i → Instances
 g v → Vendors       g s → Settings      g l → Launch
-g h → Doctor
+g h → Doctor        g n → Notifications (push setup)
 
 ?   → Help          :   → Command palette    q/Esc → Назад/выход
 V   → Vendors       (прямая клавиша из Runs screen)
@@ -214,6 +216,19 @@ cargo fmt --check
 - `--detach` спавнит фоновый `__poll-daemon` — он пишет события/метрики в SQLite
 - Budget guards: `--max-cost`, `--max-hours`, `--idle-timeout` в `xrun launch`
 - Poll-daemon сам гасит инстанс при превышении caps (auto-destroy)
+- Push-уведомления шлёт poll-daemon (`run.done/failed`, `budget.warn` на 50/80 %
+  от `--max-cost`, NaN/loss-spike, auto-destroy, cleanup failed). Каналы:
+  Для человека: TUI `g n` (карточки, генерация топика, Detect chat id,
+  тест, регистрация watchdog в планировщике одной клавишей). Для скрипта:
+  `xrun config set notify.channels ntfy` + `ntfy.topic` → `xrun notify test`.
+  `xrun watchdog` (из планировщика раз в 5 мин, и TUI каждые 60 с) ловит
+  мёртвый поллер при живом инстансе и orphan-инстансы;
+  `xrun watchdog schedule --install` регистрирует его сам. Настройки
+  уведомлений подхватываются работающими поллерами без рестарта (≤5 с)
+- `policy.early_stop` в манифесте (metric/patience) останавливает ран по плато
+  метрики: pull лучшего чекпоинта → destroy → `done`. Дешевле любого капа
+- Telegram-команды `/status`, `/stop <id>`, `/pull <id>` выполняет watchdog;
+  `xrun_hook.notify("title", "body")` шлёт push прямо из скрипта
 - Credentials: `xrun config set vast.api_key ...` или `V → i` в TUI для импорта
 - Windows: все subprocess-вызовы используют `CREATE_NO_WINDOW`
 

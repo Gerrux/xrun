@@ -24,7 +24,8 @@ PALETTE_COMMANDS: list[tuple[str, str]] = [
     ("Go: Doctor (system health)",   "go:doctor"),
     ("Go: Launch manifest",          "go:launch"),
     ("Go: Settings",                 "go:settings"),
-    ("Go: Notifications",            "go:notifications"),
+    ("Go: Notifications history",    "go:notifications"),
+    ("Go: Notifications setup (push)", "go:notify"),
     ("Show: Keyboard help",          "go:help"),
     ("Refresh current screen",       "act:refresh"),
     ("Quit xrun TUI",                "act:quit"),
@@ -135,6 +136,7 @@ async def run_target(app, target: str) -> None:
     from xrun_tui.screens.sweep  import SweepScreen
 
     from xrun_tui.screens.sinks import SinksScreen
+    from xrun_tui.screens.notify_setup import NotifySetupScreen
 
     factories: dict[str, Callable[[], Any]] = {
         "go:dashboard":  DashboardScreen,
@@ -142,6 +144,7 @@ async def run_target(app, target: str) -> None:
         "go:instances":  InstancesScreen,
         "go:vendors":    VendorsScreen,
         "go:sinks":      SinksScreen,
+        "go:notify":     NotifySetupScreen,
         "go:doctor":     DoctorScreen,
         "go:launch":     LaunchScreen,
         "go:settings":   SettingsScreen,

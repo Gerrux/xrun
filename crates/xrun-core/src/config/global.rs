@@ -93,6 +93,41 @@ impl Default for BudgetConfig {
     }
 }
 
+/// Push-notification routing. Channels are named (`ntfy`, `telegram`,
+/// `webhook`, `desktop`); credentials for the network ones live in
+/// `credentials.toml`. `events` selects which notification kinds are
+/// delivered — `"*"` means everything, otherwise exact kinds
+/// (`run.failed`) or prefix globs (`budget.*`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct NotifyConfig {
+    /// Ordered list of enabled channels. Empty = notifications off.
+    pub channels: Vec<String>,
+    /// Kinds to deliver. `["*"]` = all. See `xrun notify kinds`.
+    pub events: Vec<String>,
+    /// Percentages of `--max-cost` at which a `budget.warn` is emitted
+    /// (once per threshold per instance). 100% is always the hard cap.
+    pub cost_warn_pct: Vec<u8>,
+    /// Minutes without a poller heartbeat before `xrun watchdog` reports
+    /// the poller as dead.
+    pub heartbeat_stale_min: u64,
+    /// Minimum minutes between two notifications with the same dedupe key
+    /// (e.g. the same `poller.dead` for the same run).
+    pub dedupe_min: u64,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            channels: Vec::new(),
+            events: vec!["*".to_string()],
+            cost_warn_pct: vec![50, 80],
+            heartbeat_stale_min: 5,
+            dedupe_min: 60,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct UiConfig {
@@ -155,6 +190,7 @@ pub struct GlobalConfig {
     pub budget: BudgetConfig,
     pub ui: UiConfig,
     pub metrics: MetricsConfig,
+    pub notify: NotifyConfig,
     /// Per-vendor adapter defaults keyed by `Vendor::as_str()`. Empty entries
     /// behave the same as a missing entry — adapters fall back to their own
     /// hard-coded defaults.

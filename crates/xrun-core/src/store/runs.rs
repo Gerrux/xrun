@@ -136,6 +136,9 @@ pub struct Run {
     /// more in v0.8.
     pub wandb_run_id: Option<String>,
     pub wandb_run_url: Option<String>,
+    /// Stamped by the poll loop every tick. `xrun watchdog` compares it
+    /// against `[notify].heartbeat_stale_min` to detect a dead poller.
+    pub poller_heartbeat_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Default)]
@@ -163,13 +166,14 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         mlflow_run_url: row.get(14)?,
         wandb_run_id: row.get(15)?,
         wandb_run_url: row.get(16)?,
+        poller_heartbeat_at: row.get(17)?,
     })
 }
 
 const SELECT_RUN_COLS: &str =
     "id, name, manifest_hash, manifest_path, vendor, instance_id, status, \
      created_at, started_at, ended_at, cost_usd, mlflow_run_id, notes, poller_pid, \
-     mlflow_run_url, wandb_run_id, wandb_run_url";
+     mlflow_run_url, wandb_run_id, wandb_run_url, poller_heartbeat_at";
 
 impl Store {
     pub fn create_run(
@@ -279,6 +283,33 @@ impl Store {
         Ok(())
     }
 
+    /// Sum of run cost for runs created in the given UTC month. Same
+    /// COALESCE rule as [`sum_run_cost_for_date`](Self::sum_run_cost_for_date).
+    pub fn sum_run_cost_for_month(&self, year: i32, month: u32) -> Result<f64, StoreError> {
+        let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month");
+        let next = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(year, month + 1, 1)
+        }
+        .expect("valid month");
+        let start = DateTime::<Utc>::from_naive_utc_and_offset(
+            first.and_hms_opt(0, 0, 0).expect("valid"),
+            Utc,
+        );
+        let end = DateTime::<Utc>::from_naive_utc_and_offset(
+            next.and_hms_opt(0, 0, 0).expect("valid"),
+            Utc,
+        );
+        let sum: Option<f64> = self.conn.query_row(
+            "SELECT COALESCE(SUM(COALESCE(cost_usd_estimate, cost_usd, 0.0)), 0.0) \
+             FROM runs WHERE created_at >= ?1 AND created_at < ?2",
+            params![start, end],
+            |row| row.get(0),
+        )?;
+        Ok(sum.unwrap_or(0.0))
+    }
+
     /// Sum of `cost_usd_estimate` for runs created on the given UTC date.
     /// Falls back to `cost_usd` when estimate is null. Used by budget.
     pub fn sum_run_cost_for_date(&self, day: NaiveDate) -> Result<f64, StoreError> {
@@ -350,6 +381,20 @@ impl Store {
 
     /// Record the PID of a detached poll-daemon. Pass `None` to clear the
     /// recorded PID (e.g. when the daemon exits cleanly or is reaped).
+    /// Poller liveness stamp. Cheap single-column UPDATE, called once per
+    /// poll tick.
+    pub fn update_run_heartbeat(
+        &mut self,
+        id: &RunId,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE runs SET poller_heartbeat_at = ?1 WHERE id = ?2",
+            params![at, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_run_poller_pid(
         &mut self,
         id: &RunId,

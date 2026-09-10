@@ -73,7 +73,7 @@ train_end → artifacts_ready → done
 Pip-пакет, ставится на инстансе через `pip install xrun_hook`.
 
 ```python
-from xrun_hook import stage, metric, epoch, fail, done
+from xrun_hook import stage, metric, epoch, fail, done, notify
 
 stage("unpack")                      # автоматически start; контекстный менеджер закроет ok
 with stage("validation"):
@@ -88,8 +88,16 @@ for ep in range(epochs):
     metric("val_f1", val.f1, step=ep)
     epoch(ep, {"val_f1": val.f1})    # сахар = stage("epoch", status="ok", extra={...})
 
+    if val.f1 > best:
+        notify("new best", f"val_f1={val.f1:.3f} at epoch {ep}")   # push на телефон
+
 done()                                # пишет stage="done" и закрывает файлы
 ```
+
+`notify(title, body=None, priority="default")` пишет событие
+`stage="notify"`; поллер пересылает его как есть во все включённые
+каналы (kind `user`, фильтр `[notify].events` на него не действует).
+Без настроенных каналов — no-op.
 
 API минимальный, потому что чем больше — тем больше адаптация существующих скриптов. Для исключения автоматический хук:
 

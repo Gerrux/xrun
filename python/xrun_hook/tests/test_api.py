@@ -238,3 +238,22 @@ def _read_events(run_dir: Path) -> list[str]:
 def _read_metrics(run_dir: Path) -> list[str]:
     p = run_dir / "metrics.jsonl"
     return p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+
+
+# ---------------------------------------------------------------------------
+# notify()
+# ---------------------------------------------------------------------------
+
+
+def test_notify_writes_relay_event(isolated_run_dir):
+    xrun_hook.notify("epoch 10", "val_f1=0.91", priority="high", extra={"epoch": 10})
+    xrun_hook.notify("plain")
+    lines = (isolated_run_dir / "events.jsonl").read_text().splitlines()
+    first, second = json.loads(lines[0]), json.loads(lines[1])
+    assert first["stage"] == "notify" and first["status"] == "ok"
+    assert first["msg"] == "epoch 10"
+    assert first["extra"]["body"] == "val_f1=0.91"
+    assert first["extra"]["priority"] == "high"
+    assert first["extra"]["epoch"] == 10
+    assert second["msg"] == "plain" and "body" not in second["extra"]
+    assert "notify" in xrun_hook.__all__

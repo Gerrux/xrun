@@ -130,7 +130,7 @@ pub fn run(args: &ResumeArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
     Ok(())
 }
 
-fn resume_one(
+pub(crate) fn resume_one(
     run: &Run,
     db_path: &Path,
     runs_dir: &Path,

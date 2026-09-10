@@ -171,6 +171,7 @@ fn parse_stop_by_name_finds_run() {
         mlflow_run_url: None,
         wandb_run_id: None,
         wandb_run_url: None,
+        poller_heartbeat_at: None,
     };
     let run_id = run.id.clone();
 

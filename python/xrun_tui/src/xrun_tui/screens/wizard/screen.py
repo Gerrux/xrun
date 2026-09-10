@@ -1,6 +1,6 @@
 """First-run wizard screen — state, event wiring, transitions, persistence.
 
-Four steps:
+Five steps:
 
 1. **Local capabilities** — show OS / GPU detected via `xrun init --probe-local`.
    Spinner while the probe runs so the screen never looks stuck.
@@ -10,7 +10,9 @@ Four steps:
 3. **Logging mode** — radio: off / polling / mirror. If mirror chosen, sinks
    appear; MLflow reveals a tracking-URL + auth form. Mirror is auto-suggested
    when Kaggle is selected (Kaggle has no live-log API otherwise).
-4. **Recap** — runs `xrun doctor --json` live and prints status per check, plus
+4. **Notifications** — ntfy topic (pre-generated) + desktop toast. Writes
+   `[notify] channels` and `ntfy.topic` on finish; skipping leaves it off.
+5. **Recap** — runs `xrun doctor --json` live and prints status per check, plus
    the config path so the user knows what was written. Finishing flips
    `[ui] wizard_completed = true` via `xrun init --mark-completed`.
 
@@ -57,7 +59,7 @@ class WizardScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._step = 0
-        self._n_steps = 4
+        self._n_steps = 5
         self._probe: dict = {}
         self._probe_done = False
         self._selected_vendors: set[str] = set()
@@ -75,6 +77,13 @@ class WizardScreen(Screen):
         self._existing_vendors: set[str] = set()
         self._existing_sinks: set[str] = set()
         self._existing_ssh_alias: str | None = None
+        # Notifications step. Topic is pre-generated so "Next, Next, Finish"
+        # yields a working phone push without typing anything.
+        from xrun_tui.screens.notify_setup import generate_topic
+        self._existing_notify: set[str] = set()
+        self._notify_ntfy = False
+        self._notify_desktop = False
+        self._notify_topic: str = generate_topic()
         self._wizard_was_completed = False
         self._load_existing_state()
 
@@ -118,6 +127,14 @@ class WizardScreen(Screen):
         if mlflow_url := cfg.get("mlflow", {}).get("url"):
             self._mlflow_fields["url"] = mlflow_url
             self._existing_sinks.add("mlflow")
+
+        ntfy = creds.get("ntfy", {}) or {}
+        channels = [str(c) for c in (cfg.get("notify", {}).get("channels") or [])]
+        if ntfy.get("topic"):
+            self._existing_notify.add("ntfy")
+            self._notify_topic = str(ntfy["topic"])
+            self._notify_ntfy = "ntfy" in channels
+        self._notify_desktop = "desktop" in channels
 
         sinks = cfg.get("metrics", {}).get("sinks") or []
         if sinks:
@@ -176,6 +193,8 @@ class WizardScreen(Screen):
         elif self._step == 2:
             await _steps.render_logging(self, body)
         elif self._step == 3:
+            await _steps.render_notify(self, body)
+        elif self._step == 4:
             await _steps.render_recap(self, body)
 
         next_btn = self.query_one("#btn-next", Button)
@@ -214,6 +233,8 @@ class WizardScreen(Screen):
 
     @staticmethod
     def _link_url(key: str) -> str | None:
+        if key == "ntfy":
+            return "https://ntfy.sh/"
         if key in VENDOR_BY_ID:
             return VENDOR_BY_ID[key][3]
         if key in SINK_BY_ID:
@@ -256,6 +277,14 @@ class WizardScreen(Screen):
             self._toggle_vendor(wid[len("wiz-vendor-cb-"):], event.value)
         elif wid.startswith("wiz-sink-cb-"):
             self._toggle_sink(wid[len("wiz-sink-cb-"):], event.value)
+        elif wid == "wiz-notify-cb-ntfy":
+            self._notify_ntfy = event.value
+            try:
+                self.query_one("#wiz-notify-form", Vertical).display = event.value
+            except Exception:
+                pass
+        elif wid == "wiz-notify-cb-desktop":
+            self._notify_desktop = event.value
 
     def _toggle_vendor(self, vid: str, on: bool) -> None:
         if on:
@@ -347,6 +376,8 @@ class WizardScreen(Screen):
             self._set_or_pop(self._kaggle_fields, wid[len("wiz-kaggle-"):], v)
         elif wid.startswith("wiz-mlflow-"):
             self._set_or_pop(self._mlflow_fields, wid[len("wiz-mlflow-"):], v)
+        elif wid == "wiz-notify-topic":
+            self._notify_topic = v
 
     @staticmethod
     def _set_or_pop(d: dict[str, str], k: str, v: str) -> None:
@@ -492,6 +523,8 @@ class WizardScreen(Screen):
         if "mlflow" in sinks:
             await self._persist_mlflow()
 
+        await self._persist_notify()
+
         args = ["init", "--non-interactive", "--mark-completed"]
         for s in sinks:
             args += ["--sink", s]
@@ -501,6 +534,21 @@ class WizardScreen(Screen):
                         severity="error", timeout=10)
             return
         await self._exit_to_dashboard("Setup complete.")
+
+    async def _persist_notify(self) -> None:
+        """Write the notifications step. Only touches config when the user
+        turned something on, or turned off a channel that was on before —
+        an untouched step must not clobber channels set up elsewhere."""
+        cfg = _config.read_global_config()
+        before = [str(c) for c in (cfg.get("notify", {}).get("channels") or [])]
+        after = [c for c in before if c not in ("ntfy", "desktop")]
+        if self._notify_ntfy and self._notify_topic.strip():
+            await _xrun("config", "set", "ntfy.topic", self._notify_topic.strip())
+            after.append("ntfy")
+        if self._notify_desktop:
+            after.append("desktop")
+        if after != before:
+            await _xrun("config", "set", "notify.channels", ",".join(after))
 
     async def _persist_mlflow(self) -> None:
         url = self._mlflow_fields.get("url", "")

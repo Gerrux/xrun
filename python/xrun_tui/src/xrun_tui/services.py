@@ -127,6 +127,57 @@ async def resume_runs() -> tuple[bool, list[dict[str, Any]]]:
         return False, []
 
 
+async def watchdog_runs() -> tuple[bool, list[dict[str, Any]]]:
+    """Run `xrun watchdog --json`: respawn dead pollers *and* push a
+    notification about them (ntfy / Telegram / ...), plus flag orphan
+    instances. Superset of `resume_runs()`; the returned records are
+    normalised to the same shape (`outcome` = respawned | reconciled |
+    already_running | skipped) so callers can swap one for the other.
+
+    Falls back to `resume_runs()` when the installed CLI predates
+    `watchdog` (exit code 2 = clap unknown-subcommand).
+    """
+    code, out, _err = await _run("watchdog", "--json", timeout=30)
+    if code == 2:
+        return await resume_runs()
+    if code != 0 or not out:
+        return False, []
+    try:
+        data = json.loads(out)
+    except Exception:
+        return False, []
+    runs: list[dict[str, Any]] = []
+    for r in data.get("runs", []):
+        state = r.get("state")
+        resume = r.get("resume")
+        if state == "alive":
+            outcome = "already_running"
+        elif resume in ("respawned", "reconciled"):
+            outcome = resume
+        else:
+            outcome = "skipped"
+        runs.append({**r, "outcome": outcome})
+    for o in data.get("orphans", []):
+        runs.append({**o, "outcome": "orphan"})
+    return True, runs
+
+
+async def notify_log(limit: int = 50, run_id: str | None = None) -> list[dict[str, Any]]:
+    """Delivery journal of push notifications sent by the poll-daemon /
+    watchdog (`xrun notify log --json`). Empty list on any failure."""
+    args = ["notify", "log", "--json", "--limit", str(limit)]
+    if run_id:
+        args += ["--run", run_id]
+    code, out, _err = await _run(*args, timeout=10)
+    if code != 0 or not out:
+        return []
+    try:
+        data = json.loads(out)
+        return list(data) if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 async def fix_status(run_id: str | None = None) -> tuple[bool, str]:
     """Reconcile stale 'running' runs against the vendor.
 

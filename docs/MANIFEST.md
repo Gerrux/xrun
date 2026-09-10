@@ -74,6 +74,13 @@ policy:
   on_stage_failed: stop_instance     # stop_instance | keep | reprovision
   on_idle_minutes: 30                # auto-stop если нет stdout > N min
   on_done: stop_instance
+  early_stop:                        # остановить, когда метрика вышла на плато
+    metric: val_f1                   # ключ из xrun_hook.metric(...)
+    patience: 5                      # столько подряд оценок без улучшения
+    mode: max                        # max (default) | min
+    min_delta: 0.001                 # улучшение меньше этого не считается
+    pull: true                       # забрать чекпоинт до уничтожения инстанса
+    pull_pattern: "**/best*"         # что забирать (default)
 ```
 
 ## Минимальный пример (local — отладка на хосте)
@@ -220,7 +227,7 @@ mlflow:
 | `checkpoints` | object | нет | Watch + pull policy |
 | `artifacts` | object | нет | Дополнительные файлы |
 | `mlflow` | object | нет | Если отсутствует — метрики только в SQLite |
-| `policy` | object | нет | Поведение при ошибках/idle |
+| `policy` | object | нет | Поведение при ошибках/idle; `early_stop` — остановка по плато метрики (см. ниже) |
 | `requires` | object | нет | Pre-flight floor: `ram_gb`, `disk_gb`. `xrun doctor --manifest` падает, если `vendor` известен и значения превышают аппаратный лимит (Kaggle ≈ 13 GB RAM / 73 GB working disk). Защита от 6-минутного OOM. |
 
 ### `vast`
@@ -345,6 +352,20 @@ exclude:
 | `cmd` | Основная команда |
 | `args` | Map; рендерится как `--key value`. Bool `true` → флаг без значения, `false` → опускается |
 | `notebook` (kaggle) | Путь к .ipynb для kernel push |
+
+### `policy.early_stop`
+
+Поллер считает подряд идущие оценки `metric` без улучшения (по `step`,
+повторы и replay одного шага не считаются). Когда их набирается
+`patience`, он: пишет событие `early_stop` (best, best_step, patience,
+куда забрал артефакты), делает `pull` по `pull_pattern` в
+`runs/<id>/artifacts/` (если `pull: true`), уничтожает инстанс, ставит
+статус `done` и шлёт push `run.early_stopped`. Это единственный путь, где
+ран заканчивается `done`, а не `failed`, без события `done:ok` от скрипта.
+
+Работает для всех вендоров; на Kaggle `pull` тянет весь output. Метрика
+берётся из metrics.jsonl и из распарсенного stdout — `xrun_hook` не
+обязателен, но надёжнее.
 
 ### `checkpoints`
 

@@ -28,6 +28,7 @@ fn make_run(name: &str, status: RunStatus) -> Run {
         mlflow_run_url: None,
         wandb_run_id: None,
         wandb_run_url: None,
+        poller_heartbeat_at: None,
     }
 }
 

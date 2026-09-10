@@ -548,6 +548,14 @@ fn do_launch_with_budget(
     if vendor_str == "local" {
         poller = poller.with_config(local_poller_config(&run_dir));
     }
+    if let Some(es) = manifest.policy.as_ref().and_then(|p| p.early_stop.clone()) {
+        poller = poller.with_early_stop(es);
+    }
+    poller = poller
+        .with_notifier(crate::commands::notify_cmd::build_notifier_logged(
+            &config_dir,
+        ))
+        .with_notify_reload(&config_dir);
     let poller = poller;
 
     // Wire metric-sink fan-out: each enabled sink (mlflow / wandb) opens
@@ -764,6 +772,17 @@ pub(crate) fn mlflow_auth_from_creds(
 
 /// Build a `PollerConfig` for a local run — events/metrics/stdout files live
 /// in the per-run directory on the host filesystem instead of `/workspace/run`.
+/// `policy.early_stop` from the frozen manifest copy in the run dir. `None`
+/// when the file is missing/unparsable or the policy is unset — the daemon
+/// then runs without early stopping, same as before v0.8.1.
+pub(crate) fn early_stop_from_manifest(
+    manifest_path: &Path,
+) -> Option<xrun_core::manifest::EarlyStop> {
+    let content = std::fs::read_to_string(manifest_path).ok()?;
+    let manifest: Manifest = serde_yaml::from_str(&content).ok()?;
+    manifest.policy.and_then(|p| p.early_stop)
+}
+
 pub(crate) fn local_poller_config(run_dir: &Path) -> PollerConfig {
     PollerConfig {
         events_file: run_dir.join("events.jsonl").display().to_string(),

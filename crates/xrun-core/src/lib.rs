@@ -15,14 +15,15 @@ pub mod updates;
 pub mod vendor;
 
 pub use budget::{accumulate_cost, caps_from_config, evaluate_caps, idle_anchor, DestroyReason};
-pub use config::{BudgetConfig, ConfigStore, Credentials, GlobalConfig, InitResult};
+pub use config::{BudgetConfig, ConfigStore, Credentials, GlobalConfig, InitResult, NotifyConfig};
 pub use error::{ConfigError, JsonlError, ManifestError, StoreError, VendorError};
 pub use events::{Event, EventStatus, JsonlReader};
 pub use manifest::Manifest;
 pub use metric_sink::{MetricPoint, MetricSink, MetricSinkError, OpenRunCtx, RemoteRunHandle};
 pub use metrics::{Metric, MetricsJsonlReader};
 pub use store::{
-    Instance, InstanceCaps, ListFilter, Run, RunId, RunStatus, Store, StoredEvent, StoredMetric,
+    Instance, InstanceCaps, ListFilter, NewNotifyLog, NotifyLogRow, Run, RunId, RunStatus, Store,
+    StoredEvent, StoredMetric,
 };
 pub use updates::DataUpdate;
 pub use vendor::{

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use crate::commands::{
     config_cmd::ConfigArgs, cp::CpArgs, dataset::DatasetSubcommand, init::InitArgs,
-    init_manifest::InitManifestArgs, install::InstallArgs, update::UpdateArgs,
+    init_manifest::InitManifestArgs, install::InstallArgs, notify_cmd::NotifyArgs,
+    update::UpdateArgs, watchdog::WatchdogArgs,
 };
 
 #[derive(Parser)]
@@ -93,6 +94,11 @@ pub enum Commands {
     Install(InstallArgs),
     /// Check for and install a newer xrun release
     Update(UpdateArgs),
+    /// Test, send, or inspect push notifications (ntfy / Telegram / webhook / desktop)
+    Notify(NotifyArgs),
+    /// Detect dead pollers and orphan instances; notify and respawn. Run it
+    /// from cron / Task Scheduler every few minutes.
+    Watchdog(WatchdogArgs),
     /// Open the interactive TUI (same as running xrun on a TTY with no arguments)
     Tui,
     /// Internal: run the poller in daemon mode for a detached run (hidden)

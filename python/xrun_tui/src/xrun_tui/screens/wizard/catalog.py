@@ -72,6 +72,7 @@ _FOCUS_URL_PREFIXES = {
     "wiz-ssh-":          lambda _f: VENDOR_BY_ID["ssh"][3],
     "wiz-kaggle-":       lambda _f: VENDOR_BY_ID["kaggle"][3],
     "wiz-mlflow-":       lambda _f: SINK_BY_ID["mlflow"][3],
+    "wiz-notify-":       lambda _f: "https://ntfy.sh/",
 }
 
 

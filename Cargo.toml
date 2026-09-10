@@ -10,13 +10,14 @@ members = [
     "crates/xrun-kaggle",
     "crates/xrun-local",
     "crates/xrun-ssh",
+    "crates/xrun-notify",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.7.2"
+version = "0.8.0"
 
 [workspace.dependencies]
 # CLI

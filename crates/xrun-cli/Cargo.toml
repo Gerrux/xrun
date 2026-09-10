@@ -25,6 +25,7 @@ xrun-ssh = { path = "../xrun-ssh" }
 xrun-mlflow = { path = "../xrun-mlflow" }
 xrun-wandb = { path = "../xrun-wandb" }
 xrun-poller = { path = "../xrun-poller" }
+xrun-notify = { path = "../xrun-notify" }
 plotters = { workspace = true }
 xrun-tui = { path = "../xrun-tui", optional = true }
 clap = { workspace = true }

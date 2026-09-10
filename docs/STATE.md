@@ -97,6 +97,27 @@ CREATE TABLE instances (
 );
 
 -- Версия схемы для миграций
+-- Журнал push-уведомлений (007). Одна строка на (уведомление, канал).
+-- Также dedupe-store: `xrun watchdog` из планировщика и из TUI-тика не
+-- шлют один и тот же poller.dead дважды за [notify].dedupe_min.
+CREATE TABLE notify_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          DATETIME NOT NULL,
+    run_id      TEXT,                       -- NULL для global (watchdog / test)
+    kind        TEXT NOT NULL,              -- run.done | budget.warn | poller.dead | ...
+    dedupe_key  TEXT NOT NULL,              -- kind + run/instance + threshold
+    channel     TEXT NOT NULL,              -- ntfy | telegram | webhook | desktop
+    ok          INTEGER NOT NULL,           -- 1 доставлено, 0 ошибка
+    title       TEXT NOT NULL,
+    body        TEXT,
+    error       TEXT
+);
+CREATE INDEX idx_notify_log_key ON notify_log(dedupe_key, ts);
+CREATE INDEX idx_notify_log_run ON notify_log(run_id);
+
+-- runs.poller_heartbeat_at DATETIME (007): поллер штампует каждый тик;
+-- `xrun watchdog` сравнивает с [notify].heartbeat_stale_min.
+
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 INSERT INTO schema_version VALUES (1);
 ```

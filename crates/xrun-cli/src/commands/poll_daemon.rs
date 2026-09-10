@@ -39,7 +39,7 @@ fn load_sinks_config(
     ))
 }
 
-fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
+pub(crate) fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
     if let Ok(creds) = Credentials::load(config_dir) {
         if creds.vast.api_key.is_some() {
             return creds.vast;
@@ -225,6 +225,18 @@ pub fn run(
             poller = poller.with_metric_sinks(cfg);
         }
     }
+    if let Some(es) = crate::commands::launch::early_stop_from_manifest(&manifest_path) {
+        poller = poller.with_early_stop(es);
+    }
+
+    // Push notifications: built from config + credentials on disk, and
+    // hot-reloaded when either file changes — a channel set up in the TUI
+    // mid-run starts receiving pushes within one poll tick.
+    poller = poller
+        .with_notifier(crate::commands::notify_cmd::build_notifier_logged(
+            config_dir,
+        ))
+        .with_notify_reload(config_dir);
 
     let result = poller.run(cancel);
 

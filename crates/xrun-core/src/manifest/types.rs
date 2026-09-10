@@ -214,6 +214,9 @@ pub struct MlflowSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Policy {
+    /// Stop the run early when a metric stops improving. Saves the money a
+    /// finished-but-still-scheduled run would burn. See [`EarlyStop`].
+    pub early_stop: Option<EarlyStop>,
     pub on_stage_failed: Option<String>,
     pub on_idle_minutes: Option<u32>,
     pub on_done: Option<String>,
@@ -223,6 +226,43 @@ pub struct Policy {
     /// run fails with `upload: timeout` event on expiry. Picked per-source —
     /// a 4 KB script and a 4 GB dataset don't share one budget.
     pub upload_timeout_secs: Option<u64>,
+}
+
+/// Metric-based early stopping, evaluated by the poller on every metric
+/// batch. When `metric` has not improved by more than `min_delta` for
+/// `patience` consecutive new steps, the poller pulls `pull_pattern`
+/// (default `**/best*`) into the run's `artifacts/`, destroys the instance
+/// and marks the run `done` with an `early_stop` event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EarlyStop {
+    /// Metric key as logged via `xrun_hook.metric` (e.g. `val_f1`).
+    pub metric: String,
+    /// Consecutive non-improving evaluations before stopping.
+    pub patience: u32,
+    /// `max` (default) — higher is better; `min` — lower is better.
+    #[serde(default)]
+    pub mode: EarlyStopMode,
+    /// Improvement smaller than this does not reset patience.
+    #[serde(default)]
+    pub min_delta: f64,
+    /// Pull artifacts before destroying the instance (default true).
+    #[serde(default = "default_true")]
+    pub pull: bool,
+    /// Remote glob to pull (default `**/best*`).
+    pub pull_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EarlyStopMode {
+    #[default]
+    Max,
+    Min,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
