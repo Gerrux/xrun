@@ -100,7 +100,7 @@ fn install_skill_codex_writes_project_files() {
         .success()
         .stdout(contains("Codex"));
 
-    let skill = dir.path().join(".codex/skills/xrun/SKILL.md");
+    let skill = dir.path().join(".agents/skills/xrun/SKILL.md");
     let agents = dir.path().join("AGENTS.md");
     assert!(skill.exists(), "missing {}", skill.display());
     assert!(agents.exists(), "missing {}", agents.display());

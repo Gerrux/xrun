@@ -27,6 +27,7 @@ struct MockVendor {
     /// Optional scripted answers for `process_alive`. Each call pops one;
     /// when the queue empties, returns `None` (= adapter has no opinion).
     alive_queue: RefCell<VecDeque<Option<bool>>>,
+    destroy_fails: bool,
 }
 
 impl MockVendor {
@@ -36,6 +37,7 @@ impl MockVendor {
             metrics_queue: RefCell::new(metrics.into()),
             stdout_queue: RefCell::new(VecDeque::new()),
             alive_queue: RefCell::new(VecDeque::new()),
+            destroy_fails: false,
         }
     }
 
@@ -91,6 +93,9 @@ impl VendorAdapter for MockVendor {
     }
 
     fn destroy(&self, _: &InstanceHandle) -> Result<(), VendorError> {
+        if self.destroy_fails {
+            return Err(VendorError::Other("test cleanup failure".into()));
+        }
         Ok(())
     }
 
@@ -145,6 +150,42 @@ fn fast_config() -> PollerConfig {
         interval_idle_secs: 0,
         ..Default::default()
     }
+}
+
+#[test]
+fn cleanup_failure_is_recorded_without_false_terminal_success() {
+    let tmp = TempDir::new().unwrap();
+    let (mut store, run_id) = setup_store(&tmp);
+    store
+        .update_run_status(&run_id, RunStatus::Running)
+        .unwrap();
+    let mut mock = MockVendor::new(vec![], vec![]);
+    mock.destroy_fails = true;
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let result = Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(mock),
+        make_handle(),
+        tmp.path().join("runs"),
+    )
+    .with_config(fast_config())
+    .run(cancel);
+    assert!(matches!(result, Err(PollerError::Vendor(_))));
+    let store = Store::open(&tmp.path().join("runs.db")).unwrap();
+    assert_eq!(
+        store.get_run(&run_id).unwrap().unwrap().status,
+        RunStatus::Running
+    );
+    let events = store.list_events(&run_id).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.stage == "instance.cleanup_failed")
+            .count(),
+        3
+    );
 }
 
 // ---------------------------------------------------------------------------

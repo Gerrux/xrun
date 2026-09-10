@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use xrun_core::{
     config::credentials::{KaggleCredentials, VastCredentials},
     store::{Run, RunStatus},
@@ -108,6 +107,9 @@ fn stop_one(
     keep_instance: bool,
     db_path: &Path,
 ) -> Result<()> {
+    if keep_instance {
+        anyhow::bail!("--keep-instance cannot safely stop the training process yet; run remains unchanged. Omit this flag to stop and release the run resource.");
+    }
     if !keep_instance {
         if let Some(instance_id) = &run.instance_id {
             if let Some(instance) = store.get_instance(instance_id)? {
@@ -116,14 +118,19 @@ fn stop_one(
                         let handle: InstanceHandle = serde_json::from_str(state_json)
                             .context("failed to deserialize instance handle")?;
                         let adapter_store = Store::open(db_path)?;
-                        let adapter =
-                            build_adapter(&handle.vendor, runs_dir, config_dir, adapter_store)?;
+                        let adapter = build_adapter(
+                            &handle.vendor,
+                            runs_dir,
+                            config_dir,
+                            adapter_store,
+                            &run.id,
+                        )?;
                         adapter.set_run_id(&run.id);
                         adapter.destroy(&handle).with_context(|| {
                             format!("destroy failed for instance {}", handle.id)
                         })?;
                     } else {
-                        store.update_instance_destroyed(instance_id, Utc::now())?;
+                        anyhow::bail!("instance {instance_id} has no saved handle; cannot verify resource cleanup");
                     }
                 }
             }
@@ -178,6 +185,7 @@ fn build_adapter(
     runs_dir: &Path,
     config_dir: &Path,
     store: Store,
+    run_id: &RunId,
 ) -> Result<Box<dyn VendorAdapter>> {
     match vendor {
         "vast" => {
@@ -196,34 +204,25 @@ fn build_adapter(
             runs_dir.to_path_buf(),
         ))),
         "ssh" => {
-            // For ssh we need the host alias to look up creds. The handle
-            // carries ssh_host but not the alias — fall back to scanning the
-            // creds for a matching host:port. Good enough until we add a
-            // dedicated alias column to the instances table.
             let creds = Credentials::load(config_dir).unwrap_or_default();
-            // Without the alias we can't resolve the workdir root, so default
-            // to /tmp/xrun. Destroy only needs the connection; this works for
-            // the kill-PID path.
-            let alias_match = creds.ssh_hosts.iter().find(|(_, c)| {
-                c.host.as_deref() == Some("__placeholder__") // never matches; the
-                                                             // real lookup happens via the instance row + manifest in
-                                                             // poll_daemon. For stop, route via env override below.
-            });
-            let _ = alias_match;
-            // Resolve via XRUN_SSH_ALIAS env or pick the first ssh entry as
-            // a fallback — destroy is best-effort and idempotent.
-            let alias = std::env::var("XRUN_SSH_ALIAS")
-                .ok()
-                .or_else(|| creds.ssh_hosts.keys().next().cloned())
-                .ok_or_else(|| anyhow::anyhow!("stop: no ssh hosts in credentials.toml"))?;
+            let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");
+            let yaml = std::fs::read_to_string(&manifest_path)
+                .context("stop: cannot read saved SSH manifest")?;
+            let manifest = xrun_core::manifest::Manifest::from_yaml_str(&yaml)?;
+            let ssh = manifest
+                .ssh
+                .as_ref()
+                .context("stop: saved manifest has no ssh configuration")?;
+            let alias = &ssh.host_alias;
             let host_creds = creds
                 .ssh_hosts
-                .get(&alias)
+                .get(alias)
                 .ok_or_else(|| anyhow::anyhow!("stop: ssh alias '{alias}' missing"))?;
-            let conn = SshAdapter::resolve_conn(&alias, host_creds)?;
-            let workdir_root = host_creds
-                .default_workdir
+            let conn = SshAdapter::resolve_conn(alias, host_creds)?;
+            let workdir_root = ssh
+                .workdir
                 .clone()
+                .or_else(|| host_creds.default_workdir.clone())
                 .unwrap_or_else(|| "/tmp/xrun".to_string());
             Ok(Box::new(SshAdapter::new(store, conn, workdir_root)))
         }

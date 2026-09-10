@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh
-#   curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.7.1
+#   curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.7.2
 #   curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --no-tui
 #   curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --install-pip
 #   curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --with-skill
@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
         --tui-only)    TUI_ONLY=1; WITH_TUI=1; shift ;;
         --install-pip) INSTALL_PIP=1; shift ;;
         --help|-h)
-            echo "Usage: install.sh [--version v0.7.1] [--prefix ~/.local] [--with-tui|--no-tui] [--install-pip] [--with-skill] [--skill-only|--tui-only]"
+            echo "Usage: install.sh [--version v0.7.2] [--prefix ~/.local] [--with-tui|--no-tui] [--install-pip] [--with-skill] [--skill-only|--tui-only]"
             exit 0 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
@@ -125,7 +125,7 @@ resolve_version() {
     fi
 
     if [ -z "$VERSION" ]; then
-        echo "Could not determine latest version. Pass --version v0.7.1 explicitly."
+        echo "Could not determine latest version. Pass --version v0.7.2 explicitly."
         exit 1
     fi
 }

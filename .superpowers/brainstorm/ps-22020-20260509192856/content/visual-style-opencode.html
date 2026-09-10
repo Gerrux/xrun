@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xrun theme directions</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: #111821;
+      --panel-2: #151f2b;
+      --line: #263241;
+      --text: #d7dde6;
+      --muted: #7d8997;
+      --blue: #5aa7ff;
+      --green: #7bd88f;
+      --orange: #f0b86a;
+      --red: #ff6b7a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 0%, #121b26 0, transparent 32rem), var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      padding: 28px;
+    }
+    h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.02em; }
+    .subtitle { margin: 0 0 22px; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(280px, 1fr)); gap: 18px; }
+    .card {
+      border: 1px solid var(--line);
+      background: rgba(17, 24, 33, .92);
+      border-radius: 14px;
+      overflow: hidden;
+      cursor: pointer;
+      box-shadow: 0 18px 48px rgba(0,0,0,.26);
+    }
+    .card:hover { border-color: #48627f; transform: translateY(-1px); }
+    .bar { display: flex; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--muted); background: #0d131a; }
+    .body { padding: 12px; }
+    .row { display: grid; grid-template-columns: 74px 1fr 58px; gap: 10px; align-items: center; padding: 7px 8px; border-bottom: 1px solid rgba(125,137,151,.12); }
+    .row:last-child { border-bottom: 0; }
+    .tag { color: var(--green); }
+    .warn { color: var(--orange); }
+    .bad { color: var(--red); }
+    .accent { color: var(--blue); }
+    .status { color: var(--muted); text-align: right; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+    .tab { padding: 3px 8px; color: var(--muted); border: 1px solid transparent; }
+    .tab.active { color: var(--text); border-color: var(--line); background: var(--panel-2); border-radius: 7px; }
+    h2 { font-size: 15px; margin: 12px 0 6px; }
+    p { color: var(--muted); margin: 0 0 12px; }
+    .choice { display: inline-flex; margin: 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+    .dense { --bg: #090b0f; --panel: #0d1117; --panel-2: #11161d; --line: #222a35; --blue: #6aa9ff; }
+    .neon { --bg: #090a12; --panel: #11131f; --panel-2: #171a2a; --line: #30364a; --blue: #7c9cff; --green: #5ef1b6; --orange: #ffd166; }
+    .soft { --bg: #0f1117; --panel: #171a22; --panel-2: #1d222c; --line: #313743; --blue: #8ab4ff; --green: #a6e3a1; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+  <script>
+    function choose(choice) {
+      try {
+        window.localStorage.setItem('brainstorm-choice', choice);
+        const ws = new WebSocket(`ws://${location.host}`);
+        ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'click', choice, text: choice, timestamp: Date.now() })));
+      } catch (_) {}
+      document.querySelectorAll('.card').forEach(c => c.style.outline = 'none');
+      document.querySelector(`[data-choice="${choice}"]`).style.outline = '2px solid #5aa7ff';
+    }
+  </script>
+</head>
+<body>
+  <h1>xrun dark theme directions, opencode-inspired</h1>
+  <p class="subtitle">Pick the direction that feels closest. These are not final pixels, just style targets.</p>
+  <div class="grid">
+    <section class="card dense" data-choice="A-dense-terminal" onclick="choose('A-dense-terminal')">
+      <div class="bar"><span>xrun</span><span>gpu job runner</span></div>
+      <div class="body">
+        <div class="tabs"><span class="tab active">runs</span><span class="tab">instances</span><span class="tab">settings</span></div>
+        <div class="row"><span class="accent">run_042</span><span>train-resnet50</span><span class="status tag">running</span></div>
+        <div class="row"><span>run_041</span><span>kaggle-smoke</span><span class="status">done</span></div>
+        <div class="row"><span>run_040</span><span>vast-a100</span><span class="status warn">pulling</span></div>
+        <h2>A. Dense Terminal</h2>
+        <p>Very dark, crisp borders, low chrome, compact dashboard. Closest to a serious CLI workspace.</p>
+      </div>
+      <span class="choice">click to choose A</span>
+    </section>
+
+    <section class="card neon" data-choice="B-agent-console" onclick="choose('B-agent-console')">
+      <div class="bar"><span class="accent">xrun</span><span>events live</span></div>
+      <div class="body">
+        <div class="tabs"><span class="tab active">dashboard</span><span class="tab">logs</span><span class="tab">metrics</span></div>
+        <div class="row"><span class="tag">launch</span><span>provision instance</span><span class="status">ok</span></div>
+        <div class="row"><span class="accent">poll</span><span>stream metrics.jsonl</span><span class="status tag">live</span></div>
+        <div class="row"><span class="bad">warn</span><span>idle timeout in 4m</span><span class="status warn">watch</span></div>
+        <h2>B. Agent Console</h2>
+        <p>Still dark, but with stronger cyan/green command accents and more active status language.</p>
+      </div>
+      <span class="choice">click to choose B</span>
+    </section>
+
+    <section class="card soft" data-choice="C-polished-dark" onclick="choose('C-polished-dark')">
+      <div class="bar"><span>xrun settings</span><span>theme: opencode</span></div>
+      <div class="body">
+        <div class="tabs"><span class="tab active">general</span><span class="tab">vendors</span><span class="tab">budget</span></div>
+        <div class="row"><span>theme</span><span class="accent">opencode dark</span><span class="status tag">saved</span></div>
+        <div class="row"><span>vendor</span><span>vast</span><span class="status">default</span></div>
+        <div class="row"><span>budget</span><span>$10 max / instance</span><span class="status warn">guard</span></div>
+        <h2>C. Polished Dark</h2>
+        <p>More spacing, softer contrast, calmer colors. Better for long sessions, less terminal-hardcore.</p>
+      </div>
+      <span class="choice">click to choose C</span>
+    </section>
+  </div>
+</body>
+</html>

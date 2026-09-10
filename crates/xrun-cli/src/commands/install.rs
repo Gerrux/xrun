@@ -20,7 +20,7 @@ pub enum InstallSubcommand {
 
 #[derive(Args)]
 pub struct InstallSkillArgs {
-    /// Install Codex project skill files (.codex/skills/xrun + AGENTS.md)
+    /// Install Codex project skill files (.agents/skills/xrun + AGENTS.md)
     #[arg(long, conflicts_with = "claude")]
     pub codex: bool,
     /// Install Claude project skill files (.claude/skills/xrun + CLAUDE.md)
@@ -93,7 +93,21 @@ fn upsert_instruction_pointer(path: &Path, harness: Harness) -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
     };
 
-    if content.contains("<!-- xrun-skill -->") {
+    if let Some(start) = content.find("<!-- xrun-skill -->") {
+        if let Some(end) = content[start..].find("<!-- /xrun-skill -->") {
+            content.replace_range(start..start + end + "<!-- /xrun-skill -->".len(), block);
+        } else {
+            // Migrate only the exact legacy block; preserve unrelated user text.
+            let legacy = block
+                .replace(".agents/skills/", ".codex/skills/")
+                .replace("\n<!-- /xrun-skill -->", "");
+            if content.contains(&legacy) {
+                content = content.replacen(&legacy, block, 1);
+            } else {
+                bail!("unrecognized xrun instruction block in {}; preserve it and update the skill pointer manually", path.display());
+            }
+        }
+        fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
         return Ok(());
     }
 
@@ -126,7 +140,7 @@ impl Harness {
 
     fn skill_path(self) -> &'static str {
         match self {
-            Self::Codex => ".codex/skills/xrun/SKILL.md",
+            Self::Codex => ".agents/skills/xrun/SKILL.md",
             Self::Claude => ".claude/skills/xrun/SKILL.md",
         }
     }
@@ -141,10 +155,10 @@ impl Harness {
     fn instruction_block(self) -> &'static str {
         match self {
             Self::Codex => {
-                "<!-- xrun-skill -->\n# xrun Skill\n\nWhen working with ML experiment runs in this repository, use the project skill at `.codex/skills/xrun/SKILL.md`."
+                "<!-- xrun-skill -->\n# xrun Skill\n\nWhen working with ML experiment runs in this repository, use the project skill at `.agents/skills/xrun/SKILL.md`.\n<!-- /xrun-skill -->"
             }
             Self::Claude => {
-                "<!-- xrun-skill -->\n# xrun Skill\n\nWhen working with ML experiment runs in this repository, use the project skill at `.claude/skills/xrun/SKILL.md`."
+                "<!-- xrun-skill -->\n# xrun Skill\n\nWhen working with ML experiment runs in this repository, use the project skill at `.claude/skills/xrun/SKILL.md`.\n<!-- /xrun-skill -->"
             }
         }
     }

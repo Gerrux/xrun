@@ -11,6 +11,23 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.2] - 2026-09-10
+
+### Fixed
+
+- CLI launch and sweep commands now return structured JSON results and
+  propagate failed run statuses to automation callers.
+- Detached pollers retain their config and write diagnostic logs under the
+  run directory, while poller locks prevent duplicate cross-process workers.
+- Instance cleanup now retries and reports vendor failures instead of marking
+  resources as destroyed prematurely; SSH cleanup validates recorded PIDs.
+- CI Python tests are mandatory rather than silently skipped on setup issues.
+
+### Added
+
+- Agent contract, process-lock, and poll-progress regression coverage.
+- Stability and harness review documentation for the supported workflows.
+
 ## [0.7.1] - 2026-06-01
 
 ### Added

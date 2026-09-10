@@ -2,7 +2,7 @@
 #
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1 | iex
-#   & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -Version v0.7.1
+#   & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -Version v0.7.2
 #   & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -NoTui
 #   & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -InstallPip
 #   & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -WithSkill
@@ -120,7 +120,7 @@ function Resolve-Version {
             $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
             $script:Version = $release.tag_name
         } catch {
-            Write-Error "Could not determine latest version. Pass -Version v0.7.1 explicitly."
+            Write-Error "Could not determine latest version. Pass -Version v0.7.2 explicitly."
             exit 1
         }
     }

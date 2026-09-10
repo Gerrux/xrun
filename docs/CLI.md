@@ -99,7 +99,7 @@ stdout/stderr.
 
 ```
 --force          сразу destroy, без graceful
---keep-instance  не гасить vast-инстанс (для отладки)
+--keep-instance  временно отклоняется: безопасная остановка процесса с сохранением инстанса не реализована; статус run не меняется
 ```
 
 ### `xrun diff <run-a> <run-b> [flags]`
@@ -257,6 +257,25 @@ max_per_hour_usd = 0.6
 --no-color
 ```
 
+## Машинный вывод и восстановление
+
+- `launch --json` возвращает один объект с `run_id`, `instance_id`, `status`
+  и `poller_pid` (null для foreground/upload-only). Ошибка подготовки запуска
+  возвращает объект `error` с `code: launch_failed` и `message`, exit 1.
+  Терминальный failed/cancelled возвращает результат run и exit 1.
+- `events --json` возвращает массив; `events --follow --json` — JSONL,
+  один объект события на строку, без табличных заголовков.
+- `sweep --launch --json` возвращает один объект: `manifests` и `runs`.
+  В каждой записи `runs`: `name`, `success`, `result`, `error`.
+  Ошибка одного запуска не мешает остальным, но итоговый exit code — 1.
+- `--detach` по-прежнему возвращается после provision/upload/execute.
+  При таймауте сначала проверьте существующий run; повтор launch не идемпотентен.
+- Daemon получает выбранный `--config-dir`, диагностика сохраняется в
+  `<runs-dir>/<run-id>/poller.log`. Успешный spawn ещё не гарантирует готовность daemon.
+- Poller повторяет неудачное удаление до трёх раз. Если все попытки неуспешны,
+  записывает `instance.cleanup_failed` и возвращает ошибку, сохраняя run активным.
+  Проверьте ресурс и повторите `stop <id>`; это не бессрочный supervisor cleanup.
+
 ## `xrun install skill`
 
 Устанавливает project-local skill/instructions для agent harness в текущий репозиторий:
@@ -266,7 +285,7 @@ xrun install skill --codex
 xrun install skill --claude
 ```
 
-Codex target пишет `.codex/skills/xrun/SKILL.md` и добавляет pointer в `AGENTS.md`.
+Codex target пишет `.agents/skills/xrun/SKILL.md` и добавляет обновляемый блок в `AGENTS.md`.
 Claude target пишет `.claude/skills/xrun/SKILL.md` и добавляет pointer в `CLAUDE.md`.
 
 Флаги:

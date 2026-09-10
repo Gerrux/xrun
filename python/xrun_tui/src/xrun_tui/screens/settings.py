@@ -24,9 +24,10 @@ from xrun_tui.widgets.title_bar import TitleBar
 from xrun_tui import config
 
 _THEMES = [
-    ("tokyo-night",     "Tokyo Night (default)"),
-    ("catppuccin-mocha","Catppuccin Mocha"),
-    ("gruvbox-dark",    "Gruvbox Dark"),
+    ("tokyo-night",      "Tokyo Night (default)"),
+    ("catppuccin-mocha", "Catppuccin Mocha"),
+    ("gruvbox-dark",     "Gruvbox Dark"),
+    ("opencode-dark",    "OpenCode Dark"),
 ]
 
 # (key, label, default) — written into TUI JSON
@@ -404,12 +405,10 @@ class SettingsScreen(Screen):
         new_theme = tui_settings.get("theme")
         if new_theme and new_theme != getattr(self.app, "theme_name", None):
             try:
-                from xrun_tui.themes import write_theme_for_app
                 target = config.config_dir() / "tui-theme"
-                write_theme_for_app(new_theme, target)
-                self.app.theme_name = new_theme  # type: ignore[attr-defined]
+                _apply_theme_to_app(self.app, new_theme, target)
                 self.notify(
-                    f"Theme set to {new_theme} — restart for full effect",
+                    f"Theme set to {new_theme}",
                     severity="information",
                 )
             except Exception as exc:
@@ -497,6 +496,15 @@ def _xrun_row(row: tuple[str, str, str, str]) -> Horizontal:
 def _sanitize(key: str) -> str:
     return key.replace(".", "-")
 
+
+def _apply_theme_to_app(app, theme: str, target_dir) -> None:
+    """Render and apply a theme immediately, keeping the selection persistent."""
+    from xrun_tui.themes import write_theme_for_app
+
+    rendered = write_theme_for_app(theme, target_dir)
+    app.CSS_PATH = str(rendered)
+    app.theme_name = theme
+    app.refresh_css(animate=False)
 
 def _nested_get(data: dict, dotted_key: str):
     """Traverse nested dict with a dot-separated key path."""

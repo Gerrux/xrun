@@ -65,7 +65,7 @@ For CLI-only install without the TUI:
 ### Specific version
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.7.1
+curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.7.2
 ```
 
 ### From source
@@ -117,7 +117,7 @@ Teaches Codex or Claude Code how to use xrun correctly — which commands to cal
 For a repository-local install, run this inside the project that uses xrun:
 
 ```sh
-xrun install skill --codex   # writes .codex/skills/xrun/SKILL.md + AGENTS.md
+xrun install skill --codex   # writes .agents/skills/xrun/SKILL.md + AGENTS.md
 xrun install skill --claude  # writes .claude/skills/xrun/SKILL.md + CLAUDE.md
 ```
 
@@ -350,7 +350,7 @@ The background poll-daemon monitors spend and destroys the instance automaticall
 
 ---
 
-## Status: v0.7.1
+## Status: v0.7.2
 
 - ✅ vast.ai: provision, upload, exec, poll, pull, destroy
 - ✅ Kaggle: kernel push, status poll, output download

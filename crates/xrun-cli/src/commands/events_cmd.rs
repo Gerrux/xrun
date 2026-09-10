@@ -47,10 +47,12 @@ pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
     }
 
     // --- follow mode ---
-    print_header();
+    if !args.json {
+        print_header();
+    }
     let mut last_id = 0i64;
     for e in &events {
-        print_event(e);
+        emit_event(e, args.json)?;
         last_id = last_id.max(e.id);
     }
 
@@ -65,7 +67,7 @@ pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
             .list_events_after(&id, last_id)
             .context("failed to poll events")?;
         for e in &new_events {
-            print_event(e);
+            emit_event(e, args.json)?;
             last_id = last_id.max(e.id);
         }
 
@@ -79,7 +81,7 @@ pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
                 .list_events_after(&id, last_id)
                 .context("failed to flush final events")?;
             for e in &final_events {
-                print_event(e);
+                emit_event(e, args.json)?;
             }
             eprintln!("run {} {}", args.id, current.status.as_str());
             break;
@@ -99,6 +101,17 @@ fn is_terminal(status: &RunStatus) -> bool {
 fn print_header() {
     println!("{:<24}  {:<20}  {:<8}  msg", "ts", "stage", "status");
     println!("{}", "-".repeat(70));
+}
+
+fn emit_event(e: &StoredEvent, json: bool) -> Result<()> {
+    if json {
+        use std::io::Write;
+        println!("{}", serde_json::to_string(e)?);
+        std::io::stdout().flush()?;
+    } else {
+        print_event(e);
+    }
+    Ok(())
 }
 
 fn print_event(e: &StoredEvent) {

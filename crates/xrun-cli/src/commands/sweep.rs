@@ -70,14 +70,21 @@ pub fn run(args: &SweepArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
         });
     }
 
-    if args.json {
-        emit_json(&materialised, args)?;
-    } else {
+    if !args.json {
         emit_table(&materialised, args, &out_dir);
     }
 
-    if args.launch && !args.dry_run {
-        launch_each(&materialised, args, db_path, runs_dir, config_dir)?;
+    let results = if args.launch && !args.dry_run {
+        launch_each(&materialised, args, db_path, runs_dir, config_dir)
+    } else {
+        Vec::new()
+    };
+    let failures = results.iter().filter(|r| !r.success).count();
+    if args.json {
+        emit_json(&materialised, args, &results)?;
+    }
+    if failures > 0 {
+        anyhow::bail!("{failures}/{} sweep launches failed", results.len());
     }
 
     Ok(())
@@ -204,7 +211,7 @@ fn emit_table(rows: &[MaterialisedRun], args: &SweepArgs, out_dir: &Path) {
     }
 }
 
-fn emit_json(rows: &[MaterialisedRun], args: &SweepArgs) -> Result<()> {
+fn emit_json(rows: &[MaterialisedRun], args: &SweepArgs, results: &[SweepResult]) -> Result<()> {
     let arr: Vec<_> = rows
         .iter()
         .map(|r| {
@@ -219,9 +226,18 @@ fn emit_json(rows: &[MaterialisedRun], args: &SweepArgs) -> Result<()> {
         "count": rows.len(),
         "dry_run": args.dry_run,
         "manifests": arr,
+        "runs": results,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SweepResult {
+    name: String,
+    success: bool,
+    result: Option<launch::LaunchResult>,
+    error: Option<String>,
 }
 
 fn launch_each(
@@ -230,16 +246,17 @@ fn launch_each(
     db_path: &Path,
     runs_dir: &Path,
     config_dir: &Path,
-) -> Result<()> {
-    println!();
-    println!(
+) -> Vec<SweepResult> {
+    eprintln!();
+    eprintln!(
         "Launching {n} run(s){detached}…",
         n = rows.len(),
         detached = if args.detach { " (detached)" } else { "" },
     );
     let total = rows.len();
+    let mut results = Vec::with_capacity(total);
     for (i, r) in rows.iter().enumerate() {
-        println!("\n[{}/{}] {}", i + 1, total, r.name);
+        eprintln!("\n[{}/{}] {}", i + 1, total, r.name);
         let launch_args = LaunchArgs {
             manifest: r.path.clone(),
             dry_run: false,
@@ -256,13 +273,32 @@ fn launch_each(
             overrides: Vec::new(),
             trace: false,
         };
-        if let Err(e) = launch::run(&launch_args, db_path, runs_dir, config_dir) {
-            eprintln!("  failed: {e:#}");
-            // Continue with the remaining combos — a single bad GPU offer
-            // shouldn't sink the whole sweep.
+        let (result, error) = match launch::execute(&launch_args, db_path, runs_dir, config_dir) {
+            Ok(Some(result)) => {
+                let error = if result.succeeded() {
+                    None
+                } else {
+                    Some(format!("run ended with status: {}", result.status))
+                };
+                if !args.json {
+                    println!("{}", result.run_id);
+                }
+                (Some(result), error)
+            }
+            Ok(None) => (None, Some("launch returned no result".into())),
+            Err(e) => (None, Some(format!("{e:#}"))),
+        };
+        if let Some(ref error) = error {
+            eprintln!("  failed: {error}");
         }
+        results.push(SweepResult {
+            name: r.name.clone(),
+            success: error.is_none(),
+            result,
+            error,
+        });
     }
-    Ok(())
+    results
 }
 
 fn truncate(s: &str, n: usize) -> String {

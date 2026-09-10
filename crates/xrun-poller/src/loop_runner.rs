@@ -147,6 +147,34 @@ pub struct Poller {
 }
 
 impl Poller {
+    /// Do not report terminal cleanup success when the vendor rejected it.
+    /// Keep the run active on error so resume/stop can retry the operation.
+    fn destroy_instance(&mut self) -> Result<(), PollerError> {
+        for attempt in 1..=3 {
+            match self.vendor.destroy(&self.handle) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let message = format!("cleanup attempt {attempt}/3 failed: {error}");
+                    tracing::warn!("{message}");
+                    let _ = self.store.append_event(
+                        &self.run_id,
+                        NewEvent {
+                            ts: Utc::now(),
+                            stage: "instance.cleanup_failed".into(),
+                            status: "fail".into(),
+                            msg: Some(message.clone()),
+                            payload_json: None,
+                        },
+                    );
+                    if attempt == 3 {
+                        return Err(PollerError::Vendor(message));
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+        unreachable!()
+    }
     pub fn new(
         run_id: RunId,
         store: Store,
@@ -245,7 +273,7 @@ impl Poller {
         loop {
             let mut progress_this_tick = false;
             if cancel.is_cancelled() {
-                let _ = self.vendor.destroy(&self.handle);
+                self.destroy_instance()?;
                 self.store
                     .update_run_status(&self.run_id, RunStatus::Cancelled)?;
                 self.send_update(DataUpdate::RunStatusChanged(
@@ -538,7 +566,7 @@ impl Poller {
             // completed, finalize and return.
             if let Some(status) = terminal_after_drain {
                 if destroy_after_drain {
-                    let _ = self.vendor.destroy(&self.handle);
+                    self.destroy_instance()?;
                 }
                 self.store.update_run_status(&self.run_id, status.clone())?;
                 self.send_update(DataUpdate::RunStatusChanged(
@@ -583,8 +611,8 @@ impl Poller {
                                 if let Some(reason) =
                                     budget::evaluate_caps(&updated, self.train_started_at, now_wall)
                                 {
-                                    // Record reason BEFORE destroying so a
-                                    // daemon restart doesn't double-destroy.
+                                    self.destroy_instance()?;
+                                    // Record success only after the vendor confirms cleanup.
                                     let _ = self.store.set_auto_destroyed_reason(
                                         &self.handle.id,
                                         reason.as_str(),
@@ -608,7 +636,6 @@ impl Poller {
                                             payload_json: Some(payload),
                                         },
                                     );
-                                    let _ = self.vendor.destroy(&self.handle);
                                     self.store
                                         .update_run_status(&self.run_id, RunStatus::Failed)?;
                                     self.send_update(DataUpdate::RunStatusChanged(
@@ -655,11 +682,11 @@ impl Poller {
                             // user can also flip to soft mode by leaving
                             // `daily_budget_hard = false`.
                             if self.budget.daily_budget_hard {
+                                self.destroy_instance()?;
                                 let _ = self.store.set_auto_destroyed_reason(
                                     &self.handle.id,
                                     "daily_budget_hard",
                                 );
-                                let _ = self.vendor.destroy(&self.handle);
                                 self.store
                                     .update_run_status(&self.run_id, RunStatus::Failed)?;
                                 self.send_update(DataUpdate::RunStatusChanged(
@@ -687,7 +714,7 @@ impl Poller {
                             payload_json: None,
                         },
                     );
-                    let _ = self.vendor.destroy(&self.handle);
+                    self.destroy_instance()?;
                     self.store
                         .update_run_status(&self.run_id, RunStatus::Failed)?;
                     self.send_update(DataUpdate::RunStatusChanged(

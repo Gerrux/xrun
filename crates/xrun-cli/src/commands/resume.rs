@@ -231,7 +231,7 @@ fn resume_one(
             });
         }
         // Kernel still running — respawn poller so it keeps ingesting.
-        return respawn(run, db_path, runs_dir, dry_run);
+        return respawn(run, db_path, runs_dir, config_dir, dry_run);
     }
 
     // Step 2b: SSH-style vendors (vast, ssh, local) — check the live list.
@@ -239,7 +239,7 @@ fn resume_one(
         Ok(remote) => {
             let alive = remote.iter().any(|r| r.id == instance_id);
             if alive {
-                respawn(run, db_path, runs_dir, dry_run)
+                respawn(run, db_path, runs_dir, config_dir, dry_run)
             } else {
                 if !dry_run {
                     let mut w = Store::open(db_path)?;
@@ -267,7 +267,13 @@ fn resume_one(
     }
 }
 
-fn respawn(run: &Run, db_path: &Path, runs_dir: &Path, dry_run: bool) -> Result<Report> {
+fn respawn(
+    run: &Run,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+    dry_run: bool,
+) -> Result<Report> {
     if dry_run {
         return Ok(Report {
             run_id: run.id.to_string(),
@@ -278,7 +284,7 @@ fn respawn(run: &Run, db_path: &Path, runs_dir: &Path, dry_run: bool) -> Result<
             note: Some("dry-run: would spawn poll-daemon".into()),
         });
     }
-    let pid = spawn_daemon(&run.id, db_path, runs_dir)?;
+    let pid = spawn_daemon(&run.id, db_path, runs_dir, config_dir)?;
     let mut w = Store::open(db_path)?;
     if let Err(e) = w.update_run_poller_pid(&run.id, Some(pid as i64)) {
         tracing::warn!("respawn: could not record poller PID: {e}");

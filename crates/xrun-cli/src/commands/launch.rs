@@ -70,7 +70,53 @@ fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
     VastCredentials::default()
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct LaunchResult {
+    pub run_id: String,
+    pub instance_id: String,
+    pub status: String,
+    pub poller_pid: Option<u32>,
+}
+
+impl LaunchResult {
+    pub fn succeeded(&self) -> bool {
+        matches!(self.status.as_str(), "running" | "done")
+    }
+}
+
 pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
+    let result = match execute(args, db_path, runs_dir, config_dir) {
+        Ok(result) => result,
+        Err(error) => {
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": {"code": "launch_failed", "message": format!("{error:#}")}})
+                );
+            }
+            return Err(error);
+        }
+    };
+    if let Some(result) = result {
+        if args.json {
+            println!("{}", serde_json::to_string(&result)?);
+        } else if args.detach || args.upload_only {
+            println!("{}", result.run_id);
+        }
+        if !result.succeeded() {
+            anyhow::bail!("run {} ended with status: {}", result.run_id, result.status);
+        }
+    }
+    Ok(())
+}
+
+/// Execute a launch without rendering its result, for callers such as sweep.
+pub(crate) fn execute(
+    args: &LaunchArgs,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+) -> Result<Option<LaunchResult>> {
     let content = std::fs::read_to_string(&args.manifest)
         .with_context(|| format!("failed to read manifest: {}", args.manifest.display()))?;
 
@@ -215,7 +261,7 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
                 }
             }
         }
-        return Ok(());
+        return Ok(None);
     }
 
     // Billable confirm — uses the manifest's price cap as an upper bound on
@@ -250,6 +296,7 @@ pub fn run(args: &LaunchArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path
         global.mlflow.url.clone(),
         config_dir.to_path_buf(),
     )
+    .map(Some)
 }
 
 /// Resolve effective per-instance caps from CLI overrides + global config.
@@ -289,7 +336,11 @@ pub fn run_with_vendor(
     let manifest =
         Manifest::from_yaml_str(&content).with_context(|| "manifest validation failed")?;
 
-    do_launch(args, &manifest, db_path, runs_dir, vendor)
+    let result = do_launch(args, &manifest, db_path, runs_dir, vendor)?;
+    if !result.succeeded() {
+        anyhow::bail!("run {} {}", result.run_id, result.status);
+    }
+    Ok(())
 }
 
 fn do_launch(
@@ -298,7 +349,7 @@ fn do_launch(
     db_path: &Path,
     runs_dir: &Path,
     vendor: Box<dyn VendorAdapter>,
-) -> Result<()> {
+) -> Result<LaunchResult> {
     do_launch_with_budget(
         args,
         manifest,
@@ -321,7 +372,7 @@ fn do_launch_with_budget(
     budget_cfg: xrun_core::BudgetConfig,
     mlflow_url: Option<String>,
     config_dir: std::path::PathBuf,
-) -> Result<()> {
+) -> Result<LaunchResult> {
     let hash = manifest.canonical_hash();
     let name = args.name.as_deref().unwrap_or(&manifest.name);
     // Store an absolute path so consumers (TUI, `xrun show`) can read the
@@ -439,15 +490,12 @@ fn do_launch_with_budget(
             "Run {run_id} upload complete (instance {} kept alive)",
             handle.id
         );
-        if args.json {
-            println!(
-                "{}",
-                serde_json::json!({"run_id": run_id.to_string(), "instance_id": handle.id})
-            );
-        } else {
-            println!("{run_id}");
-        }
-        return Ok(());
+        return Ok(LaunchResult {
+            run_id: run_id.to_string(),
+            instance_id: handle.id.clone(),
+            status: "done".into(),
+            poller_pid: None,
+        });
     }
 
     // Execute training command
@@ -472,17 +520,22 @@ fn do_launch_with_budget(
 
     if args.detach {
         eprintln!("[launch] spawning poll-daemon");
-        let pid = spawn_daemon(&run_id, db_path, runs_dir)?;
+        let pid = spawn_daemon(&run_id, db_path, runs_dir, &config_dir)?;
         if let Err(e) = store.update_run_poller_pid(&run_id, Some(pid as i64)) {
             tracing::warn!("could not record poller PID: {e}");
         }
         eprintln!("[launch] detached (poller pid {pid})");
-        println!("{run_id}");
-        return Ok(());
+        return Ok(LaunchResult {
+            run_id: run_id.to_string(),
+            instance_id: handle.id.clone(),
+            status: "running".into(),
+            poller_pid: Some(pid),
+        });
     }
 
     // Foreground poller: blocks until done/failed/cancelled
     let cancel = CancellationToken::new();
+    let instance_id = handle.id.clone();
     let mut poller = Poller::new(
         run_id.clone(),
         store,
@@ -520,13 +573,12 @@ fn do_launch_with_budget(
     let result = poller.run(cancel);
 
     match result {
-        Ok(RunStatus::Done) => {
-            eprintln!("Run {run_id} completed");
-            Ok(())
-        }
-        Ok(RunStatus::Failed) => anyhow::bail!("run {run_id} failed"),
-        Ok(RunStatus::Cancelled) => anyhow::bail!("run {run_id} was cancelled"),
-        Ok(s) => anyhow::bail!("run {run_id} ended with status: {}", s.as_str()),
+        Ok(status) => Ok(LaunchResult {
+            run_id: run_id.to_string(),
+            instance_id,
+            status: status.as_str().into(),
+            poller_pid: None,
+        }),
         Err(e) => anyhow::bail!("poller error for run {run_id}: {e}"),
     }
 }
@@ -561,10 +613,23 @@ fn resolve_reuse_handle(store: &Store, id: &str) -> Result<InstanceHandle> {
 
 /// Spawn `xrun __poll-daemon <run_id>` as a detached background process.
 /// Returns the spawned process PID so callers can record it for liveness checks.
-pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<u32> {
+pub fn spawn_daemon(
+    run_id: &RunId,
+    db_path: &Path,
+    runs_dir: &Path,
+    config_dir: &Path,
+) -> Result<u32> {
     let exe = std::env::current_exe().context("failed to determine current executable path")?;
+    let run_dir = runs_dir.join(run_id.to_string());
+    std::fs::create_dir_all(&run_dir)?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(run_dir.join("poller.log"))
+        .context("failed to open poller log")?;
 
     let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--config-dir").arg(config_dir);
     cmd.arg("--db")
         .arg(db_path)
         .arg("__poll-daemon")
@@ -573,7 +638,7 @@ pub fn spawn_daemon(run_id: &RunId, db_path: &Path, runs_dir: &Path) -> Result<u
         .arg(runs_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::from(log));
 
     // Detach the child from the current process group / terminal.
     #[cfg(target_os = "windows")]

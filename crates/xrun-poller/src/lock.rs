@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -20,18 +21,19 @@ fn active_pollers() -> &'static Mutex<HashSet<String>> {
     ACTIVE_POLLERS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// Advisory in-process lock for a poller identified by `run_id`.
+/// Advisory process and thread lock for a poller identified by `run_id`.
 ///
 /// Uses a global `HashSet` for in-process exclusion (works across threads in the
-/// same process) and writes a PID file for cross-process visibility.
+/// same process), an OS file lock across processes, and a readable PID file.
 pub struct PollerLock {
     run_id: String,
     pid_file: PathBuf,
+    _lock_file: File,
 }
 
 impl PollerLock {
     /// Try to acquire the lock. Returns `Err(AlreadyPolling)` if another
-    /// poller is active for the same `run_id` in this process.
+    /// poller is active for the same run. The OS releases the lock on exit.
     pub fn try_acquire(run_id: &str, pid_file: PathBuf) -> Result<Self, PollerLockError> {
         let mut guard = active_pollers()
             .lock()
@@ -42,11 +44,25 @@ impl PollerLock {
         if let Some(parent) = pid_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Never unlink this file: waiters must keep locking the same inode.
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(pid_file.with_extension("lock"))?;
+        if let Err(e) = fs2::FileExt::try_lock_exclusive(&lock_file) {
+            if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                return Err(PollerLockError::AlreadyPolling);
+            }
+            return Err(PollerLockError::Io(e));
+        }
         std::fs::write(&pid_file, std::process::id().to_string())?;
         guard.insert(run_id.to_string());
         Ok(Self {
             run_id: run_id.to_string(),
             pid_file,
+            _lock_file: lock_file,
         })
     }
 }

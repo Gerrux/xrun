@@ -46,7 +46,7 @@ jobs:
         run: cargo test --workspace
 
   python:
-    name: Python TUI lint
+    name: Python tests
     runs-on: ubuntu-latest
 
     steps:
@@ -58,7 +58,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install xrun-tui
-        run: pip install -e "python/xrun_tui[dev]" 2>/dev/null || pip install -e python/xrun_tui
+        run: pip install -e python/xrun_tui
 
       - name: Install xrun-hook
         run: pip install -e "python/xrun_hook[dev]"
@@ -66,4 +66,4 @@ jobs:
       - name: Run hook tests
         run: |
           cd python/xrun_hook
-          python -m pytest tests/ -q 2>/dev/null || echo "No tests yet"
+          python -m pytest tests/ -q

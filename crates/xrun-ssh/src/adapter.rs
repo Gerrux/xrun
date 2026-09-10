@@ -448,16 +448,21 @@ impl VendorAdapter for SshAdapter {
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {
-        // Best-effort: kill the child PID, clean its state, never the box.
-        if let Ok(run_id) = self.run_id() {
+        // Kill the recorded process and confirm it stopped; never destroy the box.
+        {
+            let run_id = self.run_id()?;
             let run_dir = self.run_dir(&run_id);
             let pid_file = format!("{run_dir}/run.pid");
             let kill_script = format!(
-                "if [ -f {pf} ]; then PID=$(cat {pf}); kill -TERM \"$PID\" 2>/dev/null; \
-                 sleep 1; kill -KILL \"$PID\" 2>/dev/null; rm -f {pf}; fi",
+                "if [ -f {pf} ]; then PID=$(cat {pf}); \
+                 case \"$PID\" in ''|*[!0-9]*) exit 1;; esac; \
+                 [ \"$PID\" -gt 1 ] || exit 1; \
+                 kill -TERM \"$PID\" 2>/dev/null; sleep 1; \
+                 if kill -0 \"$PID\" 2>/dev/null; then kill -KILL \"$PID\" 2>/dev/null; sleep 1; fi; \
+                 if kill -0 \"$PID\" 2>/dev/null; then exit 1; fi; rm -f {pf}; fi",
                 pf = cmd::shell_quote(&pid_file)
             );
-            let _ = ssh_exec(&self.conn, &kill_script);
+            ssh_exec(&self.conn, &kill_script)?;
         }
         if let Some(store) = self.store.borrow_mut().as_mut() {
             let _ = store.update_instance_destroyed(&h.id, Utc::now());

@@ -74,10 +74,32 @@ GRUVBOX_DARK = {
     "#e0def4": "#fbf1c7",
 }
 
+OPENCODE_DARK = {
+    "#1a1b26": "#090b0f",
+    "#1e2030": "#0d1117",
+    "#24283b": "#11161d",
+    "#2d3149": "#161d27",
+    "#414868": "#222a35",
+    "#565f89": "#7d8997",
+    "#7aa2f7": "#6aa9ff",
+    "#7dcfff": "#78dce8",
+    "#9ece6a": "#7bd88f",
+    "#e0af68": "#f0b86a",
+    "#f7768e": "#ff6b7a",
+    "#bb9af7": "#b392f0",
+    "#c0caf5": "#d7dde6",
+    "#a9b1d6": "#a8b3c2",
+    "#3d59a1": "#254f7a",
+    "#4a6bb5": "#316391",
+    "#2d1b2e": "#21131a",
+    "#e0def4": "#f2f5f8",
+}
+
 PALETTES: dict[str, dict[str, str]] = {
-    "tokyo-night": TOKYO_NIGHT,
-    "catppuccin":  CATPPUCCIN_MOCHA,
-    "gruvbox":     GRUVBOX_DARK,
+    "tokyo-night":      TOKYO_NIGHT,
+    "catppuccin-mocha": CATPPUCCIN_MOCHA,
+    "gruvbox-dark":     GRUVBOX_DARK,
+    "opencode-dark":    OPENCODE_DARK,
 }
 
 
