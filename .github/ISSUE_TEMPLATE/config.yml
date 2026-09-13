@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Документация
+    url: https://github.com/Gerrux/xrun/tree/master/docs
+    about: CLI, манифест, архитектура, протокол событий, TUI.
+  - name: Шаблоны манифестов
+    url: https://github.com/Gerrux/xrun/tree/master/exp/templates
+    about: Готовые заготовки под local, Kaggle, классификацию и регрессию.
+  - name: Дыра в безопасности
+    url: https://github.com/Gerrux/xrun/security/advisories/new
+    about: Приватно, а не публичным issue.

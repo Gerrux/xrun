@@ -1,0 +1,58 @@
+name: Предложение / Feature request
+description: Чего не хватает
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Загляните сперва в [дорожную карту](https://github.com/Gerrux/xrun/blob/master/docs/ROADMAP.md)
+        и в раздел «Что мы сознательно не делаем» [схемы манифеста](https://github.com/Gerrux/xrun/blob/master/docs/MANIFEST.md).
+
+        *Feel free to write in English.*
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу это решает
+      description: >
+        Что вы пытались сделать и обо что споткнулись. Задача важнее решения:
+        у неё бывает выход дешевле того, который приходит в голову первым.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы выглядеть
+      description: Команда, поле манифеста, экран TUI — что угодно.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Где
+      multiple: true
+      options:
+        - Новый вендор
+        - Манифест
+        - CLI
+        - TUI
+        - xrun_hook
+        - Уведомления / watchdog
+        - Синки метрик (MLflow, W&B)
+        - Скилл для агентов
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: promise
+    attributes:
+      label: Главное обещание
+      description: >
+        Инстанс, за который капает счёт, никогда не остаётся без присмотра.
+        Предложения «не гасить инстанс молча» или «поллер может выйти раньше
+        терминального статуса» отклоняются по этой причине, а не из вредности.
+      options:
+        - label: Предложение не оставляет тарифицируемый инстанс без поллера, потолка или уведомления
+          required: true

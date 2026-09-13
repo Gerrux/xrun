@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xrun — один манифест от GPU до чекпоинта</title>
+<meta name="description" content="Запускатель ML-экспериментов: один YAML-манифест арендует GPU на vast.ai, Kaggle или своём сервере, ведёт тренировку, следит за бюджетом и забирает лучший чекпоинт.">
+<meta property="og:title" content="xrun">
+<meta property="og:description" content="Один YAML-манифест — от арендованной GPU до лучшего чекпоинта.">
+<meta property="og:image" content="og.png">
+<link rel="icon" href="favicon.png">
+<style>
+/* Шрифты только системные: страница про инструмент, который ходит наружу
+   только туда, куда его настроили, и сама за шрифтами на чужой сервер тоже не
+   ходит. Палитра — Tokyo Night, та же, что у TUI (см. brand.md). */
+:root{
+  --bg:#1A1B26;
+  --surface:#24283B;
+  --overlay:#2D3149;
+  --line:rgba(192,202,245,.09);
+  --text:#C0CAF5;
+  --muted:#7C85B3;
+  --dim:#565F89;
+  --blue:#7AA2F7;
+  --magenta:#BB9AF7;
+  --cyan:#7DCFFF;
+  --green:#9ECE6A;
+  --yellow:#E0AF68;
+  --red:#F7768E;
+  --display:'Bahnschrift','Segoe UI Semibold','Inter',system-ui,sans-serif;
+  --mono:'Cascadia Code','JetBrains Mono','SF Mono',Consolas,ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.6 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1060px;margin:0 auto;padding:0 24px}
+a{color:inherit}
+code{font-family:var(--mono);font-size:.92em;background:var(--overlay);padding:1px 6px;border-radius:5px}
+
+.langs{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;padding-top:22px}
+.langs button{
+  font:inherit;font-size:13px;line-height:1;padding:7px 12px;border-radius:999px;
+  border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;transition:.15s;
+}
+.langs button:hover{color:var(--text);background:rgba(192,202,245,.05)}
+.langs button[aria-pressed="true"]{color:var(--text);border-color:transparent;background:rgba(192,202,245,.1)}
+
+header{padding:0 0 56px;border-bottom:1px solid var(--line)}
+.lockup{display:flex;align-items:center;gap:16px;margin-top:50px}
+.lockup svg{display:block;width:56px;height:56px;flex:none}
+.wordmark{font-family:var(--display);font-size:44px;font-weight:600;line-height:1;letter-spacing:.01em}
+.tagline{margin:26px 0 0;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.rule{display:block;width:64px;height:3px;border-radius:2px;margin-top:14px;
+      background:linear-gradient(90deg,var(--blue),var(--magenta))}
+h1{margin:34px 0 0;font-family:var(--display);font-size:clamp(28px,4.6vw,46px);font-weight:600;line-height:1.15;letter-spacing:-.01em;max-width:20ch;color:#E4E9FF}
+.lede{margin:20px 0 0;font-size:clamp(16px,2vw,19px);line-height:1.55;color:var(--text);max-width:62ch;text-wrap:pretty}
+
+/* Установка — одна строка на систему, с копированием. Кнопка «скачать» тут
+   была бы враньём: ставится xrun скриптом, а не файлом из релиза. */
+.install{margin-top:32px;display:grid;grid-template-columns:minmax(0,1fr);gap:10px;max-width:760px}
+.cmd{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:10px 10px 10px 16px}
+.cmd .os{flex:none;width:112px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.cmd pre{margin:0;flex:1;min-width:0;overflow-x:auto;font:14px/1.5 var(--mono);color:var(--text);white-space:pre}
+.cmd button{flex:none;font:inherit;font-size:13px;padding:6px 12px;border-radius:7px;border:1px solid var(--line);
+            background:transparent;color:var(--muted);cursor:pointer;transition:.15s}
+.cmd button:hover{color:var(--text);background:rgba(192,202,245,.06)}
+@media (max-width:560px){.cmd{flex-wrap:wrap}.cmd .os{width:auto;flex:1 0 60%}.cmd pre{order:3;flex:1 0 100%}}
+.split>*{min-width:0}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:22px}
+.btn{display:inline-flex;align-items:center;gap:9px;padding:11px 18px;border-radius:9px;
+     font-weight:600;font-size:15px;text-decoration:none;border:1px solid transparent;transition:.15s}
+.btn-main{background:linear-gradient(120deg,var(--blue),var(--magenta));color:#1A1B26}
+.btn-main:hover{filter:brightness(1.08)}
+.btn-ghost{border-color:var(--line);color:var(--text)}
+.btn-ghost:hover{background:rgba(192,202,245,.05)}
+
+section{padding:64px 0;border-bottom:1px solid var(--line)}
+h2{margin:0 0 10px;font-family:var(--display);font-size:12px;font-weight:600;
+   letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.claim{margin:0 0 34px;font-family:var(--display);font-size:clamp(21px,2.8vw,29px);
+       font-weight:600;line-height:1.25;max-width:26ch;color:#E4E9FF}
+p{text-wrap:pretty}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px}
+.card{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:22px}
+.card h3{margin:0 0 8px;font-family:var(--display);font-size:15px;font-weight:600;color:#E4E9FF}
+.card p{margin:0;font-size:14.5px;line-height:1.55;color:var(--text)}
+
+/* Статусы — те же цвета, что точки в списке запусков TUI. */
+.states{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px;list-style:none;padding:0}
+.states li{display:flex;align-items:center;gap:9px;padding:9px 15px;border:1px solid var(--line);
+           border-radius:999px;font-size:13.5px;color:var(--text);background:var(--surface)}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+
+/* Терминал: сам манифест и команды, без выдуманного вывода. */
+.split{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:24px;align-items:start}
+.term{border:1px solid var(--line);border-radius:12px;background:#16161E;overflow:hidden}
+.term .bar{display:flex;align-items:center;gap:7px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}
+.term .bar i{width:10px;height:10px;border-radius:50%;background:var(--overlay)}
+.term .bar span{margin-inline-start:8px;font-family:var(--mono)}
+.term pre{margin:0;padding:18px 18px 20px;overflow-x:auto;font:13.5px/1.65 var(--mono);color:var(--text)}
+.k{color:var(--blue)} .s{color:var(--green)} .c{color:var(--dim)} .n{color:var(--yellow)} .p{color:var(--magenta)}
+.caption{margin-top:12px;font-size:13.5px;color:var(--muted)}
+
+.vendors .grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+@media (min-width:900px){.vendors .grid{grid-template-columns:repeat(4,1fr)}}
+.vendors .tag{display:inline-block;margin-bottom:10px;font:12px/1 var(--mono);color:var(--blue);background:var(--overlay);padding:5px 8px;border-radius:6px}
+
+footer{padding:44px 0 72px;color:var(--muted);font-size:13.5px}
+footer .lockup svg{width:22px;height:22px}
+footer .wordmark{font-size:17px}
+footer .lockup{margin-top:0}
+.foot-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px}
+.foot-links{display:flex;flex-wrap:wrap;gap:18px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <!-- Русский лежит прямо в разметке, как исходный язык проекта; без скрипта
+         страница остаётся русской и целой. -->
+    <nav class="langs" id="langs" aria-label="Язык / Language"></nav>
+    <!-- Кривая и точка вырезаются маской, а не закрашиваются: под ними обязан
+         быть фон. Геометрия та же, что в scripts/brand.py. -->
+    <div class="lockup">
+      <svg viewBox="0 0 100 100" aria-label="xrun">
+        <defs>
+          <linearGradient id="brand" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#7AA2F7"></stop><stop offset="1" stop-color="#BB9AF7"></stop>
+          </linearGradient>
+          <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+            <rect width="100" height="100" rx="22" fill="#fff"></rect>
+            <path d="M20 24C28 62 44 70 64 70" fill="none" stroke="#000" stroke-width="11" stroke-linecap="round"></path>
+            <circle cx="80" cy="70" r="7.5" fill="#000"></circle>
+          </mask>
+        </defs>
+        <rect width="100" height="100" rx="22" fill="url(#brand)" mask="url(#cut)"></rect>
+      </svg>
+      <span class="wordmark">xrun</span>
+    </div>
+    <p class="tagline" data-i18n="tagline">запускатель ML-экспериментов</p>
+    <span class="rule"></span>
+    <h1 data-i18n="h1">Один манифест — от арендованной GPU до лучшего чекпоинта.</h1>
+    <p class="lede" data-i18n="lede">xrun арендует инстанс, заливает данные, запускает тренировку, следит за стадиями и метриками и забирает чекпоинты. А когда всё кончилось или деньги упёрлись в потолок — гасит инстанс сам.</p>
+    <div class="install">
+      <div class="cmd"><span class="os">macOS · Linux</span><pre>curl -sSf https://raw.githubusercontent.com/Gerrux/xrun/master/install.sh | sh</pre><button type="button" data-i18n="copy">копировать</button></div>
+      <div class="cmd"><span class="os">Windows</span><pre>irm https://raw.githubusercontent.com/Gerrux/xrun/master/install.ps1 | iex</pre><button type="button" data-i18n="copy">копировать</button></div>
+    </div>
+    <div class="cta">
+      <a class="btn btn-main" href="https://github.com/Gerrux/xrun" data-i18n="src">Исходный код</a>
+      <a class="btn btn-ghost" href="https://github.com/Gerrux/xrun/tree/master/docs" data-i18n="docs">Документация</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2 data-i18n="s1">Главное обещание</h2>
+    <p class="claim" data-i18n="c1">Инстанс, за который капает счёт, никогда не остаётся без присмотра.</p>
+    <div class="grid">
+      <div class="card">
+        <h3 data-i18n="k1h">Поллер ведёт запуск до конца</h3>
+        <p data-i18n="k1p">После <code>--detach</code> остаётся фоновый поллер. Он тянет события и метрики и гасит инстанс, когда запуск кончился, упал или замолчал без вывода.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k2h">Потолок дешевле счёта</h3>
+        <p data-i18n="k2p"><code>--max-cost</code>, <code>--max-hours</code> и плато метрики проверяются на каждом тике, а не по итогам. Не смог погасить — это не строка в логе, а push.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k3h">Сторож сторожа</h3>
+        <p data-i18n="k3p">Поллер пишет пульс. Пульса нет, а инстанс жив — <code>xrun watchdog</code> из планировщика уведомит и поднимет поллер заново. Заодно найдёт инстансы без записи.</p>
+      </div>
+    </div>
+    <ul class="states">
+      <li><span class="dot" style="background:var(--yellow)"></span><span data-i18n="st1">готовится, счёт уже идёт</span></li>
+      <li><span class="dot" style="background:var(--green)"></span><span data-i18n="st2">поллер ведёт запуск</span></li>
+      <li><span class="dot" style="background:var(--dim)"></span><span data-i18n="st3">кончилось, инстанс погашен</span></li>
+      <li><span class="dot" style="background:var(--red)"></span><span data-i18n="st4">упало, нужен человек</span></li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 data-i18n="s2">Манифест</h2>
+    <p class="claim" data-i18n="c2">Один самодостаточный файл вместо скриптов аренды, scp и ssh.</p>
+    <div class="split">
+      <figure style="margin:0">
+        <div class="term">
+          <div class="bar"><i></i><i></i><i></i><span>exp/resnet50.yaml</span></div>
+<pre><span class="k">name</span>: <span class="s">resnet50_baseline</span>
+<span class="k">vendor</span>: <span class="s">vast</span>           <span class="c"># vast | kaggle | ssh | local</span>
+
+<span class="k">vast</span>:
+  <span class="k">image</span>: <span class="s">pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel</span>
+  <span class="k">gpu</span>: { <span class="k">type</span>: <span class="s">"RTX 4090"</span>, <span class="k">count</span>: <span class="n">1</span> }
+  <span class="k">price</span>: { <span class="k">max_per_hour</span>: <span class="n">0.55</span> }
+
+<span class="k">data</span>:
+  - <span class="k">src</span>: <span class="s">data/train.h5</span>
+    <span class="k">dst</span>: <span class="s">/workspace/data/train.h5</span>
+
+<span class="k">run</span>:
+  <span class="k">cmd</span>: <span class="s">python train.py</span>
+  <span class="k">args</span>: { <span class="k">--lr</span>: <span class="n">5e-4</span>, <span class="k">--epochs</span>: <span class="n">30</span> }
+
+<span class="k">policy</span>:
+  <span class="k">early_stop</span>: { <span class="k">metric</span>: <span class="s">val_f1</span>, <span class="k">patience</span>: <span class="n">5</span> }</pre>
+        </div>
+      </figure>
+      <figure style="margin:0">
+        <div class="term">
+          <div class="bar"><i></i><i></i><i></i><span>shell</span></div>
+<pre><span class="p">$</span> xrun launch exp/resnet50.yaml --detach --max-cost 5
+<span class="c"># арендовать GPU и уйти</span>
+
+<span class="p">$</span> xrun events &lt;id&gt; --follow
+<span class="c"># provision → upload → running → done</span>
+
+<span class="p">$</span> xrun metrics &lt;id&gt; --key val_f1 --ascii
+<span class="c"># кривая прямо в терминале</span>
+
+<span class="p">$</span> xrun pull &lt;id&gt; --ckpt best --into models/
+<span class="c"># забрать лучший чекпоинт</span>
+
+<span class="p">$</span> xrun ls --json
+<span class="c"># всё то же видят скрипт и агент</span></pre>
+        </div>
+        <figcaption class="caption" data-i18n="cap">Копия манифеста хранится с запуском, а его хеш — часть личности запуска: <code>xrun rerun</code> воспроизводит ровно то, что бежало.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="vendors">
+  <div class="wrap">
+    <h2 data-i18n="s3">Где считать</h2>
+    <p class="claim" data-i18n="c3">Манифест один — вендоров четыре.</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">vendor: vast</span>
+        <h3>vast.ai</h3>
+        <p data-i18n="v1">Подбор предложения по GPU и цене, загрузка по SSH, pull чекпоинтов и уничтожение инстанса.</p>
+      </div>
+      <div class="card">
+        <span class="tag">vendor: kaggle</span>
+        <h3>Kaggle</h3>
+        <p data-i18n="v2">Push kernel и датасетов, скрипт или ноутбук. С MLflow — живые события и метрики прямо во время работы kernel.</p>
+      </div>
+      <div class="card">
+        <span class="tag">vendor: ssh</span>
+        <h3 data-i18n="v3h">Свой сервер</h3>
+        <p data-i18n="v3p">Рабочая станция, NAS или VPS по SSH и rsync. Тот же жизненный цикл, только аренды нет.</p>
+      </div>
+      <div class="card">
+        <span class="tag">vendor: local</span>
+        <h3 data-i18n="v4h">Эта машина</h3>
+        <p data-i18n="v4p">Подпроцесс без сети — отладить манифест и хук, прежде чем платить за GPU.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 data-i18n="s4">Ещё в коробке</h2>
+    <div class="grid">
+      <div class="card">
+        <h3 data-i18n="k4h">TUI</h3>
+        <p data-i18n="k4p"><code>xrun</code> без аргументов: расход в час, живой список запусков, логи, метрики, артефакты, сравнение. Навигация аккордами от <code>g</code>.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k5h">Хук в скрипте</h3>
+        <p data-i18n="k5p"><code>xrun_hook</code> пишет стадии и метрики и шлёт push из самого скрипта. Необработанное исключение записывает событием сам.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k6h">Уведомления</h3>
+        <p data-i18n="k6p">ntfy, Telegram, вебхук, системные тосты: конец, падение, 50 и 80 % бюджета, NaN в loss. Боту можно ответить <code>/stop &lt;id&gt;</code>.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k7h">Состояние локально</h3>
+        <p data-i18n="k7p">Вся история в SQLite на вашей машине. MLflow и W&amp;B — зеркала по желанию, а не обязательный сервис.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k8h">Перебор</h3>
+        <p data-i18n="k8p"><code>xrun sweep</code> материализует по манифесту на каждый вариант сетки и запускает их, а не шаблонизирует один.</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="k9h">Агентам — те же команды</h3>
+        <p data-i18n="k9p"><code>xrun install skill</code> учит Claude Code и Codex пользоваться xrun вместо ручных <code>vastai</code> и <code>ssh</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-row">
+    <div class="lockup">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <defs>
+          <mask id="cut-foot" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+            <rect width="100" height="100" rx="22" fill="#fff"></rect>
+            <path d="M20 24C28 62 44 70 64 70" fill="none" stroke="#000" stroke-width="11" stroke-linecap="round"></path>
+            <circle cx="80" cy="70" r="7.5" fill="#000"></circle>
+          </mask>
+        </defs>
+        <rect width="100" height="100" rx="22" fill="#7AA2F7" mask="url(#cut-foot)"></rect>
+      </svg>
+      <span class="wordmark">xrun</span>
+    </div>
+    <div class="foot-links">
+      <a href="https://github.com/Gerrux/xrun">GitHub</a>
+      <a href="https://github.com/Gerrux/xrun/releases" data-i18n="rel">Релизы</a>
+      <a href="https://github.com/Gerrux/xrun/blob/master/CHANGELOG.md" data-i18n="chg">Изменения</a>
+      <span>MIT</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Словарь лежит в самой странице: GitHub Pages отдаёт её как есть, и второй
+// запрос ради пары десятков строк — ещё один способ не показать текст. Таблицы
+// RU нет — русский стоит прямо в разметке.
+const LANGS = [["ru", "Русский"], ["en", "English"]];
+const DICT = {
+  en: {
+    title: "xrun — one manifest from GPU to checkpoint",
+    desc: "An ML experiment runner: one YAML manifest rents a GPU on vast.ai, Kaggle or your own server, runs training, guards the budget and pulls the best checkpoint.",
+    tagline: "ML experiment runner",
+    h1: "One manifest — from a rented GPU to the best checkpoint.",
+    lede: "xrun rents the instance, uploads the data, starts training, follows stages and metrics and pulls the checkpoints. And once it is all over, or spend hits the ceiling, it destroys the instance by itself.",
+    copy: "copy",
+    copied: "copied",
+    src: "Source code",
+    docs: "Documentation",
+    s1: "The one promise",
+    c1: "An instance that is billing is never left unattended.",
+    k1h: "The poller sees the run through",
+    k1p: "After <code>--detach</code> a background poller stays behind. It pulls events and metrics and destroys the instance when the run finished, failed or went silent.",
+    k2h: "A ceiling is cheaper than a bill",
+    k2p: "<code>--max-cost</code>, <code>--max-hours</code> and a metric plateau are checked on every tick, not after the fact. Could not destroy — that is not a log line but a push.",
+    k3h: "A watchdog for the watchdog",
+    k3p: "The poller writes a heartbeat. No heartbeat while the instance lives — <code>xrun watchdog</code> from the scheduler notifies and respawns the poller. It also finds instances with no record.",
+    st1: "provisioning, already billing",
+    st2: "the poller is running it",
+    st3: "over, instance destroyed",
+    st4: "failed, a human is needed",
+    s2: "The manifest",
+    c2: "One self-contained file instead of rental scripts, scp and ssh.",
+    cap: "A copy of the manifest is stored with the run, and its hash is part of the run's identity: <code>xrun rerun</code> reproduces exactly what ran.",
+    s3: "Where to compute",
+    c3: "One manifest — four vendors.",
+    v1: "Offer search by GPU and price, upload over SSH, checkpoint pull and instance destroy.",
+    v2: "Kernel and dataset push, script or notebook. With MLflow — live events and metrics while the kernel is running.",
+    v3h: "Your own server",
+    v3p: "A workstation, NAS or VPS over SSH and rsync. The same lifecycle, just without the rental.",
+    v4h: "This machine",
+    v4p: "A subprocess with no network — debug the manifest and the hook before paying for a GPU.",
+    s4: "Also in the box",
+    k4h: "TUI",
+    k4p: "<code>xrun</code> with no arguments: hourly burn, a live run list, logs, metrics, artifacts, comparison. Chord navigation starting with <code>g</code>.",
+    k5h: "A hook in the script",
+    k5p: "<code>xrun_hook</code> writes stages and metrics and sends pushes from the script itself. An uncaught exception is recorded as an event on its own.",
+    k6h: "Notifications",
+    k6p: "ntfy, Telegram, webhook, desktop toasts: finished, failed, 50 and 80 % of budget, NaN in loss. Reply <code>/stop &lt;id&gt;</code> to the bot.",
+    k7h: "State stays local",
+    k7p: "The whole history is in SQLite on your machine. MLflow and W&amp;B are optional mirrors, not a required service.",
+    k8h: "Sweeps",
+    k8p: "<code>xrun sweep</code> materializes one manifest per grid variant and launches them, instead of templating a single one.",
+    k9h: "Agents get the same commands",
+    k9p: "<code>xrun install skill</code> teaches Claude Code and Codex to use xrun instead of hand-rolled <code>vastai</code> and <code>ssh</code>.",
+    rel: "Releases",
+    chg: "Changelog",
+  },
+};
+
+// Исходный русский текст снимается с разметки один раз, чтобы вернуться к нему
+// без перезагрузки.
+const RU = {};
+document.querySelectorAll("[data-i18n]").forEach((el) => {
+  const k = el.dataset.i18n;
+  if (!(k in RU)) RU[k] = el.innerHTML;
+});
+RU.title = document.title;
+RU.desc = document.querySelector('meta[name="description"]').content;
+RU.copied = "скопировано";
+
+let current = "ru";
+function apply(lang) {
+  current = DICT[lang] ? lang : "ru";
+  const d = current === "ru" ? RU : DICT[current];
+  document.documentElement.lang = current;
+  document.title = d.title;
+  document.querySelector('meta[name="description"]').content = d.desc;
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    const v = d[el.dataset.i18n];
+    if (v !== undefined) el.innerHTML = v;
+  });
+  document.querySelectorAll("#langs button").forEach((b) => {
+    b.setAttribute("aria-pressed", String(b.dataset.lang === current));
+  });
+  try { localStorage.setItem("xrun-lang", current); } catch (_) {}
+}
+
+const nav = document.getElementById("langs");
+for (const [code, name] of LANGS) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.lang = code;
+  b.textContent = name;
+  b.addEventListener("click", () => apply(code));
+  nav.appendChild(b);
+}
+
+document.querySelectorAll(".cmd button").forEach((b) => {
+  b.addEventListener("click", async () => {
+    const text = b.parentElement.querySelector("pre").textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      const d = current === "ru" ? RU : DICT[current];
+      b.textContent = d.copied;
+      setTimeout(() => { b.textContent = d.copy; }, 1400);
+    } catch (_) {}
+  });
+});
+
+let saved = null;
+try { saved = localStorage.getItem("xrun-lang"); } catch (_) {}
+const guess = (navigator.language || "").toLowerCase().startsWith("ru") ? "ru" : "en";
+apply(saved || guess);
+</script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+name: Ошибка / Bug report
+description: Что-то сломалось или ведёт себя не так
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Утечку кредов или способ оставить инстанс тарифицироваться незаметно
+        сюда не пишите — это приватно,
+        [как сообщить](https://github.com/Gerrux/xrun/blob/master/SECURITY.md).
+
+        Ключи, токены, адреса серверов и имя пользователя Kaggle из вывода
+        уберите до отправки.
+
+        *Feel free to write in English.*
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Вывод `xrun doctor --json`
+      description: >
+        Половина отказов объясняется окружением, а не кодом: нет ключа, нет
+        SSH-ключа для vast.ai, TUI поставлен под другой Python, старый бинарь
+        рядом с новой схемой БД. Если отказ связан с манифестом — добавьте
+        `--manifest path/to/exp.yaml`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Что произошло
+      description: Что вы делали, что ожидали и что вышло вместо этого.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия xrun
+      description: "`xrun --version`"
+      placeholder: "0.8.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: vendor
+    attributes:
+      label: Вендор
+      options:
+        - vast.ai
+        - Kaggle
+        - SSH
+        - local
+        - Не про запуск (TUI, установка, config)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Система, где запущен xrun
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: events
+    attributes:
+      label: События запуска
+      description: >
+        `xrun events <id> --json` упавшего запуска, при необходимости — хвост
+        `xrun logs <id>`. Проверьте, что туда не попали ключи и пути, которые
+        показывать не хочется.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: manifest
+    attributes:
+      label: Манифест
+      description: Урезанный до воспроизведения. Пути к данным можно заменить.
+      render: yaml
+    validations:
+      required: false

@@ -1,210 +1,122 @@
-# xrun
+<p align="center">
+  <img src="docs/brand/mark.png" width="88" alt="">
+</p>
 
-[![CI](https://github.com/gerrux/xrun/actions/workflows/ci.yml/badge.svg)](https://github.com/gerrux/xrun/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/github/v/release/gerrux/xrun)](https://github.com/gerrux/xrun/releases)
+<h1 align="center">xrun</h1>
 
-**ML experiment runner** — one YAML manifest → provision GPU → upload data → train → track metrics → pull checkpoints.
+<p align="center">Один YAML-манифест — от арендованной GPU до лучшего чекпоинта.</p>
 
-Works with **vast.ai** and **Kaggle**. Keeps the full history in a local SQLite database. No third-party tracking service required.
+<p align="center"><a href="https://gerrux.github.io/xrun/">Сайт</a> · <a href="https://github.com/Gerrux/xrun/releases">Скачать</a> · <a href="docs/">Документация</a> · <a href="CHANGELOG.md">Изменения</a></p>
 
-```
-xrun launch exp/resnet50.yaml --detach   # kick off on a vast.ai GPU
-xrun events <id> --follow                # watch stages: provision → upload → running → done
-xrun metrics <id> --ascii                # live loss / accuracy curves
-xrun pull <id> --ckpt best               # download the best checkpoint
-```
+<p align="center"><b>Русский</b> · <a href="README.en.md">English</a></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/xrun/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/xrun?style=flat-square&labelColor=1A1B26&color=7AA2F7"></a>
+  <a href="https://github.com/Gerrux/xrun/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/xrun/ci.yml?branch=master&style=flat-square&labelColor=1A1B26&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/xrun?style=flat-square&labelColor=1A1B26&color=9ECE6A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-1A1B26?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/vast.ai%20%7C%20Kaggle%20%7C%20SSH%20%7C%20local-1A1B26?style=flat-square">
+</p>
 
----
+**Запускатель ML-экспериментов.** Один манифест описывает запуск целиком:
+где взять GPU, что залить, чем тренировать и что забрать. `xrun` арендует
+инстанс, заливает данные, запускает тренировку, следит за стадиями и метриками
+и забирает чекпоинты — а когда всё кончилось или деньги вышли за потолок,
+гасит инстанс сам.
 
-## Install
+Rust-ядро в воркспейс-крейтах и CLI `xrun` над ним; поверх — TUI на Python
+Textual. Вендоров четыре: vast.ai, Kaggle, свой сервер по SSH и локальная
+машина. Вся история запусков лежит в локальной SQLite — ни стороннего
+трекинг-сервиса, ни аккаунта для этого не нужно; MLflow и W&B подключаются
+зеркалом, если хочется их графиков.
 
-### macOS / Linux
-
-```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh
-```
-
-Installs `xrun` to `~/.local/bin/xrun` and installs the Python TUI (`xrun-tui`)
-with `pip --user`. Pass `--prefix /usr/local` to change the binary location.
-
-If Python 3.11+ is present but pip is missing, let the installer try
-`python -m ensurepip --upgrade`:
-
-```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --install-pip
-```
-
-For CLI-only install without the TUI:
-
-```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --no-tui
+```bash
+xrun launch exp/resnet50.yaml --detach --max-cost 5   # арендовать GPU и уйти
+xrun events <id> --follow                             # provision → upload → running → done
+xrun metrics <id> --key val_f1 --ascii                # кривая прямо в терминале
+xrun pull <id> --ckpt best --into models/             # забрать лучший чекпоинт
 ```
 
-### Windows (PowerShell)
+## Главное обещание
+
+Инстанс, за который капает счёт, никогда не остаётся без присмотра. Всё
+остальное в архитектуре — следствие.
+
+`xrun launch --detach` оставляет за собой фоновый поллер. Он тянет события и
+метрики, считает потраченное и гасит инстанс, когда запуск закончился, упал,
+завис без вывода, вышел на плато метрики или упёрся в `--max-cost` /
+`--max-hours`. Не смог погасить — шлёт push «инстанс всё ещё тарифицируется».
+
+Остаётся одна дыра, о которой поллер сообщить не может: его собственная
+смерть. Её закрывает `xrun watchdog` — из планировщика раз в пять минут и из
+TUI раз в минуту. Поллер пишет пульс на каждом тике; пульса нет, а инстанс
+жив — watchdog уведомляет и поднимает поллер заново. Заодно ловит инстансы,
+которых нет ни в одной записи.
+
+```
+                     done / failed / плато / потолок ──► pull → destroy → push
+поллер (тик) ────────┤
+                     не смог погасить ─────────────────► push «ещё тарифицируется»
+
+watchdog (5 мин) ────► пульса нет, инстанс жив ─────────► push → поднять поллер
+```
+
+Как это устроено внутри — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Установка
+
+macOS и Linux:
+
+```bash
+curl -sSf https://raw.githubusercontent.com/Gerrux/xrun/master/install.sh | sh
+```
+
+Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/Gerrux/xrun/master/install.ps1 | iex
 ```
 
-Installs `xrun.exe` to `%LOCALAPPDATA%\xrun\bin\xrun.exe`, adds it to your user
-`PATH`, and installs the Python TUI (`xrun-tui`) with `pip --user`.
+Скрипт кладёт бинарь `xrun` (`~/.local/bin` либо `%LOCALAPPDATA%\xrun\bin`) и
+ставит TUI через `pip --user` — для неё нужен Python 3.11+. Флаги `--no-tui` /
+`-NoTui` ставят только CLI, `--version v0.8.0` — конкретный выпуск,
+`--install-pip` / `-InstallPip` попробует `ensurepip`, если pip нет.
 
-If Python 3.11+ is present but pip is missing:
+Из исходников:
 
-```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -InstallPip
-```
-
-For CLI-only install without the TUI:
-
-```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -NoTui
-```
-
-### Specific version
-
-```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --version v0.8.0
-```
-
-### From source
-
-```sh
-cargo install --git https://github.com/gerrux/xrun --branch master xrun-cli
-```
-
-### Python TUI
-
-The install scripts install the TUI by default because `xrun` without arguments
-opens it on a TTY. To install or repair only the TUI:
-
-```sh
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --tui-only
-```
-
-```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -TuiOnly
-```
-
-From a local clone during development:
-
-```sh
+```bash
+cargo install --git https://github.com/Gerrux/xrun --branch master xrun-cli
 pip install -e python/xrun_tui
 ```
 
-After install, `xrun` without arguments opens the TUI automatically when stdout is a TTY.
+Обновляется `xrun` сам: при интерактивном запуске он сверяется с релизами и
+спрашивает, прежде чем ставить. `xrun update --check` только проверяет,
+`XRUN_NO_UPDATE_CHECK=1` выключает проверку в скриптах.
 
-### Updates
+## Первый запуск
 
-On interactive startup (`xrun` or `xrun tui`), xrun checks GitHub Releases for a
-newer version. If one is available, it shows a confirmation prompt before
-running the official installer.
+Без кредов, без GPU и без данных — чтобы убедиться, что цепочка вообще живая:
 
-```sh
-xrun update --check   # check only
-xrun update           # ask, then install
-xrun update --yes     # install without prompt
-```
-
-Use `xrun update --no-tui` to update only the Rust CLI. Set
-`XRUN_NO_UPDATE_CHECK=1` to disable the startup check in scripted environments.
-
-### Agent skill (optional)
-
-Teaches Codex or Claude Code how to use xrun correctly — which commands to call, how to parse output, what to avoid.
-
-For a repository-local install, run this inside the project that uses xrun:
-
-```sh
-xrun install skill --codex   # writes .agents/skills/xrun/SKILL.md + AGENTS.md
-xrun install skill --claude  # writes .claude/skills/xrun/SKILL.md + CLAUDE.md
-```
-
-The legacy global Claude installer is still available:
-
-```sh
-# macOS / Linux — install binary + skill together
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --with-skill
-
-# skill only (if xrun is already installed)
-curl -sSf https://raw.githubusercontent.com/gerrux/xrun/master/install.sh | sh -s -- --skill-only
-```
-
-```powershell
-# Windows — install binary + skill together
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -WithSkill
-
-# skill only
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1'))) -SkillOnly
-```
-
-The global installer writes `~/.claude/skills/xrun/SKILL.md`.
-
----
-
-## Quick start
-
-```sh
-# 1. Check your environment
+```bash
 xrun doctor
-
-# 2. Set your vast.ai API key (or use the TUI: xrun → V → i)
-xrun config set vast.api_key <YOUR_KEY>
-
-# 3. Create a manifest
-cp exp/base.yaml exp/my_run.yaml   # edit gpu, data, run.cmd, …
-
-# 4. Launch (detached background run)
-xrun launch exp/my_run.yaml --detach
-#  → prints run ID, e.g. 01J2KX...
-
-# 5. Follow stages
-xrun events <id> --follow
-#  provision → upload → running → done
-
-# 6. Watch metrics
+xrun launch exp/templates/quickstart.yaml
 xrun metrics <id> --ascii
-
-# 7. Retrieve the best checkpoint
-xrun pull <id> --ckpt best --into models/
 ```
 
----
+Дальше — ключи вендоров. Проще всего визардом: `xrun` без аргументов откроет
+TUI, а на первом запуске — мастер настройки (`xrun init`). Он же заводит
+уведомления. Готовые заготовки манифестов под классификацию, регрессию и
+Kaggle лежат в [exp/templates](exp/templates/README.md).
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `xrun launch <manifest>` | Provision → upload → exec; `--detach` returns immediately |
-| `xrun ls` | List runs; `--status running\|done\|failed`, `--json` |
-| `xrun show <id>` | Full run card from local DB |
-| `xrun events <id>` | Stage timeline; `--follow` polls until terminal |
-| `xrun logs <id>` | stdout log; `--follow` streams via SSH |
-| `xrun metrics <id>` | Metrics table/chart; `--ascii`, `--json`, `--png` |
-| `xrun pull <id>` | Download checkpoints; `--ckpt best\|latest\|all` |
-| `xrun stop <id>` | Graceful stop → pull artifacts → destroy instance |
-| `xrun rerun <id>` | Re-run with optional `--patch run.args.--lr=5e-4` |
-| `xrun balance` | vast.ai account balance |
-| `xrun doctor` | Check credentials, CLI tools, connectivity |
-| `xrun config` | `init \| show \| set <key> <val>` |
-| `xrun gc` | Remove orphan instances |
-
-All read commands support `--json` for scripting.  
-Full reference: [`docs/CLI.md`](docs/CLI.md)
-
----
-
-## Manifest
+## Манифест
 
 ```yaml
 name: resnet50_baseline
-vendor: vast          # or: kaggle
-gpu: RTX_4090
+vendor: vast                    # vast | kaggle | ssh | local
 
-# budget guards (auto-destroy when exceeded)
-max_cost: 5.0         # USD
-max_hours: 8
+vast:
+  image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
+  gpu: { type: "RTX 4090", count: 1 }
+  price: { max_per_hour: 0.55 }
 
 data:
   - src: data/train.h5
@@ -215,180 +127,118 @@ run:
   args:
     --lr: 5e-4
     --epochs: 30
-    --batch-size: 16
 
 artifacts:
-  patterns:
-    - "checkpoints/best*.pt"
-    - "logs/metrics.json"
+  patterns: ["checkpoints/best*.pt"]
+
+policy:
+  on_idle_minutes: 30           # нет вывода полчаса — гасить
+  early_stop:                   # плато метрики: забрать лучший и погасить
+    metric: val_f1
+    patience: 5
 ```
 
-Full schema: [`docs/MANIFEST.md`](docs/MANIFEST.md)
+После запуска копия манифеста ложится рядом с записью о запуске, а его хеш
+становится частью личности запуска: оригинал можно править свободно,
+`xrun rerun <id>` воспроизводит ровно то, что бежало. Перебор гиперпараметров —
+`xrun sweep exp/base.yaml --grid run.args.--lr=1e-3,5e-4 --launch`, он
+материализует по манифесту на вариант, а не шаблонизирует один.
 
----
+Полная схема — [docs/MANIFEST.md](docs/MANIFEST.md).
+
+## Хук в тренировочном скрипте
+
+`xrun_hook` пишет стадии и метрики в `events.jsonl` / `metrics.jsonl`, откуда их
+забирает поллер. На Kaggle он встраивается в kernel сам.
+
+```python
+from xrun_hook import stage, metric, metrics, done, notify
+
+with stage("train"):
+    for ep in range(epochs):
+        loss = train_one_epoch(model, loader)
+        metric("train_loss", loss, step=ep)
+        metrics({"val_loss": v.loss, "val_f1": v.f1}, step=ep)
+
+notify("обучение", f"лучший val_f1 = {best:.3f}")
+done()
+```
+
+Необработанное исключение хук запишет событием `error` сам. Протокол целиком —
+[docs/EVENTS.md](docs/EVENTS.md).
 
 ## TUI
 
-```sh
-xrun        # opens TUI if stdout is a TTY
-xrun-tui    # direct launch (after pip install)
+`xrun` без аргументов в терминале открывает TUI. Навигация аккордами от `g`:
+
+| | |
+| --- | --- |
+| `g d` | Dashboard — расход в час, активные запуски, на сколько хватит баланса |
+| `g r` | Runs — список с живым статусом; `Enter` — стадии, логи, метрики, артефакты, манифест |
+| `g i` | Instances — что сейчас арендовано у вендоров |
+| `g v` | Vendors — ключи и баланс |
+| `g l` | Launch — выбрать манифест и запустить |
+| `g n` | Notifications — каналы push, проверка, регистрация watchdog |
+| `g h` | Doctor — проверка окружения |
+| `?` · `Ctrl+P` | помощь · палитра команд |
+
+Экраны и биндинги — [docs/TUI.md](docs/TUI.md).
+
+## Уведомления
+
+ntfy, Telegram, вебхук (Slack, Discord) и системные тосты. Поллер шлёт: запуск
+кончился, упал или завис; потрачено 50 % и 80 % от `--max-cost`; инстанс
+погашен по потолку или не погасился; NaN или взрыв loss; остановка по плато — и
+всё, что скрипт отправил через `xrun_hook.notify(...)`. Боту в Telegram можно
+ответить `/stop <id>`.
+
+```bash
+xrun config set notify.channels ntfy,desktop
+xrun config set ntfy.topic my-random-topic
+xrun notify test                      # код 1 — канал не работает, чинить до запуска
+xrun watchdog schedule --install      # раз в 5 минут через schtasks / crontab
 ```
 
-**Screens** (chord navigation with `g→X`):
+В TUI то же самое — экран `g n`: топик ntfy генерируется, chat id Telegram
+находится одной кнопкой.
 
-| Key | Screen |
-|-----|--------|
-| `g d` | Dashboard — burn rate, active runs, runway warning |
-| `g r` | Runs — filterable list with live status |
-| `g i` | Instances — raw vast.ai / Kaggle instances |
-| `g v` | Vendors — API key management, balance |
-| `g l` | Launch — manifest picker |
-| `g s` | Settings — config editor |
-| `?`   | Help |
-| `:`   | Command palette |
+## Принципы
 
-Run detail opens on `Enter` and has tabs: **Stages · Logs · Metrics · Artifacts · Manifest**
+- **Состояние локально.** Одна SQLite на машину, общая для всех проектов. Всё,
+  что умеет TUI, умеет и CLI, а все читающие команды отдают `--json`: скрипт и
+  агент видят то же, что человек.
+- **Потолок дешевле счёта.** Бюджет, простой и плато проверяются на каждом тике
+  поллера, а не по итогам. Неудачное уничтожение инстанса — не строка в логе, а
+  push.
+- **Креды не живут в репозитории.** Только в `credentials.toml` в каталоге
+  конфигурации пользователя, никогда в манифесте; на инстанс уходит копия
+  манифеста без них.
+- **Один манифест — один самодостаточный файл.** Без `include`, `extends` и
+  шаблонизации: дублирование лучше скрытой иерархии.
+- **Агенту — те же команды.** `xrun install skill --claude` / `--codex` учит
+  Claude Code и Codex пользоваться `xrun` вместо ручных `vastai` и `ssh`.
 
----
+## Документация
 
-## Training hook
+| | |
+| --- | --- |
+| [CLI](docs/CLI.md) | все подкоманды, флаги, машинный вывод, коды выхода |
+| [Манифест](docs/MANIFEST.md) | полная YAML-схема с примерами под каждого вендора |
+| [Архитектура](docs/ARCHITECTURE.md) | компоненты, поток данных запуска, модель поллера, отказы |
+| [События и метрики](docs/EVENTS.md) | протокол `events.jsonl` / `metrics.jsonl` и `xrun_hook` |
+| [Состояние](docs/STATE.md) | схема SQLite, миграции, резервная копия |
+| [TUI](docs/TUI.md) | экраны, биндинги, темы |
+| [Скилл для агентов](docs/SKILL.md) | что скилл делает и чего не делает |
+| [Дорожная карта](docs/ROADMAP.md) | история версий и что дальше |
 
-Add `xrun_hook` to your training script to emit structured events and metrics:
+## Как помочь
 
-```python
-# pip install git+https://github.com/gerrux/xrun.git#subdirectory=python/xrun_hook
-from xrun_hook import XRunHook
+Дороже всего — отчёт «запустил на живом вендоре, вот что вышло»: с каждым из
+них API ведёт себя по-своему, и половина исправлений в истории пришла именно
+так. Остальное — в [CONTRIBUTING.md](CONTRIBUTING.md). Утечку кредов или способ
+оставить инстанс тарифицироваться незаметно не заводите публичным issue:
+[SECURITY.md](SECURITY.md).
 
-hook = XRunHook()
-hook.event("epoch_start", stage="train", msg=f"epoch {epoch}")
+## Лицензия
 
-for epoch in range(epochs):
-    loss = train_one_epoch(...)
-    hook.metric("train_loss", loss, step=epoch)
-    hook.metric("val_f1",   eval_f1, step=epoch)
-
-hook.event("done", stage="train")
-```
-
-Metrics appear in `xrun metrics <id>` and the TUI in real time.
-
----
-
-## Budget guards
-
-```sh
-xrun launch exp/foo.yaml \
-  --max-cost 5.0      \  # auto-destroy after $5 spent
-  --max-hours 8       \  # auto-destroy after 8 hours
-  --idle-timeout 30      # auto-destroy if GPU idle for 30 minutes
-```
-
-The background poll-daemon monitors spend and destroys the instance automatically, writing `auto_destroyed_reason` to the local DB.
-
-## Notifications
-
-In the TUI: `xrun` → `g n`. Pick a channel card, press Enter, Save & test.
-The ntfy topic is generated for you; Telegram's chat id is detected with one
-button; the Watchdog card registers the scheduler entry. The first-run wizard
-has the same as step 4. CLI equivalent:
-
-```sh
-xrun config set notify.channels ntfy,desktop   # also: telegram, webhook (Slack/Discord)
-xrun config set ntfy.topic my-random-topic     # subscribe in the ntfy app
-xrun notify test                               # exit 1 = fix the channel before launching
-xrun watchdog schedule --install               # every 5 min via schtasks / crontab
-```
-
-The poll-daemon then pushes: run done / failed / idle, 50 % and 80 % of
-`--max-cost`, auto-destroy, "could not destroy instance, still billing",
-NaN or exploding loss, `policy.early_stop` plateau stops, and whatever your
-script sends via `xrun_hook.notify(...)`. Reply `/stop <id>` to the Telegram
-bot and the watchdog kills the run. `xrun watchdog` (run it every 5 min from cron / Task
-Scheduler, and the TUI runs it every 60 s) catches the one thing the daemon
-cannot report: its own death while the instance keeps billing, plus orphan
-instances. `xrun notify log` shows what was sent where.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│                 Local machine                        │
-│                                                      │
-│  xrun (Rust CLI)  ──spawn──▶  xrun-tui (Python)     │
-│        │                           │                 │
-│        ▼                           ▼                 │
-│     xrun-core  ◀──────────  SQLite runs.db           │
-│        │                                             │
-│   ┌────┴────┐   ┌────────────┐                       │
-│   │xrun-vast│   │xrun-kaggle │                       │
-│   └────┬────┘   └─────┬──────┘                       │
-└────────┼──────────────┼──────────────────────────────┘
-         ▼              ▼
-    vast.ai GPU    Kaggle Kernel
-    /workspace/    output/
-```
-
-- **`xrun-cli`** — command routing, user-facing UX
-- **`xrun-core`** — manifest types, SQLite schema, vendor trait
-- **`xrun-vast`** — vast.ai: provision, SSH upload, exec, poll, transfer
-- **`xrun-kaggle`** — Kaggle: kernel push, status poll, output download
-- **`xrun-poller`** — background daemon: events/metrics → SQLite, budget enforcement
-- **`xrun-mlflow`** — optional MLflow REST mirror for metric storage
-- **`xrun-tui`** (Python) — Textual TUI, reads SQLite, calls CLI via subprocess
-
----
-
-## Requirements
-
-**For the CLI:**
-- [vastai CLI](https://github.com/vast-ai/vast-python) (`pip install vastai`) — for vast.ai runs
-- [kaggle CLI](https://github.com/Kaggle/kaggle-api) (`pip install kaggle`) — for Kaggle runs
-- SSH key configured for vast.ai (checked by `xrun doctor`)
-
-**For the TUI:**
-- Python ≥ 3.11
-- pip for that Python. The install scripts can try `ensurepip` via
-  `--install-pip` / `-InstallPip`.
-- For local development: `pip install -e python/xrun_tui`
-
-**Building from source:**
-- Rust stable (≥ 1.75) — [install via rustup](https://rustup.rs)
-
----
-
-## Documentation
-
-| File | Contents |
-|------|----------|
-| [`docs/CLI.md`](docs/CLI.md) | All subcommands, flags, exit codes |
-| [`docs/MANIFEST.md`](docs/MANIFEST.md) | Full YAML schema with examples |
-| [`docs/TUI.md`](docs/TUI.md) | Screens, key bindings, widgets |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Components and data flow |
-| [`docs/EVENTS.md`](docs/EVENTS.md) | events.jsonl protocol + Python hook |
-| [`docs/STATE.md`](docs/STATE.md) | SQLite schema |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version history and backlog |
-| [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
-
----
-
-## Status: v0.8.0
-
-- ✅ vast.ai: provision, upload, exec, poll, pull, destroy
-- ✅ Kaggle: kernel push, status poll, output download
-- ✅ Live events and metrics in SQLite
-- ✅ MLflow mirror (metrics + UI link)
-- ✅ Budget guards (caps, auto-destroy, spend dashboard)
-- ✅ Push notifications (ntfy / Telegram / webhook / desktop) + `xrun watchdog`
-- ✅ Python Textual TUI: 16 screens, chord navigation, Tokyo Night theme
-- ✅ `xrun events --follow`, `xrun logs --follow`
-- ✅ Install scripts for macOS, Linux, Windows
-- ✅ Agent skill (`xrun install skill --codex` / `--claude`)
-- ✅ `xrun sweep` — hyperparameter grid
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE)
+[MIT](LICENSE).

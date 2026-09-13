@@ -210,6 +210,10 @@ cargo fmt --check
 | `docs/STATE.md` | SQLite-схема |
 | `docs/SKILL.md` | Дизайн Claude skill |
 | `docs/ROADMAP.md` | История версий и backlog |
+| `docs/README.md` | Индекс документации, рабочие записи (`docs/notes/`) |
+| `docs/brand.md` | Знак, палитра; картинки — `python scripts/brand.py` |
+| `docs/index.html` | Сайт на GitHub Pages (RU в разметке + EN-словарь) |
+| `CONTRIBUTING.md` / `SECURITY.md` | Как помочь, как сообщить об уязвимости |
 
 ## Важные особенности
 
