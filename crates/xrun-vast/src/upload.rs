@@ -94,7 +94,7 @@ fn ssh_endpoint(h: &InstanceHandle) -> Result<(&str, u16), VastError> {
 /// matching what users expect from `cp -r src/. dst/`. For single files:
 /// `dst` becomes the file path. Replaces `vastai cp`, which silently no-ops on
 /// directories and was the cause of the "upload ok but instance is empty"
-/// blocker (issue.md §2).
+/// blocker (docs/notes/follow-ups.md §2, see git history).
 async fn tar_upload(
     h: &InstanceHandle,
     source: &DataSource,
@@ -404,7 +404,7 @@ async fn du_bytes(host: &str, port: u16, dst: &str) -> Result<u64, VastError> {
 /// Sanity-check that the upload actually delivered bytes. Hits the remote with
 /// `du -sb <dst>` and refuses to advance if the destination is missing or 0
 /// bytes. Catches the silent-no-op class of bug that motivated this
-/// reimplementation (issue.md §2).
+/// reimplementation (docs/notes/follow-ups.md §2, see git history).
 async fn verify_upload(h: &InstanceHandle, dst: &str) -> Result<u64, VastError> {
     let (host, port) = ssh_endpoint(h)?;
     let dst_q = shell_quote(dst);

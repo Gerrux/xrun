@@ -31,4 +31,10 @@ dist/
 # Runtime artifacts produced by exp/tests/local_* manifests.
 # Real training runs live elsewhere (see `xrun pull --into ...`).
 /output/
-/checkpoints/*.pt
+
+# Local agent/brainstorm state and ad-hoc scripts — not part of the project.
+.superpowers/
+/run_plans.sh
+/checkpoints/
+*.log
+/python/xrun_tui/test_header_click.py

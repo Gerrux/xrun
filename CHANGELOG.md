@@ -326,7 +326,7 @@ template pip-eagerness) are also addressed.
 
 ## [0.5.3] — 2026-05-05
 
-Field-feedback sweep: closes the eight items in `ISSUES.md` from the
+Field-feedback sweep: closes the eight items in `docs/notes/field-issues.md` from the
 arborust evening session, plus one latent `Store::open` bug surfaced
 while wiring live telemetry. End-to-end live metrics + events on Kaggle
 now work via the existing MLflow side-channel.

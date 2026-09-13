@@ -325,7 +325,7 @@ impl VastAdapter {
                 .map_err(|_| VastError::ParseError(format!("invalid instance id: {}", h.id)))?;
 
         // Launch setup + background command over plain SSH (vast.ai's HTTP
-        // execute endpoint rejects compound shell forms — see issue.md
+        // execute endpoint rejects compound shell forms — see docs/notes/follow-ups.md
         // Update 4). Borrows are dropped before each await.
         let pid = execute::launch_run(h, run_spec).await?;
 
