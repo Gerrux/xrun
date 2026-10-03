@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
@@ -36,7 +36,7 @@ def _group_key(run: dict) -> str:
 
 # ── Screen ────────────────────────────────────────────────────────────────────
 
-class SweepScreen(Screen):
+class SweepScreen(LiveScreen):
     """Sweep results: runs grouped by manifest parent directory."""
 
     TITLE = "xrun — sweep"
@@ -77,7 +77,7 @@ class SweepScreen(Screen):
             Text("When",    style="#565f89"),
         )
         table.focus()
-        self.call_after_refresh(self._refresh)
+        self.kick(self._refresh)
 
     async def _refresh(self) -> None:
         if not self.is_mounted:

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
@@ -40,7 +40,7 @@ def _spark(values: list[float], n: int = 8) -> str:
 
 # ── Screen ────────────────────────────────────────────────────────────────────
 
-class WatchScreen(Screen):
+class WatchScreen(LiveScreen):
     """Live view of active runs with their latest metrics. Auto-refreshes every 10 s."""
 
     TITLE = "xrun — watch"
@@ -82,7 +82,7 @@ class WatchScreen(Screen):
         )
         table.focus()
         self.set_interval(10, self._refresh)
-        self.call_after_refresh(self._refresh)
+        self.kick(self._refresh)
 
     async def _refresh(self) -> None:
         if not self.is_mounted:

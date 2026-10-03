@@ -8,7 +8,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
@@ -59,7 +59,7 @@ def _health(label: str, value: str, value_style: str) -> str:
     )
 
 
-class DashboardScreen(Screen):
+class DashboardScreen(LiveScreen):
     """Home screen — at-a-glance overview with quick navigation.
 
     Layout:
@@ -570,33 +570,33 @@ class DashboardScreen(Screen):
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
+    # Same path as the `g …` chords, so a destination that is already open
+    # is returned to rather than stacked a second time.
+
+    async def _goto(self, target: str) -> None:
+        from xrun_tui.screens.palette import run_target
+        await run_target(self.app, target)
+
     async def action_open_runs(self) -> None:
-        from xrun_tui.screens.runs import RunsScreen
-        await self.app.push_screen(RunsScreen())
+        await self._goto("go:runs")
 
     async def action_goto_launch(self) -> None:
-        from xrun_tui.screens.launch import LaunchScreen
-        await self.app.push_screen(LaunchScreen())
+        await self._goto("go:launch")
 
     async def action_goto_doctor(self) -> None:
-        from xrun_tui.screens.doctor import DoctorScreen
-        await self.app.push_screen(DoctorScreen())
+        await self._goto("go:doctor")
 
     async def action_goto_instances(self) -> None:
-        from xrun_tui.screens.instances import InstancesScreen
-        await self.app.push_screen(InstancesScreen())
+        await self._goto("go:instances")
 
     async def action_goto_vendors(self) -> None:
-        from xrun_tui.screens.vendors import VendorsScreen
-        await self.app.push_screen(VendorsScreen())
+        await self._goto("go:vendors")
 
     async def action_goto_sinks(self) -> None:
-        from xrun_tui.screens.sinks import SinksScreen
-        await self.app.push_screen(SinksScreen())
+        await self._goto("go:sinks")
 
     async def action_goto_settings(self) -> None:
-        from xrun_tui.screens.settings import SettingsScreen
-        await self.app.push_screen(SettingsScreen())
+        await self._goto("go:settings")
 
     def action_quit_app(self) -> None:
         self.app.exit()

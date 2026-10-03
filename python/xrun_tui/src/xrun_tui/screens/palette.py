@@ -155,6 +155,15 @@ async def run_target(app, target: str) -> None:
     factory = factories.get(target)
     if factory is None:
         return
+    # One instance per destination. Pushing a fresh screen on every `g …`
+    # grew the stack without bound — each visit left a mounted copy behind —
+    # so going somewhere already open unwinds back to it instead.
+    for screen in app.screen_stack:
+        if type(screen) is factory:
+            # One batched update: the screens in between are dropped
+            # without each being repainted on the way down.
+            screen.pop_until_active()
+            return
     await app.push_screen(factory())
 
 

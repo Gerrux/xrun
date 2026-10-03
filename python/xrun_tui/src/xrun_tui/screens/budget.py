@@ -7,7 +7,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
@@ -48,7 +48,7 @@ def _kpi(label: str, value: str, value_style: str) -> str:
 
 # ── Screen ────────────────────────────────────────────────────────────────────
 
-class BudgetScreen(Screen):
+class BudgetScreen(LiveScreen):
     """Budget and spend analytics: KPI cards, daily bar chart, top runs by cost."""
 
     TITLE = "xrun — budget"
@@ -137,7 +137,7 @@ class BudgetScreen(Screen):
             Text("When",    style="#565f89"),
         )
         table.focus()
-        self.call_after_refresh(self._refresh)
+        self.kick(self._refresh)
 
     async def _refresh(self) -> None:
         if not self.is_mounted:

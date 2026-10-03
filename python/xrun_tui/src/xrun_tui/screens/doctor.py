@@ -6,13 +6,13 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
 
-class DoctorScreen(Screen):
+class DoctorScreen(LiveScreen):
     """System health diagnostics — wraps `xrun doctor --json`."""
 
     TITLE = "xrun — doctor"
@@ -40,7 +40,7 @@ class DoctorScreen(Screen):
             Text("Status", style="#565f89"),
             Text("Detail", style="#565f89"),
         )
-        self.call_after_refresh(self._refresh)
+        self.kick(self._refresh)
 
     async def _refresh(self) -> None:
         from xrun_tui import services
@@ -147,5 +147,5 @@ class DoctorScreen(Screen):
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
-    async def action_refresh(self) -> None:
-        await self._refresh()
+    def action_refresh(self) -> None:
+        self.kick(self._refresh)

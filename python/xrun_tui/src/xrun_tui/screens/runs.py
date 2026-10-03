@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static, Tab, Tabs
 from xrun_tui.widgets.fuzzy_filter import FilterBar
 from xrun_tui.widgets.status_bar import StatusBar
@@ -52,7 +52,7 @@ def _matches(run: dict, query: str) -> bool:
     return all(word in haystack for word in q.split())
 
 
-class RunsScreen(Screen):
+class RunsScreen(LiveScreen):
     TITLE = "xrun"
     BINDINGS = [
         Binding("j,down",    "cursor_down",    "Down",      show=False),
@@ -129,7 +129,7 @@ class RunsScreen(Screen):
         )
         table.focus()
         self.set_interval(5, self._refresh)
-        self.call_after_refresh(self._refresh)
+        self.kick(self._refresh)
 
     def _on_filter_change(self, value: str) -> None:
         self._filter_text = value
@@ -144,11 +144,12 @@ class RunsScreen(Screen):
         first_load = (table.row_count == 0)
         if first_load:
             table.loading = True
+        tab = self._filter
         try:
             from xrun_tui import config as _cfg
             limit = (_cfg.get_settings() or {}).get("history_limit", 300)
             runs = await app.db.runs(
-                status=None if self._filter == "all" else self._filter,
+                status=None if tab == "all" else tab,
                 limit=int(limit),
             )
         except Exception as exc:
@@ -157,6 +158,10 @@ class RunsScreen(Screen):
         finally:
             if first_load:
                 table.loading = False
+        if tab != self._filter:
+            # The tab changed while the query was out; its own refresh is
+            # already on the way and must not be overwritten by this one.
+            return
         self._runs = runs
         self._render_table(runs)
 
@@ -558,44 +563,42 @@ class RunsScreen(Screen):
         state = "on" if self._grouped else "off"
         self.notify(f"Grouping {state}", severity="information")
 
+    # Same path as the `g …` chords, so a destination that is already open
+    # is returned to rather than stacked a second time.
+
+    async def _goto(self, target: str) -> None:
+        from xrun_tui.screens.palette import run_target
+        await run_target(self.app, target)
+
     async def action_goto_launch(self) -> None:
-        from xrun_tui.screens.launch import LaunchScreen
-        await self.app.push_screen(LaunchScreen())
+        await self._goto("go:launch")
 
     async def action_goto_dashboard(self) -> None:
-        from xrun_tui.screens.dashboard import DashboardScreen
-        await self.app.switch_screen(DashboardScreen())
+        await self._goto("go:dashboard")
 
     async def action_goto_doctor(self) -> None:
-        from xrun_tui.screens.doctor import DoctorScreen
-        await self.app.push_screen(DoctorScreen())
+        await self._goto("go:doctor")
 
     async def action_goto_instances(self) -> None:
-        from xrun_tui.screens.instances import InstancesScreen
-        await self.app.push_screen(InstancesScreen())
+        await self._goto("go:instances")
 
     async def action_goto_vendors(self) -> None:
-        from xrun_tui.screens.vendors import VendorsScreen
-        await self.app.push_screen(VendorsScreen())
+        await self._goto("go:vendors")
 
     async def action_goto_settings(self) -> None:
-        from xrun_tui.screens.settings import SettingsScreen
-        await self.app.push_screen(SettingsScreen())
+        await self._goto("go:settings")
 
     async def action_refresh(self) -> None:
         await self._refresh()
 
     async def action_goto_watch(self) -> None:
-        from xrun_tui.screens.watch import WatchScreen
-        await self.app.push_screen(WatchScreen())
+        await self._goto("go:watch")
 
     async def action_goto_budget(self) -> None:
-        from xrun_tui.screens.budget import BudgetScreen
-        await self.app.push_screen(BudgetScreen())
+        await self._goto("go:budget")
 
     async def action_goto_sweep(self) -> None:
-        from xrun_tui.screens.sweep import SweepScreen
-        await self.app.push_screen(SweepScreen())
+        await self._goto("go:sweep")
 
     def action_go_back(self) -> None:
         if self._selected_ids:

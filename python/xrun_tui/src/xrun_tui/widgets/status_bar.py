@@ -38,6 +38,10 @@ class StatusBar(Static):
             pass
 
     async def _refresh_async(self) -> None:
+        # Every mounted screen carries its own bar; only the visible one
+        # needs the query.
+        if not self.screen.is_current:
+            return
         app = self.app
         snapshot: dict[str, Any] = {}
 

@@ -8,7 +8,6 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 from textual.widgets import (
     Button,
     DataTable,
@@ -18,11 +17,12 @@ from textual.widgets import (
     RichLog,
     Static,
 )
+from xrun_tui.live import LiveScreen
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
 
-class LaunchScreen(Screen):
+class LaunchScreen(LiveScreen):
     """Pick a manifest, preview it, dry-run or launch."""
 
     TITLE = "xrun — launch"
@@ -85,7 +85,7 @@ class LaunchScreen(Screen):
             "[#414868]select a manifest to preview[/]"
         )
         t.focus()
-        self.call_after_refresh(self._refresh)
+        self.kick(self._refresh)
 
     async def _refresh(self) -> None:
         from xrun_tui import services
@@ -213,5 +213,5 @@ class LaunchScreen(Screen):
     def action_cursor_up(self) -> None:
         self.query_one("#launch-table", DataTable).action_cursor_up()
 
-    async def action_refresh(self) -> None:
-        await self._refresh()
+    def action_refresh(self) -> None:
+        self.kick(self._refresh)

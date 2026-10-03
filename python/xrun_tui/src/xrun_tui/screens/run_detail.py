@@ -7,7 +7,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
 
 
-class RunDetailScreen(Screen):
+class RunDetailScreen(LiveScreen):
     BINDINGS = [
         Binding("escape,q", "go_back",        "Back"),
         Binding("s",        "stop_run",       "Stop"),

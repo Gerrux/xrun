@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
+from xrun_tui.live import LiveScreen
 from textual.widgets import (
     DataTable,
     Footer,
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
 
 
-class InstancesScreen(Screen):
+class InstancesScreen(LiveScreen):
     TITLE = "xrun — instances"
     BINDINGS = [
         Binding("escape,q",  "go_back",     "Back"),
@@ -60,7 +60,7 @@ class InstancesScreen(Screen):
         self._setup_remote_table()
         self._setup_local_table()
         self.set_interval(20, self._refresh_remote)
-        self.call_after_refresh(self._load_all)
+        self.kick(self._load_all)
 
     # ── Column setup ─────────────────────────────────────────────────────────
 
@@ -94,12 +94,30 @@ class InstancesScreen(Screen):
     # ── Loading ──────────────────────────────────────────────────────────────
 
     async def _load_all(self) -> None:
-        await self._refresh_remote()
+        # Local first: it is a few ms of SQLite, the remote half is a
+        # vast.ai round trip.
         await self._refresh_local()
+        await self._refresh_remote()
 
     async def _refresh_remote(self) -> None:
         api_key = config.get_vast_api_key()
         table = self.query_one("#remote-table", DataTable)
+
+        # Fetch before touching the table: the old rows stay readable (and
+        # selectable) while the request is in flight, and two overlapping
+        # refreshes cannot interleave their rows — everything below the
+        # await is synchronous.
+        instances: list[dict] = []
+        error: Exception | None = None
+        if api_key:
+            try:
+                from xrun_tui.screens.vendors import fetch_vast_instances
+                instances = await fetch_vast_instances(api_key)
+            except Exception as exc:
+                error = exc
+        if not self.is_mounted:
+            return
+
         table.clear()
         self._remote_instances = []
 
@@ -113,14 +131,11 @@ class InstancesScreen(Screen):
             )
             return
 
-        try:
-            from xrun_tui.screens.vendors import fetch_vast_instances
-            instances = await fetch_vast_instances(api_key)
-        except Exception as exc:
-            self.query_one("#inst-summary", Static).update(f"[#f7768e]Error: {exc}[/]")
+        if error is not None:
+            self.query_one("#inst-summary", Static).update(f"[#f7768e]Error: {error}[/]")
             table.add_row(
                 Text("✗", style="#f7768e"),
-                Text(str(exc)[:60], style="#f7768e"),
+                Text(str(error)[:60], style="#f7768e"),
                 *[Text("") for _ in range(7)],
             )
             return
@@ -264,8 +279,8 @@ class InstancesScreen(Screen):
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
-    async def action_refresh(self) -> None:
-        await self._load_all()
+    def action_refresh(self) -> None:
+        self.kick(self._load_all)
 
     async def action_destroy(self) -> None:
         inst = self._selected_remote_instance()

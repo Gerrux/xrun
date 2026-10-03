@@ -54,6 +54,10 @@ class _StatusClock(Static):
                 pass
 
     async def _refresh_async(self) -> None:
+        # Every mounted screen carries its own clock; only the visible one
+        # needs the query.
+        if not self.screen.is_current:
+            return
         try:
             runs = await self.app.db.runs(status="active")  # type: ignore[attr-defined]
             self._active = len(runs)

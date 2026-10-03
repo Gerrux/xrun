@@ -239,6 +239,12 @@ class XrunApp(App):
         await self.push_screen(CommandPalette(), _on_pick)
 
     async def action_open_notifications(self) -> None:
+        # `n` is a priority binding, so it is taken here before `on_key`
+        # can see it as the second half of `g n`.
+        if self._chord_leader and time.time() < self._chord_expires:
+            self._chord_leader = None
+            await self._dispatch_chord("goto_notify")
+            return
         from xrun_tui.screens.notifications import NotificationsScreen
         if isinstance(self.screen, NotificationsScreen):
             return

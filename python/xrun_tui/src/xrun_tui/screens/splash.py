@@ -19,6 +19,8 @@ _TAGLINE = "[#565f89]Run GPU experiments anywhere[/]"
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _STEP_W = 14
+# Longest the splash waits for the vast.ai balance before moving on.
+_VAST_WAIT_S = 1.0
 
 
 def _configured_vendors(creds: dict) -> list[str]:
@@ -151,20 +153,61 @@ class SplashScreen(Screen):
         sym = _SPINNER[self._spin_frame]
         w.update(self._format_line(sym, "#e0af68", label, self._current_detail))
 
-    async def _init_sequence(self) -> None:
-        from xrun_tui import config, services
-
+    async def _show_version(self) -> None:
         # Refresh the version label from the actual binary so it stays in sync
         # with the installed `xrun` rather than a hardcoded constant.
+        from xrun_tui import services
         try:
             v = await services.xrun_version()
-            if v:
+            if v and self.is_mounted:
                 self._version = v
                 self.query_one("#splash-version", Static).update(
                     f"[#414868]xrun[/] [#565f89]v{v}[/]"
                 )
         except Exception:
             pass
+
+    async def _probe_vast(self, api_key: str) -> str:
+        """Balance + user from the vast.ai API; fills the status-bar cache."""
+        from xrun_tui.screens.vendors import _fetch_user
+
+        app = self.app
+        try:
+            info = await asyncio.wait_for(_fetch_user(api_key), timeout=4)
+            user = info.get("username") or info.get("email") or "?"
+            credit = float(info.get("credit", 0))
+            app._vast_status_cache = {  # type: ignore[attr-defined]
+                "vast_user": user,
+                "vast_credit": credit,
+            }
+            return f"vast ${credit:.2f}"
+        except Exception:
+            return "vast ?"
+
+    async def _scan_manifests(self) -> None:
+        from xrun_tui import services
+        try:
+            exp_dir: str | None = None
+            ok, cfg, _ = await services.config_show()
+            if ok:
+                exp_dir = (cfg.get("defaults") or {}).get("exp_dir") or None
+            self.app._exp_dir = exp_dir  # type: ignore[attr-defined]
+            ms = await asyncio.to_thread(services.discover_manifests, exp_dir)
+            n = len(ms)
+            noun = "manifest" if n == 1 else "manifests"
+            await self._set("scan", "ok", detail=f"{n} {noun}")
+        except Exception as exc:
+            await self._set("scan", "warn", detail=str(exc)[:32])
+
+    async def _init_sequence(self) -> None:
+        from xrun_tui import config
+
+        # The steps below are independent (a subprocess, an HTTPS call, a
+        # directory walk), so they run side by side: the splash lasts as long
+        # as the slowest one instead of their sum.
+        version_task = asyncio.create_task(self._show_version())
+        await self._set("scan", "running", detail="scanning…")
+        scan_task = asyncio.create_task(self._scan_manifests())
 
         # 1) DB
         await self._set("db", "running", detail="opening…")
@@ -196,21 +239,20 @@ class SplashScreen(Screen):
         else:
             results: list[str] = []
             # vast: live API call (balance + user) only if api_key is set.
+            # The dashboard does not need the answer, so a slow API holds
+            # the splash for at most `_VAST_WAIT_S`; the probe then finishes
+            # in the background and the status bar picks the balance up
+            # from the cache on its next tick.
             api_key = config.get_vast_api_key()
             if api_key:
+                probe = asyncio.create_task(self._probe_vast(api_key))
+                self.app._splash_probe = probe  # type: ignore[attr-defined]
                 try:
-                    from xrun_tui.screens.vendors import _fetch_user
-
-                    info = await asyncio.wait_for(_fetch_user(api_key), timeout=4)
-                    user = info.get("username") or info.get("email") or "?"
-                    credit = float(info.get("credit", 0))
-                    self.app._vast_status_cache = {  # type: ignore[attr-defined]
-                        "vast_user": user,
-                        "vast_credit": credit,
-                    }
-                    results.append(f"vast ${credit:.2f}")
-                except Exception:
-                    results.append("vast ?")
+                    results.append(
+                        await asyncio.wait_for(asyncio.shield(probe), _VAST_WAIT_S)
+                    )
+                except asyncio.TimeoutError:
+                    results.append("vast …")
             if "kaggle" in configured:
                 results.append("kaggle")
             if "ssh" in configured:
@@ -221,28 +263,14 @@ class SplashScreen(Screen):
             state = "ok" if results else "warn"
             await self._set("vendors", state, detail="  ".join(results) or "none")
 
-        # 4) Manifest scan
-        await self._set("scan", "running", detail="scanning…")
-        try:
-            exp_dir: str | None = None
-            ok, cfg, _ = await services.config_show()
-            if ok:
-                exp_dir = (cfg.get("defaults") or {}).get("exp_dir") or None
-            self.app._exp_dir = exp_dir  # type: ignore[attr-defined]
-            ms = await asyncio.to_thread(services.discover_manifests, exp_dir)
-            n = len(ms)
-            noun = "manifest" if n == 1 else "manifests"
-            await self._set("scan", "ok", detail=f"{n} {noun}")
-        except Exception as exc:
-            await self._set("scan", "warn", detail=str(exc)[:32])
+        # 4) Manifest scan — started at the top, collected here.
+        await scan_task
+        await version_task
 
-        # 5) Warm
-        await self._set("ready", "running", detail="warming…")
-        await asyncio.sleep(0.15)
+        # 5) Done. One short beat so the finished checklist is readable.
         await self._set("ready", "ok", detail="ready")
-
         self._running_sid = None
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.12)
         self.app.call_later(self._on_done)
 
     @staticmethod
