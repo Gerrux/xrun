@@ -10,47 +10,81 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, Rule, Static
+from xrun_tui.screens.confirm import ConfirmScreen
+from xrun_tui.screens.ssh_hosts import (
+    SshHostsScreen,
+    hosts_in,
+    ssh_probe_args,
+    usable_hosts,
+)
+from xrun_tui.widgets.cards import CardCursor, pill
+from xrun_tui.widgets.form import FormGuard, single_save
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
-from xrun_tui import config
+from xrun_tui import config, services
 
 # Vendors supported by xrun
 _VENDORS = [
-    ("vast",   "vast.ai",  "GPU cloud (primary)"),
-    ("kaggle", "Kaggle",   "Notebook platform"),
+    ("local",  "Local machine", "This computer — no account needed"),
+    ("ssh",    "SSH hosts",     "Your own server, NAS or VPS"),
+    ("vast",   "vast.ai",       "GPU cloud marketplace"),
+    ("kaggle", "Kaggle",        "Notebook platform"),
 ]
+
+
+def _row_index(vid: str) -> int:
+    """Position of a vendor in `_VENDORS`. Rows are addressed through this,
+    never by a literal index, so the order can change."""
+    return next(i for i, (v, _, _) in enumerate(_VENDORS) if v == vid)
+
 
 # Brand emblems and accent colors (used in CSS via .vendor-card-{vid})
 _LOGOS = {
+    "local":  "▣",
+    "ssh":    "⌁",
     "vast":   "⚡",
     "kaggle": "◆",
 }
 _BRAND = {
+    "local":  "#9ece6a",
+    "ssh":    "#bb9af7",
     "vast":   "#ff6b35",
     "kaggle": "#20beff",
 }
 
 
-def _pill(state: str) -> str:
-    """Render a status pill. state ∈ {empty, checking, ok, error}."""
-    if state == "checking":
-        return "[#1a1b26 on #e0af68] CHECK [/]"
-    if state == "ok":
-        return "[#1a1b26 on #9ece6a] READY [/]"
-    if state == "error":
-        return "[#c0caf5 on #f7768e] ERROR [/]"
-    return "[#c0caf5 on #414868] EMPTY [/]"
+_NOT_SECRET = {"kaggle.username"}
+
+
+async def _apply_ops(ops: list[tuple]) -> tuple[bool, str]:
+    """Run credential writes through `xrun config` (the only writer), in order.
+    ops: ("set", key, value) | ("unset", key). Stops at the first failure."""
+    for op in ops:
+        if op[0] == "set":
+            ok, err = await services.config_set(
+                op[1], op[2], secret=op[1] not in _NOT_SECRET
+            )
+        else:
+            ok, err = await services.config_unset(op[1])
+        if not ok:
+            return False, err or f"{op[0]} {op[1]} failed"
+    return True, ""
 
 
 def _vendor_configured(creds: dict, vid: str) -> bool:
     """Return True if the vendor has all required credentials set."""
+    if vid == "local":
+        return True  # runs on this machine, nothing to configure
+    if vid == "ssh":
+        return bool(usable_hosts(creds))
     v = creds.get(vid, {})
     if vid == "kaggle":
         # Env var / access_token file takes priority (no stored creds needed)
@@ -62,12 +96,36 @@ def _vendor_configured(creds: dict, vid: str) -> bool:
     return bool(v.get("api_key"))
 
 
+def _card_info(creds: dict, vid: str) -> str:
+    """Resting info line of a card (no probe result on screen)."""
+    if vid == "local":
+        return "[#565f89]Always available — runs as a subprocess on this computer[/]"
+    if vid == "ssh":
+        hosts = usable_hosts(creds)
+        if not hosts:
+            if hosts_in(creds):
+                return ("[#e0af68]Host without user or address — press[/] "
+                        "[#c0caf5]Enter[/] [#e0af68]to fix it[/]")
+            return ("[#565f89]No hosts yet — press[/] [#c0caf5]Enter[/] "
+                    "[#565f89]to add one[/]")
+        n = len(hosts)
+        names = escape(", ".join(hosts))
+        return (f"[#c0caf5]{n}[/] [#565f89]host{'s' if n != 1 else ''}:[/] "
+                f"[#c0caf5]{names}[/]")
+    if _vendor_configured(creds, vid):
+        return ""
+    return ("[#565f89]Press[/] [#c0caf5]Enter[/] "
+            "[#565f89]or double-click to edit[/]")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Overview screen
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class VendorsScreen(Screen):
+class VendorsScreen(CardCursor, Screen):
     TITLE = "xrun — vendors"
+    _CARD_PREFIX = "vrow"
+    _CARD_COUNT = len(_VENDORS)
     BINDINGS = [
         Binding("escape,q",   "go_back", "Back"),
         Binding("enter,e",    "edit",    "Edit"),
@@ -110,7 +168,7 @@ class VendorsScreen(Screen):
                             classes="vendor-card-title",
                         )
                         yield Static(
-                            _pill(state),
+                            pill(state),
                             id=f"vstatus-{i}",
                             classes="vendor-card-pill",
                         )
@@ -122,15 +180,13 @@ class VendorsScreen(Screen):
                             id=f"vdot-{i}",
                         )
                         yield Static(
-                            "[#565f89]Press[/] [#c0caf5]Enter[/] "
-                            "[#565f89]or double-click to edit[/]"
-                            if not configured else "",
+                            _card_info(self._creds, vid),
                             id=f"vinfo-{i}",
                             classes="vendor-card-info",
                         )
             yield Rule()
             yield Static(
-                "[#565f89]Enter/e[/] [#c0caf5]Edit[/]   "
+                "[#565f89]Enter/e[/] [#c0caf5]Edit / hosts[/]   "
                 "[#565f89]i[/] [#c0caf5]Import native[/]   "
                 "[#565f89]t[/] [#c0caf5]Test[/]   "
                 "[#565f89]u[/] [#c0caf5]Quota in browser[/]   "
@@ -157,10 +213,10 @@ class VendorsScreen(Screen):
         api_key = config.get_vast_api_key()
         if not api_key:
             return
-        idx = 0
+        idx = _row_index("vast")
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
-        status_widget.update(_pill("checking"))
+        status_widget.update(pill("checking"))
         # The last known answer (splash or a previous visit) stays on screen
         # while the request is out, instead of a blank row for a second.
         cache = getattr(self.app, "_vast_status_cache", None)
@@ -177,7 +233,7 @@ class VendorsScreen(Screen):
             name   = info.get("username") or info.get("email") or "?"
             credit = float(info.get("credit", 0))
             self._stop_pulse(idx, ok=True, vid="vast")
-            status_widget.update(_pill("ok"))
+            status_widget.update(pill("ok"))
             info_widget.update(self._vast_info(name, credit))
             if isinstance(cache, dict):
                 # `vast_*` is what the status bar and the splash use,
@@ -188,7 +244,7 @@ class VendorsScreen(Screen):
             if not self.is_attached:
                 return
             self._stop_pulse(idx, ok=False, vid="vast")
-            status_widget.update(_pill("error"))
+            status_widget.update(pill("error"))
             info_widget.update(f"[#f7768e]{exc}[/]")
 
     async def _check_kaggle(self) -> None:
@@ -203,10 +259,10 @@ class VendorsScreen(Screen):
         )
         username = v.get("username", "").strip()
         key      = v.get("key", "").strip()
-        idx = next(i for i, (vid, _, _) in enumerate(_VENDORS) if vid == "kaggle")
+        idx = _row_index("kaggle")
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
-        status_widget.update(_pill("checking"))
+        status_widget.update(pill("checking"))
         cache = getattr(self.app, "_kaggle_status_cache", None)
         if isinstance(cache, dict) and cache.get("kaggle_info"):
             info_widget.update(cache["kaggle_info"])
@@ -218,7 +274,7 @@ class VendorsScreen(Screen):
             if not self.is_attached:
                 return
             self._stop_pulse(idx, ok=True, vid="kaggle")
-            status_widget.update(_pill("ok"))
+            status_widget.update(pill("ok"))
             markup = f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}"
             info_widget.update(markup)
             if isinstance(cache, dict):
@@ -228,7 +284,7 @@ class VendorsScreen(Screen):
             if not self.is_attached:
                 return
             self._stop_pulse(idx, ok=False, vid="kaggle")
-            status_widget.update(_pill("error"))
+            status_widget.update(pill("error"))
             info_widget.update(f"[#f7768e]{exc}[/]")
             cache = getattr(self.app, "_kaggle_status_cache", None)
             if isinstance(cache, dict):
@@ -236,24 +292,17 @@ class VendorsScreen(Screen):
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    def _highlight(self, idx: int) -> None:
-        for i in range(len(_VENDORS)):
-            row = self.query_one(f"#vrow-{i}", Vertical)
-            if i == idx:
-                row.add_class("vendor-row-active")
-            else:
-                row.remove_class("vendor-row-active")
-
-    def action_next(self) -> None:
-        self._cursor = (self._cursor + 1) % len(_VENDORS)
-        self._highlight(self._cursor)
-
-    def action_prev(self) -> None:
-        self._cursor = (self._cursor - 1) % len(_VENDORS)
-        self._highlight(self._cursor)
+    # j/k cursor: CardCursor
 
     async def action_edit(self) -> None:
         vid, vname, _ = _VENDORS[self._cursor]
+        if vid == "local":
+            self.notify("Local machine needs no setup — nothing to edit",
+                        severity="information")
+            return
+        if vid == "ssh":
+            await self.app.push_screen(SshHostsScreen())
+            return
         await self.app.push_screen(VendorEditScreen(vid, vname))
 
     async def action_test(self) -> None:
@@ -262,9 +311,56 @@ class VendorsScreen(Screen):
             await self._check_vast()
         elif vid == "kaggle":
             await self._check_kaggle()
+        elif vid == "local":
+            await self._check_local()
+        elif vid == "ssh":
+            await self._check_ssh()
+
+    def _show_probe(self, vid: str, state: str, info: str) -> None:
+        idx = _row_index(vid)
+        self.query_one(f"#vstatus-{idx}", Static).update(pill(state))
+        self.query_one(f"#vinfo-{idx}", Static).update(info)
+
+    async def _check_local(self) -> None:
+        self._show_probe("local", "checking", "")
+        res = await services.probe("local")
+        if not self.is_attached:
+            return
+        ok = bool(res.get("ok"))
+        # CLI text (paths, `[section]` names in errors) is not markup.
+        detail = escape(str(res.get("detail") or ""))
+        colour = "#c0caf5" if ok else "#f7768e"
+        self._show_probe("local", "ok" if ok else "error",
+                         f"[{colour}]{detail}[/]" if detail else _card_info({}, "local"))
+
+    async def _check_ssh(self) -> None:
+        hosts = usable_hosts(self._creds)
+        if not hosts:
+            self.notify("No usable SSH hosts (need host and user) — "
+                        "press Enter to add or fix one",
+                        severity="warning")
+            return
+        self._show_probe("ssh", "checking", "")
+        results = await asyncio.gather(*(
+            services.probe("ssh", extra_args=ssh_probe_args(h))
+            for h in hosts.values()
+        ))
+        if not self.is_attached:
+            return
+        failed = [(a, r) for a, r in zip(hosts, results) if not r.get("ok")]
+        n_ok = len(hosts) - len(failed)
+        text = f"[#9ece6a]{n_ok} ok[/]  [#f7768e]{len(failed)} failed[/]"
+        if failed:
+            alias, res = failed[0]
+            text += (f"  [#565f89]{escape(alias)}:[/] "
+                     f"[#f7768e]{escape(str(res.get('detail') or 'failed'))}[/]")
+        self._show_probe("ssh", "error" if failed else "ok", text)
 
     async def action_import_native(self) -> None:
         vid = _VENDORS[self._cursor][0]
+        if vid in ("local", "ssh"):
+            self.notify("Nothing to import for this vendor", severity="information")
+            return
         if vid == "vast":
             native = Path.home() / ".config" / "vastai" / "vast_api_key"
             if not native.exists():
@@ -278,16 +374,16 @@ class VendorsScreen(Screen):
             async def _do_vast(confirmed: bool) -> None:
                 if not confirmed:
                     return
-                creds = dict(self._creds)
-                creds.setdefault("vast", {})["api_key"] = key
-                config.write_credentials(creds)
-                self._creds = creds
-                self._refresh_row(0)
+                ok, err = await _apply_ops([("set", "vast.api_key", key)])
+                if not ok:
+                    self.notify(f"Import failed: {err}", severity="error")
+                    return
+                self._creds = config.read_credentials()
+                self._refresh_row(_row_index("vast"))
                 self.notify("vast.ai key imported from native config", severity="information")
                 self.run_worker(self._check_vast(), exclusive=False, group="probe")
 
             if _vendor_configured(self._creds, "vast"):
-                from xrun_tui.screens.confirm import ConfirmScreen
                 await self.app.push_screen(
                     ConfirmScreen("Overwrite existing vast.ai credentials?"), _do_vast
                 )
@@ -317,22 +413,31 @@ class VendorsScreen(Screen):
             async def _do_kaggle(confirmed: bool) -> None:
                 if not confirmed:
                     return
-                creds = dict(self._creds)
+                # Same rule as the edit form: the imported auth mode replaces
+                # the other one, so a leftover token cannot outrank a freshly
+                # imported legacy pair (or stale legacy fields linger).
+                drop_legacy = [("unset", "kaggle.username"), ("unset", "kaggle.key")]
                 if env_token:
-                    creds.setdefault("kaggle", {})["token"] = env_token
-                    config.write_credentials(creds)
-                    self._creds = creds
-                    self._refresh_row(1)
+                    ok, err = await _apply_ops(
+                        [("set", "kaggle.token", env_token), *drop_legacy])
+                    if not ok:
+                        self.notify(f"Import failed: {err}", severity="error")
+                        return
+                    self._creds = config.read_credentials()
+                    self._refresh_row(_row_index("kaggle"))
                     self.notify("Kaggle token imported from KAGGLE_API_TOKEN env var", severity="information")
                 elif access_token_path.exists():
                     token = access_token_path.read_text(encoding="utf-8").strip()
                     if not token:
                         self.notify("~/.kaggle/access_token is empty", severity="warning")
                         return
-                    creds.setdefault("kaggle", {})["token"] = token
-                    config.write_credentials(creds)
-                    self._creds = creds
-                    self._refresh_row(1)
+                    ok, err = await _apply_ops(
+                        [("set", "kaggle.token", token), *drop_legacy])
+                    if not ok:
+                        self.notify(f"Import failed: {err}", severity="error")
+                        return
+                    self._creds = config.read_credentials()
+                    self._refresh_row(_row_index("kaggle"))
                     self.notify("Kaggle token imported from ~/.kaggle/access_token", severity="information")
                 else:
                     try:
@@ -345,15 +450,20 @@ class VendorsScreen(Screen):
                     except Exception as exc:
                         self.notify(f"Failed to parse kaggle.json: {exc}", severity="error")
                         return
-                    creds.setdefault("kaggle", {}).update({"username": username, "key": key})
-                    config.write_credentials(creds)
-                    self._creds = creds
-                    self._refresh_row(1)
+                    ok, err = await _apply_ops([
+                        ("set", "kaggle.username", username),
+                        ("set", "kaggle.key", key),
+                        ("unset", "kaggle.token"),
+                    ])
+                    if not ok:
+                        self.notify(f"Import failed: {err}", severity="error")
+                        return
+                    self._creds = config.read_credentials()
+                    self._refresh_row(_row_index("kaggle"))
                     self.notify(f"Kaggle credentials imported ({username})", severity="information")
                 self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
 
             if _vendor_configured({"kaggle": self._creds.get("kaggle", {})}, "kaggle"):
-                from xrun_tui.screens.confirm import ConfirmScreen
                 await self.app.push_screen(
                     ConfirmScreen(f"Overwrite existing Kaggle credentials from {source_desc}?"),
                     _do_kaggle,
@@ -364,6 +474,10 @@ class VendorsScreen(Screen):
     def action_open_quota(self) -> None:
         import webbrowser
         vid = _VENDORS[self._cursor][0]
+        if vid in ("local", "ssh"):
+            self.notify("No quota for this vendor — it runs on your own hardware",
+                        severity="information")
+            return
         urls = {
             "vast":   "https://cloud.vast.ai/billing/",
             "kaggle": "https://www.kaggle.com/settings",
@@ -381,24 +495,42 @@ class VendorsScreen(Screen):
     async def action_revoke(self) -> None:
         vid, vname, _ = _VENDORS[self._cursor]
         idx = self._cursor
+        if vid == "local":
+            self.notify("Local machine has no credentials to revoke",
+                        severity="information")
+            return
+        if vid == "ssh":
+            self.notify("Remove SSH hosts one by one: Enter, then r on a host",
+                        severity="information")
+            return
 
         async def _do_revoke(confirmed: bool) -> None:
             if not confirmed:
                 return
-            creds = dict(self._creds)
-            creds.pop(vid, None)
-            config.write_credentials(creds)
-            self._creds = creds
+            keys = (
+                ["vast.api_key"] if vid == "vast"
+                else ["kaggle.token", "kaggle.username", "kaggle.key"]
+            )
+            ok, err = await _apply_ops([("unset", k) for k in keys])
+            if not ok:
+                self.notify(f"Revoke failed: {err}", severity="error")
+                return
+            self._creds = config.read_credentials()
             self._refresh_row(idx)
             self.notify(f"{vname} credentials revoked", severity="information")
 
-        from textual.widgets import Button
         self.app.push_screen(
-            _ConfirmRevoke(vname),
+            ConfirmScreen(
+                f"[bold #f7768e]Revoke {vname} credentials?[/]\n\n"
+                "[#c0caf5]This will delete saved keys from credentials.toml.[/]",
+                default_no=True,
+            ),
             _do_revoke,
         )
 
     def _refresh_row(self, idx: int) -> None:
+        if not self.is_attached:
+            return  # the user left while the CLI write was still running
         vid = _VENDORS[idx][0]
         configured = _vendor_configured(self._creds, vid)
         brand = _BRAND[vid]
@@ -407,13 +539,9 @@ class VendorsScreen(Screen):
             f"{'●' if configured else '○'}[/]"
         )
         self.query_one(f"#vstatus-{idx}", Static).update(
-            _pill("ok" if configured else "empty")
+            pill("ok" if configured else "empty")
         )
-        self.query_one(f"#vinfo-{idx}", Static).update(
-            "" if configured else
-            "[#565f89]Press[/] [#c0caf5]Enter[/] "
-            "[#565f89]or double-click to edit[/]"
-        )
+        self.query_one(f"#vinfo-{idx}", Static).update(_card_info(self._creds, vid))
 
     # ── Pulse animation on status dot during 'checking' state ────────────────
 
@@ -497,7 +625,10 @@ class VendorsScreen(Screen):
 #  Edit credentials screen
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class VendorEditScreen(Screen):
+class VendorEditScreen(FormGuard, Screen):
+    # The pasted public key is a scratch field for "Add key", not part of Save.
+    _FORM_IGNORE = frozenset({"input-ssh-pubkey"})
+
     BINDINGS = [
         Binding("escape",  "go_back", "Back"),
         Binding("ctrl+s",  "save",    "Save"),
@@ -527,13 +658,15 @@ class VendorEditScreen(Screen):
                 with Horizontal(classes="form-row"):
                     yield Label("Token:", classes="form-label")
                     yield Input(
-                        token,
+                        "",
                         id="input-kaggle-token",
                         password=True,
-                        placeholder="Paste API token from kaggle.com/settings…",
+                        placeholder=services.secret_placeholder(
+                            token, "Paste API token from kaggle.com/settings…"
+                        ),
                         classes="form-input",
                     )
-                yield Static(_masked(token), id="token-hint", classes="form-hint")
+                yield Static("", id="token-hint", classes="form-hint")
                 # Legacy credentials
                 yield Static(
                     "[bold #bb9af7]Legacy credentials[/] [#565f89](kaggle.json / username+key)[/]",
@@ -550,13 +683,15 @@ class VendorEditScreen(Screen):
                 with Horizontal(classes="form-row"):
                     yield Label("Key:", classes="form-label")
                     yield Input(
-                        key,
+                        "",
                         id="input-kaggle-key",
                         password=True,
-                        placeholder="Kaggle API key (from kaggle.json)…",
+                        placeholder=services.secret_placeholder(
+                            key, "Kaggle API key (from kaggle.json)…"
+                        ),
                         classes="form-input",
                     )
-                yield Static(_masked(key), id="key-hint", classes="form-hint")
+                yield Static("", id="key-hint", classes="form-hint")
                 yield Static(
                     "[#565f89]Native fallback:[/] [#7aa2f7]~/.kaggle/kaggle.json[/]",
                     classes="form-footer-hint",
@@ -567,13 +702,15 @@ class VendorEditScreen(Screen):
                 with Horizontal(classes="form-row"):
                     yield Label("API Key:", classes="form-label")
                     yield Input(
-                        api_key,
+                        "",
                         id="input-api-key",
                         password=True,
-                        placeholder=f"Enter {self._vname} API key…",
+                        placeholder=services.secret_placeholder(
+                            api_key, f"Enter {self._vname} API key…"
+                        ),
                         classes="form-input",
                     )
-                yield Static(_masked(api_key), id="key-hint", classes="form-hint")
+                yield Static("", id="key-hint", classes="form-hint")
                 if self._vid == "vast":
                     yield Static(
                         "[#565f89]Native fallback:[/] [#7aa2f7]~/.config/vastai/vast_api_key[/]",
@@ -636,9 +773,6 @@ class VendorEditScreen(Screen):
             if event.input.id == "input-api-key":
                 self.query_one("#key-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
-                if self._vid == "vast":
-                    # Re-probe SSH keys with the new credential.
-                    self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
             elif event.input.id == "input-kaggle-token":
                 self.query_one("#token-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
@@ -649,6 +783,7 @@ class VendorEditScreen(Screen):
             pass
 
     def on_mount(self) -> None:
+        self.call_after_refresh(self.snapshot_form)
         if self._vid == "vast":
             self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
             self.run_worker(self._load_excluded_countries(), exclusive=True, group="region")
@@ -656,7 +791,9 @@ class VendorEditScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if bid == "btn-save":
-            self.action_save()
+            # Not exclusive: cancelling a save between "set token" and
+            # "unset legacy" would leave half-changed credentials.
+            self.run_worker(self.action_save(), group="save")
         elif bid == "btn-test":
             self.run_worker(self._do_test(), exclusive=True)
         elif bid == "btn-back":
@@ -721,11 +858,10 @@ class VendorEditScreen(Screen):
         self.app.push_screen(CountryExcludeScreen(current), _done)
 
     async def _save_excluded_countries(self, codes: list[str]) -> None:
-        from xrun_tui.screens.settings import _xrun_config_set
         value = ", ".join(codes)
         result = self.query_one("#region-result", Static)
         result.update("[#e0af68]Saving…[/]")
-        ok, err = await _xrun_config_set("search.exclude_countries", value)
+        ok, err = await services.config_set("search.exclude_countries", value)
         if ok:
             result.update(
                 f"[bold #9ece6a]✓ Saved.[/] "
@@ -738,10 +874,12 @@ class VendorEditScreen(Screen):
     # ── SSH key management (vast only) ────────────────────────────────────────
 
     def _current_api_key(self) -> str:
+        # The field is blank when the user keeps the stored key.
         try:
-            return self.query_one("#input-api-key", Input).value.strip()
+            typed = self.query_one("#input-api-key", Input).value.strip()
         except Exception:
-            return ""
+            typed = ""
+        return typed or (self._creds.get(self._vid, {}).get("api_key") or "")
 
     async def _refresh_ssh_keys(self) -> None:
         try:
@@ -938,8 +1076,27 @@ class VendorEditScreen(Screen):
             f"[#565f89]Press[/] [bold]Add key[/] [#565f89]to register.[/]{extras}"
         )
 
-    def action_save(self) -> None:
-        creds = dict(self._creds)
+    def _kaggle_effective(self) -> tuple[str, str, str]:
+        """(username, key, token) to use now: what is typed, else what is
+        stored. A typed legacy key outranks a stored token, as on save."""
+        stored = self._creds.get("kaggle", {})
+        token    = self.query_one("#input-kaggle-token",    Input).value.strip()
+        username = self.query_one("#input-kaggle-username", Input).value.strip()
+        key      = self.query_one("#input-kaggle-key",      Input).value.strip()
+        if token:
+            return username, key, token
+        if key:
+            return username or (stored.get("username") or ""), key, ""
+        return (
+            username or (stored.get("username") or ""),
+            stored.get("key") or "",
+            stored.get("token") or "",
+        )
+
+    @single_save
+    async def action_save(self) -> None:
+        stored = self._creds.get(self._vid, {})
+        ops: list[tuple] = []
         if self._vid == "kaggle":
             token    = self.query_one("#input-kaggle-token",    Input).value.strip()
             username = self.query_one("#input-kaggle-username", Input).value.strip()
@@ -950,37 +1107,74 @@ class VendorEditScreen(Screen):
             # username+key alongside it is at best dead weight and at worst
             # actively wrong (stale username from a different account, the
             # very symptom that prompted this priority rule). Enforce here:
-            # token wins; legacy fields are saved only when no token is set.
-            entry: dict = {}
+            # token wins; legacy fields are saved only when no new token is
+            # typed. Blank secret fields mean "keep what is stored".
+            notice = ""
             if token:
-                entry["token"] = token
-                # Clear stale legacy fields from BOTH the saved creds AND
-                # the form so the user sees the auth mode they actually
-                # have, not a confusing token+username mix.
-                try:
-                    self.query_one("#input-kaggle-username", Input).value = ""
-                    self.query_one("#input-kaggle-key",      Input).value = ""
-                except Exception:
-                    pass
-                if username or key:
-                    self.notify(
-                        "Token set — legacy username+key cleared "
-                        "(token wins over legacy auth)",
-                        severity="information",
-                        timeout=6,
-                    )
-            else:
-                if username:
-                    entry["username"] = username
-                if key:
-                    entry["key"] = key
-            creds["kaggle"] = entry
+                ops = [
+                    ("set", "kaggle.token", token),
+                    ("unset", "kaggle.username"),
+                    ("unset", "kaggle.key"),
+                ]
+                if username or key or stored.get("username") or stored.get("key"):
+                    notice = ("Token set — legacy username+key cleared "
+                              "(token wins over legacy auth)")
+            elif key:
+                user = username or (stored.get("username") or "")
+                if not user:
+                    self.notify("Enter the Kaggle username for the legacy key",
+                                severity="warning")
+                    return
+                ops = [("set", "kaggle.username", user), ("set", "kaggle.key", key)]
+                if stored.get("token"):
+                    ops.append(("unset", "kaggle.token"))
+                    notice = ("Stored token removed because legacy "
+                              "username+key was entered")
+            elif username and username != (stored.get("username") or ""):
+                ops = [("set", "kaggle.username", username)]
         else:
             api_key = self.query_one("#input-api-key", Input).value.strip()
-            creds.setdefault(self._vid, {})["api_key"] = api_key
-        config.write_credentials(creds)
-        self._creds = creds
+            notice = ""
+            if api_key:
+                ops = [("set", f"{self._vid}.api_key", api_key)]
+        if not ops:
+            self.notify("Nothing to save", severity="information")
+            return
+        ok, err = await _apply_ops(ops)
+        if not ok:
+            self.notify(f"Save failed: {err}", severity="error", timeout=10)
+            return
+        self._creds = config.read_credentials()
+        if not self.is_attached:
+            return  # the user left while the CLI writes were running
+        self._reset_secret_inputs()
+        self.snapshot_form()
         self.notify("Credentials saved", severity="information")
+        if notice:
+            self.notify(notice, severity="information", timeout=6)
+        if self._vid == "vast":
+            self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
+
+    def _reset_secret_inputs(self) -> None:
+        """After a save: clear the secret fields and show the new stored tail
+        in their placeholders; refresh the username from storage."""
+        v = self._creds.get(self._vid, {})
+        fields = {
+            "#input-api-key":      (v.get("api_key"), f"Enter {self._vname} API key…"),
+            "#input-kaggle-token": (v.get("token"), "Paste API token from kaggle.com/settings…"),
+            "#input-kaggle-key":   (v.get("key"), "Kaggle API key (from kaggle.json)…"),
+        }
+        for sel, (stored, empty) in fields.items():
+            try:
+                inp = self.query_one(sel, Input)
+            except Exception:
+                continue
+            inp.value = ""
+            inp.placeholder = services.secret_placeholder(stored, empty)
+        try:
+            self.query_one("#input-kaggle-username", Input).value = v.get("username") or ""
+        except Exception:
+            pass
 
     async def action_test(self) -> None:
         await self._do_test()
@@ -990,7 +1184,7 @@ class VendorEditScreen(Screen):
         result.update("[#e0af68]Testing…[/]")
         try:
             if self._vid == "vast":
-                api_key = self.query_one("#input-api-key", Input).value.strip()
+                api_key = self._current_api_key()
                 if not api_key:
                     self.notify("Enter API key first", severity="warning")
                     result.update("")
@@ -1003,10 +1197,9 @@ class VendorEditScreen(Screen):
                     f"[#565f89]user:[/] [#c0caf5]{name}[/]  "
                     f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
                 )
+                self.run_worker(self._refresh_ssh_keys(), exclusive=True, group="ssh")
             elif self._vid == "kaggle":
-                token    = self.query_one("#input-kaggle-token",    Input).value.strip()
-                username = self.query_one("#input-kaggle-username", Input).value.strip()
-                key      = self.query_one("#input-kaggle-key",      Input).value.strip()
+                username, key, token = self._kaggle_effective()
                 if not token and not (username and key):
                     self.notify("Enter token or username+key first", severity="warning")
                     result.update("")
@@ -1020,33 +1213,6 @@ class VendorEditScreen(Screen):
                 result.update("[#565f89]Test not available for this vendor[/]")
         except Exception as exc:
             result.update(f"[bold #f7768e]✗ {exc}[/]")
-
-    def action_go_back(self) -> None:
-        self.app.pop_screen()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Confirm revoke modal
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class _ConfirmRevoke(Screen):
-    def __init__(self, vendor_name: str) -> None:
-        super().__init__()
-        self._vname = vendor_name
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="confirm-box"):
-            yield Static(
-                f"[bold #f7768e]Revoke {self._vname} credentials?[/]\n\n"
-                f"[#c0caf5]This will delete saved keys from credentials.toml.[/]",
-                id="confirm-msg",
-            )
-            with Horizontal(classes="form-actions"):
-                yield Button("Yes, revoke", id="btn-yes",    variant="error")
-                yield Button("Cancel",      id="btn-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "btn-yes")
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
@@ -1271,7 +1437,8 @@ def _read_access_token_file() -> str:
 def _masked(key: str) -> str:
     key = key.strip()
     if not key:
-        return "[#565f89]not configured[/]"
+        # The placeholder already shows the stored tail.
+        return ""
     if len(key) > 8:
         return f"[#565f89]{'*' * (len(key) - 6)}{key[-6:]}[/]"
     return "[#565f89]key set[/]"

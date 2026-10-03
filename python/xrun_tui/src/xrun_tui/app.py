@@ -13,26 +13,14 @@ from textual.notifications import Notification
 
 from xrun_tui import config
 from xrun_tui.db import Database, find_db_path
+from xrun_tui.screens.registry import iter_screens
 from xrun_tui.themes import write_theme_for_app
 
 XRUN_VERSION = "0.8.0"
 
-# Map: chord-leader → {key → action_name (without the "action_" prefix)}
+# Map: chord-leader → {key → screen slug}, derived from the screen registry.
 _CHORDS: dict[str, dict[str, str]] = {
-    "g": {
-        "d": "goto_dashboard",
-        "r": "goto_runs",
-        "i": "goto_instances",
-        "v": "goto_vendors",
-        "m": "goto_sinks",
-        "n": "goto_notify",
-        "h": "goto_doctor",
-        "l": "goto_launch",
-        "s": "goto_settings",
-        "w": "goto_watch",
-        "b": "goto_budget",
-        "x": "goto_sweep",
-    }
+    "g": {e.chord: e.slug for e in iter_screens() if e.chord}
 }
 
 _CHORD_TIMEOUT_S = 1.5
@@ -218,6 +206,15 @@ class XrunApp(App):
         })
         return super().notify(*args, **kwargs)
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # `n` is a priority binding, so without this it would win over the
+        # "No" key of confirm dialogs. Inside a modal the key belongs to it.
+        if action == "open_notifications":
+            from textual.screen import ModalScreen
+            if isinstance(self.screen, ModalScreen):
+                return False
+        return True
+
     # ── Header icon → open command palette ──────────────────────────────────
 
     async def action_command_palette(self) -> None:
@@ -228,6 +225,9 @@ class XrunApp(App):
     async def action_open_help(self) -> None:
         from xrun_tui.screens.help import HelpScreen
         if isinstance(self.screen, HelpScreen):
+            # `?` is a priority binding, so HelpScreen's own `?` never sees
+            # the key; close it here, as its footer promises.
+            self.screen.dismiss(None)
             return
         await self.push_screen(HelpScreen())
 
@@ -258,7 +258,7 @@ class XrunApp(App):
         # can see it as the second half of `g n`.
         if self._chord_leader and time.time() < self._chord_expires:
             self._chord_leader = None
-            await self._dispatch_chord("goto_notify")
+            await self._dispatch_chord(_CHORDS["g"]["n"])
             return
         from xrun_tui.screens.notifications import NotificationsScreen
         if isinstance(self.screen, NotificationsScreen):
@@ -293,22 +293,6 @@ class XrunApp(App):
         elif self._chord_leader:
             self._chord_leader = None  # expired
 
-    async def _dispatch_chord(self, target: str) -> None:
+    async def _dispatch_chord(self, slug: str) -> None:
         from xrun_tui.screens.palette import run_target
-        mapping = {
-            "goto_dashboard":  "go:dashboard",
-            "goto_runs":       "go:runs",
-            "goto_instances":  "go:instances",
-            "goto_vendors":    "go:vendors",
-            "goto_sinks":      "go:sinks",
-            "goto_notify":     "go:notify",
-            "goto_doctor":     "go:doctor",
-            "goto_launch":     "go:launch",
-            "goto_settings":   "go:settings",
-            "goto_watch":      "go:watch",
-            "goto_budget":     "go:budget",
-            "goto_sweep":      "go:sweep",
-        }
-        slug = mapping.get(target)
-        if slug:
-            await run_target(self, slug)
+        await run_target(self, f"go:{slug}")

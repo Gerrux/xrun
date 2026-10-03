@@ -45,10 +45,21 @@ def _configured_vendors(creds: dict) -> list[str]:
         or (mlflow.get("username") and mlflow.get("password"))
     ):
         out.append("mlflow")
-    ssh = creds.get("ssh")
-    if isinstance(ssh, dict) and ssh:
+    # Same rule as the Vendors card: at least one host with host and user.
+    from xrun_tui.screens.ssh_hosts import usable_hosts
+
+    if usable_hosts(creds):
         out.append("ssh")
     return out
+
+
+def _ssh_label(creds: dict) -> str:
+    """`ssh×N`, N = hosts with both host and user — the same hosts that make
+    "ssh" count as configured; a half-filled host is not counted."""
+    from xrun_tui.screens.ssh_hosts import usable_hosts
+
+    n = len(usable_hosts(creds))
+    return f"ssh×{n}" if n else "ssh"
 
 
 class SplashScreen(Screen):
@@ -236,7 +247,11 @@ class SplashScreen(Screen):
 
         # 3) Vendors probe — only probe what is actually configured.
         await self._set("vendors", "running", detail="probing…")
-        configured = _configured_vendors(config.read_credentials())
+        try:
+            creds = config.read_credentials()
+        except Exception:
+            creds = {}  # step 2 already reported it
+        configured = _configured_vendors(creds)
         if not configured:
             await self._set("vendors", "warn", detail="nothing to probe")
         else:
@@ -259,8 +274,7 @@ class SplashScreen(Screen):
             if "kaggle" in configured:
                 results.append("kaggle")
             if "ssh" in configured:
-                ssh_count = len(creds.get("ssh", {})) if isinstance(creds.get("ssh"), dict) else 0
-                results.append(f"ssh×{ssh_count}" if ssh_count else "ssh")
+                results.append(_ssh_label(creds))
             if "mlflow" in configured:
                 results.append("mlflow")
             state = "ok" if results else "warn"

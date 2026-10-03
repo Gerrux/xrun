@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.coordinate import Coordinate
+from xrun_tui import run_actions
 from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static, Tab, Tabs
 from xrun_tui.widgets.fuzzy_filter import FilterBar
@@ -66,7 +68,8 @@ class RunsScreen(LiveScreen):
         Binding("p",         "pull_run",       "Pull"),
         Binding("space",     "toggle_select",  "Select",    show=False),
         Binding("ctrl+s",    "bulk_stop",      "Stop sel.", show=False),
-        Binding("ctrl+p",    "bulk_pull",      "Pull sel.", show=False),
+        # Not ctrl+p: the app-level palette binding is priority and wins.
+        Binding("P",         "bulk_pull",      "Pull sel.", show=False),
         Binding("f,slash",   "toggle_filter",  "Filter"),
         Binding("e",         "export",         "Export"),
         Binding("c",         "compare_toggle", "Compare"),
@@ -169,9 +172,7 @@ class RunsScreen(LiveScreen):
         visible = [r for r in runs if _matches(r, self._filter_text)]
 
         table = self.query_one("#runs-table", DataTable)
-        selected_id: str | None = None
-        if self._run_ids and table.cursor_row < len(self._run_ids):
-            selected_id = self._run_ids[table.cursor_row]
+        selected_id = self._selected_run_id()
 
         self._run_ids = []
         table.clear()
@@ -196,7 +197,7 @@ class RunsScreen(LiveScreen):
                 self._add_run_row(table, run)
 
         if selected_id and selected_id in self._run_ids:
-            table.move_cursor(row=self._run_ids.index(selected_id))
+            table.move_cursor(row=table.get_row_index(selected_id))
 
         self._update_stats(visible, len(runs))
 
@@ -262,7 +263,7 @@ class RunsScreen(LiveScreen):
         if self._selected_ids:
             summary += (
                 f"  [#414868]┊[/]  [#9ece6a]◉ {len(self._selected_ids)} selected[/]"
-                f" [#565f89](ctrl+s stop  ctrl+p pull  Esc clear)[/]"
+                f" [#565f89](ctrl+s stop  P pull  Esc clear)[/]"
             )
         if self._compare_ids:
             summary += (
@@ -333,91 +334,38 @@ class RunsScreen(LiveScreen):
         running"/"vendor says it died" answer.
         """
         run_id = self._selected_run_id()
-        target = run_id if run_id and any(
-            r["id"] == run_id and is_stale(r) for r in self._runs
-        ) else None
+        target = next(
+            (r for r in self._runs if r["id"] == run_id and is_stale(r)), None
+        ) if run_id else None
+        await run_actions.sync(self, target, after=self._after_action)
 
-        from xrun_tui import services
-        if target:
-            self.notify(f"Reconciling {target[:8]}…", severity="information")
-        else:
-            self.notify("Reconciling stale runs…", severity="information")
-        ok, msg = await services.fix_status(target)
-        if ok:
-            tail = msg.splitlines()[-1] if msg else "no change"
-            self.notify(f"Sync ok: {tail}", severity="information", timeout=6)
-        else:
-            self.notify(
-                f"Sync failed: {msg[:200]}", severity="error", timeout=10
-            )
+    async def _after_action(self, ok: bool) -> None:
         await self._refresh()
 
-    async def action_stop_run(self) -> None:
+    def _selected_run(self) -> dict | None:
         run_id = self._selected_run_id()
-        if not run_id:
+        return next((r for r in self._runs if r["id"] == run_id), None) if run_id else None
+
+    async def action_stop_run(self) -> None:
+        # By id, not by position in a re-derived list: in grouped mode the
+        # visible order and the table order differ.
+        run = self._selected_run()
+        if not run:
             return
-        idx = self._run_ids.index(run_id) if run_id in self._run_ids else -1
-        visible = [r for r in self._runs if _matches(r, self._filter_text)]
-        if idx < 0 or idx >= len(visible):
-            return
-        run = visible[idx]
         if run["status"] not in ("running", "provisioning", "uploading"):
             self.notify("Run is not active", severity="warning")
             return
-        from xrun_tui.screens.confirm import ConfirmScreen
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import cli
-            ok, msg = await cli.stop_run(run_id)
-            if ok:
-                self.notify(f"Stopped {run_id[:8]}", severity="information")
-            else:
-                self.notify(f"Stop failed: {msg}", severity="error", timeout=8)
-            await self._refresh()
-
-        await self.app.push_screen(ConfirmScreen(f"Stop run {run_id[:8]}?"), _do)
+        await run_actions.stop(self, run, after=self._after_action)
 
     async def action_rerun(self) -> None:
-        run_id = self._selected_run_id()
-        if not run_id:
-            return
-        from xrun_tui.screens.confirm import ConfirmScreen
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import cli
-            ok, msg = await cli.rerun_run(run_id)
-            if ok:
-                self.notify("Rerun launched", severity="information")
-            else:
-                self.notify(f"Rerun failed: {msg}", severity="error", timeout=8)
-            await self._refresh()
-
-        await self.app.push_screen(ConfirmScreen(f"Rerun {run_id[:8]}?"), _do)
+        run = self._selected_run()
+        if run:
+            await run_actions.rerun(self, run, after=self._after_action)
 
     async def action_pull_run(self) -> None:
-        run_id = self._selected_run_id()
-        if not run_id:
-            return
-        from xrun_tui.screens.confirm import ConfirmScreen
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import services
-            self.notify("Pulling latest checkpoint…", severity="information")
-            ok, msg = await services.pull(run_id, ckpt="latest")
-            if ok:
-                self.notify("Pull complete", severity="information")
-            else:
-                self.notify(f"Pull failed: {msg[:80]}", severity="error", timeout=10)
-
-        await self.app.push_screen(
-            ConfirmScreen(f"Pull artifacts for {run_id[:8]}?"), _do
-        )
+        run = self._selected_run()
+        if run:
+            await run_actions.pull(self, run)
 
     def action_toggle_filter(self) -> None:
         bar = self.query_one("#runs-filter", FilterBar)
@@ -441,7 +389,7 @@ class RunsScreen(LiveScreen):
                 return
             out = Path.cwd() / "xrun_runs_export.json"
             out.write_text(json.dumps(runs, indent=2, default=str), encoding="utf-8")
-            self.notify(f"Exported {len(runs)} runs → {out.name}", severity="information")
+            self.notify(f"Exported {len(runs)} runs → {out.resolve()}", severity="information")
 
         await self.app.push_screen(
             ConfirmScreen(f"Export {len(runs)} runs to xrun_runs_export.json?"), _do
@@ -498,24 +446,11 @@ class RunsScreen(LiveScreen):
         if not active:
             self.notify("No active runs in selection", severity="warning")
             return
-        from xrun_tui.screens.confirm import ConfirmScreen
+        await run_actions.bulk_stop(self, active, after=self._after_bulk)
 
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import cli
-            ok_count = 0
-            for run in active:
-                ok, _ = await cli.stop_run(run["id"])
-                if ok:
-                    ok_count += 1
-            self.notify(f"Stopped {ok_count}/{len(active)} runs", severity="information")
-            self._selected_ids.clear()
-            await self._refresh()
-
-        await self.app.push_screen(
-            ConfirmScreen(f"Stop {len(active)} active runs?"), _do
-        )
+    async def _after_bulk(self, ok: bool) -> None:
+        self._selected_ids.clear()
+        await self._refresh()
 
     async def action_bulk_pull(self) -> None:
         if not self._selected_ids:
@@ -528,24 +463,7 @@ class RunsScreen(LiveScreen):
         if not pullable:
             self.notify("No done/running runs in selection", severity="warning")
             return
-        from xrun_tui.screens.confirm import ConfirmScreen
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import services
-            ok_count = 0
-            for run in pullable:
-                ok, _ = await services.pull(run["id"], ckpt="latest")
-                if ok:
-                    ok_count += 1
-            self.notify(f"Pulled {ok_count}/{len(pullable)} runs", severity="information")
-            self._selected_ids.clear()
-            self._render_table(self._runs)
-
-        await self.app.push_screen(
-            ConfirmScreen(f"Pull latest checkpoint for {len(pullable)} runs?"), _do
-        )
+        await run_actions.bulk_pull(self, pullable, after=self._after_bulk)
 
     async def action_patch_rerun(self) -> None:
         run_id = self._selected_run_id()
@@ -612,6 +530,16 @@ class RunsScreen(LiveScreen):
         self.app.exit()
 
     def _selected_run_id(self) -> str | None:
+        """Id of the run under the cursor, read from the row key. The cursor
+        row is not an index into `_run_ids`: grouped mode puts header rows in
+        the table that `_run_ids` does not have, so indexing picked the run
+        one or more rows below the highlighted one (stop / rerun included)."""
         table = self.query_one(DataTable)
-        row = table.cursor_row
-        return self._run_ids[row] if row < len(self._run_ids) else None
+        if not table.row_count:
+            return None
+        try:
+            key = table.coordinate_to_cell_key(
+                Coordinate(table.cursor_row, 0)).row_key.value
+        except Exception:
+            return None
+        return key if key in self._run_ids else None  # None on a group header

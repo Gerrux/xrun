@@ -13,9 +13,14 @@ class ConfirmScreen(ModalScreen[bool]):
         Binding("n,escape", "cancel", show=False),
     ]
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, default_no: bool = False) -> None:
         super().__init__()
         self._message = message
+        # The first button (Yes) gets focus by default, so a second Enter
+        # confirms. For costly or irreversible actions focus No instead:
+        # only `y` or a click on Yes goes ahead.
+        if default_no:
+            self.AUTO_FOCUS = "#btn-no"
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="confirm-dialog"):

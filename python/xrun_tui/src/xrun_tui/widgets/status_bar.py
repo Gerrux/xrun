@@ -1,6 +1,6 @@
 """Persistent global status bar.
 
-Displays vendor health, balance, active runs and burn rate. Refreshed
+Displays active runs per vendor plus cached vast/kaggle account info. Refreshed
 periodically from the application database + cached vast user info.
 """
 from __future__ import annotations
@@ -49,12 +49,11 @@ class StatusBar(Static):
         try:
             runs = await app.db.runs(status="active")
             snapshot["active"] = len(runs)
-            burn = 0.0
+            by_vendor: dict[str, int] = {}
             for r in runs:
-                state = r.get("state_json") or ""
-                # We don't track per-run dph here; leave for instance summary below
-                _ = state
-            snapshot["burn"] = burn
+                v = r.get("vendor") or "?"
+                by_vendor[v] = by_vendor.get(v, 0) + 1
+            snapshot["by_vendor"] = by_vendor
         except Exception:
             snapshot["active"] = None
 
@@ -66,9 +65,8 @@ class StatusBar(Static):
         if isinstance(kaggle_cache, dict):
             snapshot.update(kaggle_cache)
 
-        # Theme name (for awareness)
-        snapshot["theme"] = getattr(app, "theme_name", None)
-
+        if not self.is_mounted:
+            return
         self._render(snapshot)
 
     def _render(self, snap: dict[str, Any]) -> None:
@@ -78,6 +76,15 @@ class StatusBar(Static):
             parts.append("[#414868]db ?[/]")
         elif active:
             parts.append(f"[bold #9ece6a]● {active} active[/]")
+            by_vendor = snap.get("by_vendor") or {}
+            if by_vendor:
+                # Local/ssh users have no vast chip; this is their only
+                # sign of where the runs are.
+                chips = " · ".join(
+                    f"{v} {n}" for v, n in sorted(by_vendor.items()) if n
+                )
+                if chips:
+                    parts.append(f"[#7dcfff]{chips}[/]")
         else:
             parts.append("[#414868]· idle[/]")
 
@@ -96,18 +103,6 @@ class StatusBar(Static):
             parts.append(
                 f"[#bb9af7]kaggle[/] [#c0caf5]{snap['kaggle_user']}[/] [#565f89]free[/]"
             )
-
-        burn = snap.get("vast_burn_dph")
-        if burn:
-            parts.append(f"[#e0af68]${burn:.3f}/h[/]")
-
-        instances = snap.get("vast_instances")
-        if instances:
-            parts.append(f"[#7aa2f7]{instances} inst[/]")
-
-        theme = snap.get("theme")
-        if theme:
-            parts.append(f"[#414868]theme:{theme}[/]")
 
         # Right-aligned clock — separator handled by spaces
         now = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")

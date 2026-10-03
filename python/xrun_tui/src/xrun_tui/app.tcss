@@ -499,6 +499,14 @@ CountryExcludeScreen {
     border-left: thick #20beff;
 }
 
+.vendor-card-local {
+    border-left: thick #9ece6a;
+}
+
+.vendor-card-ssh {
+    border-left: thick #bb9af7;
+}
+
 .vendor-row-active {
     background: #1e2030;
     border: round #7aa2f7;
@@ -510,6 +518,14 @@ CountryExcludeScreen {
 
 .vendor-row-active.vendor-card-kaggle {
     border-left: thick #7dcfff;
+}
+
+.vendor-row-active.vendor-card-local {
+    border-left: thick #b9f27c;
+}
+
+.vendor-row-active.vendor-card-ssh {
+    border-left: thick #c7a9ff;
 }
 
 .vendor-card-head {

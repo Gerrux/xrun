@@ -32,6 +32,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Input, RadioSet, Static
 
 from xrun_tui import config as _config
+from xrun_tui import services as _services
 from xrun_tui.screens.wizard import steps as _steps
 from xrun_tui.screens.wizard.catalog import (
     KAGGLE_FIELDS,
@@ -489,13 +490,37 @@ class WizardScreen(Screen):
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    async def _set(failed: list[str], key: str, value: str,
+                   secret: bool = False) -> bool:
+        """`xrun config set` via services (secrets over stdin); a failure is
+        collected as "key: error" instead of being dropped."""
+        ok, err = await _services.config_set(key, value, secret=secret)
+        if not ok:
+            failed.append(f"{key}: {err or 'failed'}")
+        return ok
+
+    @staticmethod
+    async def _replace_auth(failed: list[str], stale: tuple[str, ...]) -> None:
+        """Drop the other auth mode's keys once the new one is stored. A
+        leftover token outranks a legacy pair (and the other way round a stale
+        pair is dead weight), so the user would keep running on the old
+        credentials while the wizard said "Setup complete"."""
+        if failed:
+            return  # the new credential did not land — keep the old one usable
+        for key in stale:
+            ok, err = await _services.config_unset(key)
+            if not ok:
+                failed.append(f"{key}: {err or 'failed'}")
+
     async def _finish(self) -> None:
+        failed: list[str] = []
         # Vendor API keys.
         for vid, key in self._pasted_keys.items():
             if not key:
                 continue
             if vid == "vast":
-                await _xrun("config", "set", "vast.api_key", key)
+                await self._set(failed, "vast.api_key", key, secret=True)
 
         # Kaggle: token OR legacy user+key.
         if "kaggle" in self._selected_vendors:
@@ -503,27 +528,36 @@ class WizardScreen(Screen):
             usr = self._kaggle_fields.get("username", "")
             kk  = self._kaggle_fields.get("key", "")
             if tok:
-                await _xrun("config", "set", "kaggle.token", tok)
+                await self._set(failed, "kaggle.token", tok, secret=True)
+                await self._replace_auth(
+                    failed, ("kaggle.username", "kaggle.key"))
             elif usr and kk:
-                await _xrun("config", "set", "kaggle.username", usr)
-                await _xrun("config", "set", "kaggle.key", kk)
+                await self._set(failed, "kaggle.username", usr)
+                await self._set(failed, "kaggle.key", kk, secret=True)
+                await self._replace_auth(failed, ("kaggle.token",))
 
-        # SSH host fields → ssh.<alias>.<field>.
+        # SSH host fields → ssh.<alias>.<field>. `key` is a path, not a secret.
         if "ssh" in self._selected_vendors and self._ssh_fields.get("alias"):
             alias = self._ssh_fields["alias"]
             for field in ("host", "user", "port", "key"):
                 val = self._ssh_fields.get(field)
                 if val:
-                    await _xrun("config", "set", f"ssh.{alias}.{field}", val)
+                    await self._set(failed, f"ssh.{alias}.{field}", val)
 
         # MLflow URL + auth (only if mirror is actually on).
         sinks = ([s for s in self._selected_sinks
                   if SINK_BY_ID.get(s, (None,) * 3)[2]]
                  if self._log_mode == "mirror" else [])
         if "mlflow" in sinks:
-            await self._persist_mlflow()
+            await self._persist_mlflow(failed)
 
-        await self._persist_notify()
+        await self._persist_notify(failed)
+
+        if failed:
+            # Do not flip wizard_completed over a half-written config.
+            self.notify("Failed to save config: " + "; ".join(failed),
+                        severity="error", timeout=12)
+            return
 
         args = ["init", "--non-interactive", "--mark-completed"]
         for s in sinks:
@@ -535,7 +569,7 @@ class WizardScreen(Screen):
             return
         await self._exit_to_dashboard("Setup complete.")
 
-    async def _persist_notify(self) -> None:
+    async def _persist_notify(self, failed: list[str]) -> None:
         """Write the notifications step. Only touches config when the user
         turned something on, or turned off a channel that was on before —
         an untouched step must not clobber channels set up elsewhere."""
@@ -543,25 +577,32 @@ class WizardScreen(Screen):
         before = [str(c) for c in (cfg.get("notify", {}).get("channels") or [])]
         after = [c for c in before if c not in ("ntfy", "desktop")]
         if self._notify_ntfy and self._notify_topic.strip():
-            await _xrun("config", "set", "ntfy.topic", self._notify_topic.strip())
-            after.append("ntfy")
+            # A channel without its topic is useless — only enable on success.
+            if await self._set(failed, "ntfy.topic",
+                               self._notify_topic.strip(), secret=True):
+                after.append("ntfy")
+            elif "ntfy" in before:
+                after.append("ntfy")
         if self._notify_desktop:
             after.append("desktop")
         if after != before:
-            await _xrun("config", "set", "notify.channels", ",".join(after))
+            await self._set(failed, "notify.channels", ",".join(after))
 
-    async def _persist_mlflow(self) -> None:
+    async def _persist_mlflow(self, failed: list[str]) -> None:
         url = self._mlflow_fields.get("url", "")
         if url:
-            await _xrun("config", "set", "mlflow.url", url)
+            await self._set(failed, "mlflow.url", url)
         tok = self._mlflow_fields.get("token", "")
         usr = self._mlflow_fields.get("username", "")
         pwd = self._mlflow_fields.get("password", "")
         if tok:
-            await _xrun("config", "set", "mlflow.token", tok)
+            await self._set(failed, "mlflow.token", tok, secret=True)
+            await self._replace_auth(
+                failed, ("mlflow.username", "mlflow.password"))
         elif usr and pwd:
-            await _xrun("config", "set", "mlflow.username", usr)
-            await _xrun("config", "set", "mlflow.password", pwd)
+            await self._set(failed, "mlflow.username", usr)
+            await self._set(failed, "mlflow.password", pwd, secret=True)
+            await self._replace_auth(failed, ("mlflow.token",))
 
     async def _exit_to_dashboard(self, msg: str) -> None:
         from xrun_tui.screens.dashboard import DashboardScreen

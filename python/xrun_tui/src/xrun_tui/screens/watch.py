@@ -139,8 +139,11 @@ class WatchScreen(LiveScreen):
             except Exception:
                 series = []
             if series:
-                vals = [float(p.get("value", 0)) for p in series]
-                spark_map[run_id] = _spark(vals)
+                # NULL (stored NaN) points are skipped, not float(None)
+                vals = [float(p["value"]) for p in series
+                        if p.get("value") is not None]
+                if vals:
+                    spark_map[run_id] = _spark(vals)
 
         if not self.is_mounted:
             return

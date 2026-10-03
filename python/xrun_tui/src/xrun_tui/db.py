@@ -10,6 +10,8 @@ from typing import Optional
 
 import aiosqlite
 
+from xrun_tui.utils import pick_metric_key
+
 _CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
@@ -195,29 +197,70 @@ class Database:
     async def latest_metrics_for_runs(
         self, run_ids: list[str]
     ) -> dict[str, tuple[str, float]]:
-        """Return {run_id: (metric_key, latest_value)} for the most recently
-        recorded metric point per run.  Only run_ids that actually have metric
-        rows are included in the result."""
+        """Return {run_id: (metric_key, latest_value)}.
+
+        The key is chosen per run by `pick_metric_key` over the keys the run
+        has a value for (the same rule as the dashboard sparkline), and the
+        value is that key's point at its highest step. NULL values (SQLite
+        stores NaN as NULL) are skipped, so a NaN never blanks a run. Runs
+        with no usable metric are absent from the result."""
         if not run_ids:
             return {}
         assert self._conn is not None
         ph = ",".join("?" * len(run_ids))
-        # For each run pick the row with the highest step; break ties by ts.
+        # Latest non-NULL point per (run, key); ts orders duplicates at one step.
         q = f"""
             SELECT m.run_id, m.key, m.value
             FROM metrics m
             INNER JOIN (
-                SELECT run_id, MAX(step) AS max_step
+                SELECT run_id, key, MAX(step) AS max_step
                 FROM metrics
-                WHERE run_id IN ({ph})
-                GROUP BY run_id
-            ) latest ON m.run_id = latest.run_id AND m.step = latest.max_step
-            WHERE m.run_id IN ({ph})
-            GROUP BY m.run_id
+                WHERE run_id IN ({ph}) AND value IS NOT NULL
+                GROUP BY run_id, key
+            ) latest ON m.run_id = latest.run_id AND m.key = latest.key
+                    AND m.step = latest.max_step
+            WHERE m.run_id IN ({ph}) AND m.value IS NOT NULL
+            ORDER BY m.run_id, m.key, m.ts
         """
         async with self._conn.execute(q, run_ids + run_ids) as cur:
             rows = await cur.fetchall()
-        return {r[0]: (r[1], float(r[2])) for r in rows}
+        per_run: dict[str, dict[str, float]] = {}
+        for run_id, key, value in rows:
+            try:
+                per_run.setdefault(run_id, {})[key] = float(value)
+            except (TypeError, ValueError):
+                continue  # one bad row must not drop the others
+        out: dict[str, tuple[str, float]] = {}
+        for run_id, by_key in per_run.items():
+            key = pick_metric_key(list(by_key))
+            if key is not None:
+                out[run_id] = (key, by_key[key])
+        return out
+
+    async def metric_extremes_for_runs(
+        self, run_ids: list[str]
+    ) -> dict[str, dict[str, tuple[float, float]]]:
+        """Return {run_id: {metric_key: (min, max)}} over each run's whole
+        history, in one query. NULL (NaN) points are ignored."""
+        if not run_ids:
+            return {}
+        assert self._conn is not None
+        ph = ",".join("?" * len(run_ids))
+        q = f"""
+            SELECT run_id, key, MIN(value), MAX(value)
+            FROM metrics
+            WHERE run_id IN ({ph}) AND value IS NOT NULL
+            GROUP BY run_id, key
+        """
+        async with self._conn.execute(q, run_ids) as cur:
+            rows = await cur.fetchall()
+        out: dict[str, dict[str, tuple[float, float]]] = {}
+        for run_id, key, lo, hi in rows:
+            try:
+                out.setdefault(run_id, {})[key] = (float(lo), float(hi))
+            except (TypeError, ValueError):
+                continue
+        return out
 
     async def spend_by_day(self, days: int = 14) -> list[dict]:
         """Return list of {day: 'YYYY-MM-DD', spend: float} for the last

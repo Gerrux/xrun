@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import subprocess
-import sys
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -18,6 +14,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+from xrun_tui.widgets.form import FormGuard, single_save
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
@@ -32,41 +29,27 @@ _THEMES = [
 
 # (key, label, default) — written into TUI JSON
 _TUI_FIELDS: list[tuple[str, str, str]] = [
-    ("runs_refresh_secs",      "Runs auto-refresh (sec)",      "5"),
-    ("instances_refresh_secs", "Instances auto-refresh (sec)", "15"),
-    ("default_vendor",         "Default vendor",               "vast"),
     ("history_limit",          "Run history limit (count)",    "300"),
 ]
 
+# Every setting has one editor. Credentials, sinks and notification channels
+# are owned by their own screens (Vendors, Sinks, Notifications), so they are
+# deliberately absent here.
+#
 # Field kinds:
 #   text   — free-form string, prefilled from current value
-#   secret — password-masked, blank-on-save means "leave unchanged"; the
-#            placeholder is filled with `…tail6` when the credential is set
 #   int    — integer, plain text input with numeric validation on save
 #   float  — float, plain text input with numeric validation on save
 #   bool   — accepts true/false/1/0/yes/no (CLI does the actual coercion)
-#   list   — comma-separated values
 # (key, label, placeholder, kind)
-_MLFLOW_CONFIG_FIELDS: list[tuple[str, str, str, str]] = [
-    ("mlflow.url",                "MLflow URL",                "http://…",        "text"),
-    ("mlflow.experiment_default", "MLflow default experiment", "experiment-name", "text"),
-]
-_MLFLOW_CRED_FIELDS: list[tuple[str, str, str, str]] = [
-    ("mlflow.username", "MLflow username (Basic)", "admin", "text"),
-    ("mlflow.password", "MLflow password (Basic)", "***",   "secret"),
-    ("mlflow.token",    "MLflow token (Bearer)",   "***",   "secret"),
-]
-
 _POLLER_FIELDS: list[tuple[str, str, str, str]] = [
     ("poller.interval_active_secs", "Poller interval (active)", "30",  "int"),
     ("poller.interval_idle_secs",   "Poller interval (idle)",   "120", "int"),
 ]
 
-_VENDOR_FIELDS: list[tuple[str, str, str, str]] = [
-    ("defaults.vendor",          "Default vendor (xrun core)", "vast",         "text"),
-    ("defaults.exp_dir",         "Default exp dir",            "exp/",         "text"),
-    ("search.exclude_countries", "Excluded countries",         "CN, RU, IR",   "list"),
-    ("metrics.sinks",            "Metrics sinks",              "mlflow",       "list"),
+_DEFAULTS_FIELDS: list[tuple[str, str, str, str]] = [
+    ("defaults.vendor",  "Default vendor",  "local / vast / kaggle / ssh", "text"),
+    ("defaults.exp_dir", "Default exp dir", "exp/",                        "text"),
 ]
 
 _BUDGET_FIELDS: list[tuple[str, str, str, str]] = [
@@ -88,26 +71,18 @@ _BUDGET_FIELDS: list[tuple[str, str, str, str]] = [
         "Typed confirm above (USD/h)",             "2.0", "float"),
 ]
 
-_CREDENTIAL_FIELDS: list[tuple[str, str, str, str]] = [
-    ("vast.api_key",     "vast.api_key",     "***", "secret"),
-    ("kaggle.token",     "kaggle.token",     "***", "secret"),
-    ("kaggle.username",  "kaggle.username",  "your-handle", "text"),
-    ("kaggle.key",       "kaggle.key",       "***", "secret"),
-]
-
 # Single source of truth for prefill / save iteration over xrun-core fields.
 _ALL_XRUN_FIELDS: list[tuple[str, str, str, str]] = (
-    _MLFLOW_CONFIG_FIELDS
-    + _MLFLOW_CRED_FIELDS
-    + _POLLER_FIELDS
-    + _VENDOR_FIELDS
+    _POLLER_FIELDS
+    + _DEFAULTS_FIELDS
     + _BUDGET_FIELDS
-    + _CREDENTIAL_FIELDS
 )
 
 
-class SettingsScreen(Screen):
+class SettingsScreen(FormGuard, Screen):
     TITLE = "xrun — settings"
+    # The "keep finished runs" box feeds Clean Up, not Save.
+    _FORM_IGNORE = frozenset({"input-cleanup-days"})
     BINDINGS = [
         Binding("escape,q", "go_back", "Back"),
         Binding("ctrl+s",   "save",    "Save"),
@@ -141,25 +116,13 @@ class SettingsScreen(Screen):
                                 classes="form-input",
                             )
 
-            # ── MLflow (experiment logging) ──────────────────────────────
-            with TabPane("MLflow", id="tab-mlflow"):
-                with VerticalScroll():
-                    with Vertical(classes="settings-form"):
                         yield Static(
-                            "[#565f89]Experiment logging — metrics, params, "
-                            "artifacts, live training logs via [/]"
-                            "[#7dcfff]xrun_hook[/][#565f89].[/]",
+                            "[#565f89]Edited elsewhere:[/]  "
+                            "[#7dcfff]g v[/] [#565f89]vendor keys, regions[/]  "
+                            "[#7dcfff]g m[/] [#565f89]MLflow / WandB sinks[/]  "
+                            "[#7dcfff]g n[/] [#565f89]notifications[/]",
                             classes="form-hint",
                         )
-                        for row in _MLFLOW_CONFIG_FIELDS:
-                            yield _xrun_row(row)
-                        yield Static(
-                            "[#565f89]Auth — Bearer token takes precedence "
-                            "over Basic.[/]",
-                            classes="form-hint",
-                        )
-                        for row in _MLFLOW_CRED_FIELDS:
-                            yield _xrun_row(row)
 
             # ── Poller (events/metrics collection) ───────────────────────
             with TabPane("Poller", id="tab-poller"):
@@ -174,8 +137,8 @@ class SettingsScreen(Screen):
                         for row in _POLLER_FIELDS:
                             yield _xrun_row(row)
 
-            # ── Vendors ──────────────────────────────────────────────────
-            with TabPane("Vendors", id="tab-vendors"):
+            # ── Launch defaults ──────────────────────────────────────────
+            with TabPane("Defaults", id="tab-defaults"):
                 with VerticalScroll():
                     with Vertical(classes="settings-form"):
                         yield Static(
@@ -183,7 +146,7 @@ class SettingsScreen(Screen):
                             "the manifest doesn't override them.[/]",
                             classes="form-hint",
                         )
-                        for row in _VENDOR_FIELDS:
+                        for row in _DEFAULTS_FIELDS:
                             yield _xrun_row(row)
 
             # ── Budget ───────────────────────────────────────────────────
@@ -199,22 +162,6 @@ class SettingsScreen(Screen):
                         for row in _BUDGET_FIELDS:
                             yield _xrun_row(row)
 
-            # ── Credentials (vendor) ─────────────────────────────────────
-            with TabPane("Credentials", id="tab-credentials"):
-                with VerticalScroll():
-                    with Vertical(classes="settings-form"):
-                        yield Static(
-                            "[#565f89]Vendor API keys. Blank input on save "
-                            "means [/][#7dcfff]leave unchanged[/][#565f89] "
-                            "— use the CLI ([/][#7dcfff]xrun config set[/]"
-                            "[#565f89] with empty string) to clear. "
-                            "Placeholder shows the last 6 chars of the "
-                            "stored key when set.[/]",
-                            classes="form-hint",
-                        )
-                        for row in _CREDENTIAL_FIELDS:
-                            yield _xrun_row(row)
-
             # ── Storage (local DB) ───────────────────────────────────────
             with TabPane("Storage", id="tab-storage"):
                 with VerticalScroll():
@@ -224,7 +171,7 @@ class SettingsScreen(Screen):
                             yield Label("Keep finished runs (days):",
                                         classes="form-label")
                             yield Input(
-                                "0",
+                                "30",
                                 placeholder="0 = delete all",
                                 id="input-cleanup-days",
                                 classes="form-input",
@@ -236,10 +183,9 @@ class SettingsScreen(Screen):
         with Vertical(id="settings-footer"):
             yield Static("", id="prefill-status", classes="form-hint")
             yield Static(
-                "[#565f89]Save writes TUI keys to JSON and forwards xrun "
-                "keys to[/] [#7dcfff]xrun config set[/][#565f89]. Blank "
-                "secrets are kept unchanged; blank non-secret fields are "
-                "skipped.[/]",
+                "[#565f89]Save writes only the fields you changed, through[/] "
+                "[#7dcfff]xrun config set[/][#565f89]. Clearing a field "
+                "puts it back to its default.[/]",
                 classes="form-hint",
             )
             with Horizontal(classes="form-actions"):
@@ -251,7 +197,16 @@ class SettingsScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.run_worker(self._prefill_xrun_fields(), exclusive=True)
+        self._loaded: dict[str, str] = {}
+        # Baseline for the discard prompt; the prefill refreshes its part.
+        # Backing out before the prefill lands, with nothing typed, is clean:
+        # the not-yet-filled Inputs are blank in the baseline too.
+        self.call_after_refresh(self.snapshot_form)
+        # Own groups: `exclusive` cancels workers of the same group, and in
+        # the shared default group a Save cancelled the prefill (fields stay
+        # blank) and a Cleanup cancelled a Save halfway through its writes.
+        self.run_worker(self._prefill_xrun_fields(), exclusive=True,
+                        group="prefill")
         self.run_worker(self._load_db_info(), exclusive=False)
 
     async def _load_db_info(self) -> None:
@@ -274,43 +229,29 @@ class SettingsScreen(Screen):
         from xrun_tui import services
         ps = self.query_one("#prefill-status", Static)
         ps.update("[#565f89]Loading xrun config…[/]")
-        # Pass secrets=True so the response includes `_credentials_tail` —
-        # we use it to render a `…XXXXXX` placeholder for set secrets, never
-        # to populate the input value itself.
-        ok, data, err = await services.config_show(secrets=True)
+        ok, data, err = await services.config_show()
+        if not self.is_attached:
+            return
         if not ok:
             ps.update(f"[#414868]prefill unavailable: {err[:80]}[/]")
             return
 
-        tail_map: dict = data.get("_credentials_tail") or {}
-        set_map: dict = data.get("_credentials_set") or {}
-
         filled: list[str] = []
-        for key, _, _, kind in _ALL_XRUN_FIELDS:
+        for key, _, _, _ in _ALL_XRUN_FIELDS:
             try:
                 inp = self.query_one(f"#input-xrun-{_sanitize(key)}", Input)
             except Exception:
                 continue
-            if kind == "secret":
-                # Never write secret values into the Input — they would be
-                # readable to anyone screen-scraping or via .value.
-                tail = tail_map.get(key)
-                if tail:
-                    inp.placeholder = f"…{tail}  (leave blank to keep)"
-                    filled.append(key)
-                elif set_map.get(key):
-                    inp.placeholder = "<set>  (leave blank to keep)"
-                    filled.append(key)
-                continue
             val = _nested_get(data, key)
             if val is None:
                 continue
-            inp.value = (
-                ", ".join(str(v) for v in val)
-                if isinstance(val, list) else str(val)
-            )
+            inp.value = str(val)
+            # Remembered so Save can tell a changed field from an untouched
+            # one, and a cleared field from one that was never set.
+            self._loaded[key] = inp.value
             filled.append(key)
 
+        self.snapshot_form(only={f"input-xrun-{_sanitize(k)}" for k in filled})
         if filled:
             ps.update(f"[#565f89]prefilled:[/] [#7aa2f7]{', '.join(filled)}[/]")
         else:
@@ -318,15 +259,15 @@ class SettingsScreen(Screen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-save":
-            self.run_worker(self._save(), exclusive=True)
+            # Not exclusive: a second click must not cancel a save that is
+            # halfway through its `xrun config` writes (`_save` ignores it).
+            self.run_worker(self._save(), group="save")
         elif event.button.id == "btn-cancel":
             self.action_go_back()
-        elif event.button.id == "btn-pick-countries":
-            self._open_country_picker()
         elif event.button.id == "btn-cleanup":
-            self.run_worker(self._cleanup_db(), exclusive=True)
+            self._confirm_cleanup()
 
-    async def _cleanup_db(self) -> None:
+    def _confirm_cleanup(self) -> None:
         raw = self.query_one("#input-cleanup-days", Input).value.strip()
         try:
             days = int(raw)
@@ -338,7 +279,24 @@ class SettingsScreen(Screen):
                 "integer (0 = all)"
             )
             return
+        from xrun_tui.screens.confirm import ConfirmScreen
 
+        def _do(confirmed: bool | None) -> None:
+            if confirmed:
+                self.run_worker(self._cleanup_db(days), exclusive=True,
+                                group="cleanup")
+
+        what = (
+            "ALL finished runs" if days == 0
+            else f"finished runs older than {days} day(s)"
+        )
+        self.app.push_screen(
+            ConfirmScreen(f"Delete {what} from the database?\n"
+                          "This cannot be undone.", default_no=True),
+            _do,
+        )
+
+    async def _cleanup_db(self, days: int) -> None:
         btn = self.query_one("#btn-cleanup", Button)
         btn.disabled = True
         try:
@@ -357,23 +315,10 @@ class SettingsScreen(Screen):
         finally:
             btn.disabled = False
 
-    def _open_country_picker(self) -> None:
-        from xrun_tui.screens.country_exclude import CountryExcludeScreen
-        inp = self.query_one(
-            f"#input-xrun-{_sanitize('search.exclude_countries')}", Input
-        )
-        current = [c.strip() for c in inp.value.split(",") if c.strip()]
-
-        def _done(result: list[str] | None) -> None:
-            if result is None:
-                return
-            inp.value = ", ".join(result)
-
-        self.app.push_screen(CountryExcludeScreen(current), _done)
-
     async def action_save(self) -> None:
         await self._save()
 
+    @single_save
     async def _save(self) -> None:
         # TUI settings → JSON
         tui_settings: dict = {}
@@ -381,16 +326,13 @@ class SettingsScreen(Screen):
             val = self.query_one(f"#input-tui-{key}", Input).value.strip()
             if not val:
                 continue
-            if key.endswith("_secs") or key == "history_limit":
-                try:
-                    tui_settings[key] = int(val)
-                except ValueError:
-                    self._set_result(
-                        f"[bold #f7768e]✗[/] '{val}' is not a number for {key}"
-                    )
-                    return
-            else:
-                tui_settings[key] = val
+            if not val.isdigit() or int(val) < 1:
+                self._set_result(
+                    f"[bold #f7768e]✗[/] {key}: expected a whole number ≥ 1, "
+                    f"got '{val}'  [#565f89]nothing saved[/]"
+                )
+                return
+            tui_settings[key] = int(val)
 
         # Theme
         try:
@@ -399,6 +341,42 @@ class SettingsScreen(Screen):
                 tui_settings["theme"] = str(theme_sel.value)
         except Exception:
             pass
+
+        # xrun core fields (across all tabs): validate everything before the
+        # first write, so a typo in one field never leaves a half-saved form.
+        # Only changed fields are written; a field the user emptied goes back
+        # to its default (`None` in `pending`).
+        pending: list[tuple[str, str | None]] = []
+        for key, _, _, kind in _ALL_XRUN_FIELDS:
+            val = self.query_one(
+                f"#input-xrun-{_sanitize(key)}", Input
+            ).value.strip()
+            if val == self._loaded.get(key, ""):
+                continue
+            if not val:
+                pending.append((key, None))
+                continue
+
+            # Light client-side validation; the CLI does the authoritative
+            # coercion via the schema-driven setter.
+            if val and kind in ("int", "float"):
+                try:
+                    (int if kind == "int" else float)(val)
+                except ValueError:
+                    self._set_result(
+                        f"[bold #f7768e]✗[/] {key}: expected {kind}, got '{val}'"
+                        "  [#565f89]nothing saved[/]"
+                    )
+                    return
+            if val and kind == "bool":
+                if val.lower() not in ("true", "false", "1", "0",
+                                       "yes", "no", "on", "off"):
+                    self._set_result(
+                        f"[bold #f7768e]✗[/] {key}: expected boolean, "
+                        f"got '{val}'  [#565f89]nothing saved[/]"
+                    )
+                    return
+            pending.append((key, val))
 
         config.write_tui_settings(tui_settings)
 
@@ -414,47 +392,33 @@ class SettingsScreen(Screen):
             except Exception as exc:
                 self.notify(f"Theme apply failed: {exc}", severity="warning")
 
-        # xrun core fields (across all tabs)
+        # The CLI can still reject a key; keep going and report both lists so
+        # the user knows exactly what was stored.
         applied: list[str] = []
-        for key, _, _, kind in _ALL_XRUN_FIELDS:
-            val = self.query_one(
-                f"#input-xrun-{_sanitize(key)}", Input
-            ).value.strip()
-            # Skip rules:
-            #   secret blank → leave the stored credential alone (do not clear)
-            #   list   blank → allowed (means "set to empty list")
-            #   other  blank → skip
-            if not val:
-                if kind == "secret":
-                    continue
-                if kind != "list":
-                    continue
-
-            # Light client-side validation; the CLI does the authoritative
-            # coercion via the schema-driven setter.
-            if val and kind in ("int", "float"):
-                try:
-                    (int if kind == "int" else float)(val)
-                except ValueError:
-                    self._set_result(
-                        f"[bold #f7768e]✗[/] {key}: expected {kind}, got '{val}'"
-                    )
-                    return
-            if val and kind == "bool":
-                if val.lower() not in ("true", "false", "1", "0",
-                                       "yes", "no", "on", "off"):
-                    self._set_result(
-                        f"[bold #f7768e]✗[/] {key}: expected boolean, "
-                        f"got '{val}'"
-                    )
-                    return
-
-            ok, err = await _xrun_config_set(key, val)
+        failed: list[str] = []
+        from xrun_tui import services
+        for key, val in pending:
+            if val is None:
+                ok, err = await services.config_unset(key)
+            else:
+                ok, err = await services.config_set(key, val)
             if ok:
+                self._loaded[key] = val or ""
                 applied.append(key)
             else:
-                self._set_result(f"[bold #f7768e]✗[/] {key}: {err[:120]}")
-                return
+                failed.append(f"{key}: {err[:80]}")
+
+        if not self.is_attached:
+            return  # the user left while the CLI writes were running
+        if failed:
+            msg = f"[bold #f7768e]✗ not saved:[/] {'; '.join(failed)}"
+            if applied:
+                msg += (f"  [#565f89]saved:[/] "
+                        f"[#c0caf5]{', '.join(applied)}[/]")
+            self._set_result(msg)
+            self.notify(f"{len(failed)} setting(s) not saved",
+                        severity="error", timeout=8)
+            return
 
         msg = "[bold #9ece6a]✓ saved[/]  "
         if applied:
@@ -462,6 +426,7 @@ class SettingsScreen(Screen):
         else:
             msg += "[#565f89]TUI settings only[/]"
         self._set_result(msg)
+        self.snapshot_form()
         self.notify("Settings saved", severity="information")
 
     def _set_result(self, text: str) -> None:
@@ -470,27 +435,19 @@ class SettingsScreen(Screen):
         except Exception:
             pass
 
-    def action_go_back(self) -> None:
-        self.app.pop_screen()
-
 
 def _xrun_row(row: tuple[str, str, str, str]) -> Horizontal:
     """Build a form row widget for an xrun-core config key."""
     key, label, placeholder, kind = row
-    children: list = [
+    return Horizontal(
         Label(f"{label}:", classes="form-label"),
         Input(
             placeholder=placeholder,
-            password=(kind == "secret"),
             id=f"input-xrun-{_sanitize(key)}",
             classes="form-input",
         ),
-    ]
-    if key == "search.exclude_countries":
-        children.append(
-            Button("Pick…", id="btn-pick-countries", classes="form-input")
-        )
-    return Horizontal(*children, classes="form-row")
+        classes="form-row",
+    )
 
 
 def _sanitize(key: str) -> str:
@@ -515,24 +472,3 @@ def _nested_get(data: dict, dotted_key: str):
             return None
         cur = cur.get(p)
     return cur
-
-
-async def _xrun_config_set(key: str, value: str) -> tuple[bool, str]:
-    kwargs: dict = {}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "xrun", "config", "set", key, value,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **kwargs,
-        )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=15)
-    except asyncio.TimeoutError:
-        return False, "timeout"
-    except FileNotFoundError:
-        return False, "xrun not found in PATH"
-    if proc.returncode == 0:
-        return True, ""
-    return False, (err.decode(errors="replace") or out.decode(errors="replace")).strip()

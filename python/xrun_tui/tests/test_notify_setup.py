@@ -7,12 +7,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
 
-from xrun_tui import config
 from xrun_tui.screens.notify_setup import (
     CHANNELS,
     PRESETS,
@@ -67,23 +65,6 @@ def test_journal_entries_collapse_channels_and_flag_failures() -> None:
     dead = next(e for e in entries if "dead" in e["message"])
     assert dead["severity"] == "error"
     assert dead["ts"] > done["ts"]
-
-
-# ── credentials writer keeps nested ssh tables ───────────────────────────────
-
-def test_write_credentials_preserves_nested_tables(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XRUN_CONFIG_DIR", str(tmp_path))
-    creds = {
-        "vast": {"api_key": "k"},
-        "ntfy": {"topic": "xrun-abc", "url": None},
-        "ssh": {"box": {"host": "10.0.0.2", "user": "root", "port": 22}},
-    }
-    config.write_credentials(creds)
-    back = tomllib.loads((tmp_path / "credentials.toml").read_text(encoding="utf-8"))
-    assert back["vast"]["api_key"] == "k"
-    assert back["ntfy"] == {"topic": "xrun-abc"}
-    assert back["ssh"]["box"] == {"host": "10.0.0.2", "user": "root", "port": 22}
-    assert config.read_credentials() == back
 
 
 # ── headless pilot over the screens ──────────────────────────────────────────
@@ -191,6 +172,95 @@ async def _test_channel_edit_and_rules_forms_compose() -> None:
         await pilot.pause()
         assert rules.query_one("#in-pct", Input).value == "50, 80"
         await pilot.press("escape")
+
+
+def _record_services(monkeypatch, fail_key: str | None = None):
+    """Replace services.config_set/unset with recorders (no real xrun)."""
+    from xrun_tui import services
+
+    sets: list[tuple[str, str, bool]] = []
+    unsets: list[str] = []
+
+    async def _set(key, value, *, secret=False):
+        sets.append((key, value, secret))
+        return (False, "boom") if key == fail_key else (True, "")
+
+    async def _unset(key):
+        unsets.append(key)
+        return True, ""
+
+    monkeypatch.setattr(services, "config_set", _set)
+    monkeypatch.setattr(services, "config_unset", _unset)
+    return sets, unsets
+
+
+def test_secret_fields_are_blank_and_blank_save_keeps(
+    isolated_env: Path, monkeypatch
+) -> None:
+    (isolated_env / "credentials.toml").write_text(
+        '[ntfy]\ntopic = "xrun-test"\ntoken = "tk_secretvalue"\nurl = "https://n.example"\n'
+        '[telegram]\nbot_token = "123:ABCDEF"\nchat_id = "42"\n',
+        encoding="utf-8",
+    )
+    sets, unsets = _record_services(monkeypatch)
+    asyncio.run(_test_blank_secret_keeps(sets, unsets))
+
+
+async def _test_blank_secret_keeps(sets, unsets) -> None:
+    from textual.widgets import Input
+
+    from xrun_tui.screens.notify_setup import ChannelEditScreen
+
+    app = _BareApp.make()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # ntfy: stored token is not in the Input; topic stays prefilled.
+        form = ChannelEditScreen("ntfy", "ntfy")
+        await app.push_screen(form)
+        await pilot.pause()
+        assert form.query_one("#in-ntfy-token", Input).value == ""
+        assert "secretvalue"[-6:] in form.query_one("#in-ntfy-token", Input).placeholder
+        form.query_one("#in-ntfy-url", Input).value = ""   # user cleared it
+        await form.action_save()
+        await pilot.pause()
+        keys = [k for k, _, _ in sets]
+        assert "ntfy.token" not in keys and "ntfy.topic" not in keys
+        assert unsets == ["ntfy.url"]
+        sets.clear()
+
+        # telegram: blank token is accepted because one is stored.
+        form = ChannelEditScreen("telegram", "Telegram")
+        await app.push_screen(form)
+        await pilot.pause()
+        assert form.query_one("#in-tg-token", Input).value == ""
+        form.query_one("#in-tg-chat", Input).value = "77"
+        await form.action_save()
+        await pilot.pause()
+        assert ("telegram.chat_id", "77", False) in sets
+        assert "telegram.bot_token" not in [k for k, _, _ in sets]
+
+
+def test_channel_save_failure_is_not_dismissed(isolated_env: Path, monkeypatch) -> None:
+    sets, _ = _record_services(monkeypatch, fail_key="webhook.url")
+    asyncio.run(_test_channel_save_failure(sets))
+
+
+async def _test_channel_save_failure(sets) -> None:
+    from textual.widgets import Input
+
+    from xrun_tui.screens.notify_setup import ChannelEditScreen
+
+    app = _BareApp.make()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        form = ChannelEditScreen("webhook", "Webhook")
+        await app.push_screen(form)
+        await pilot.pause()
+        form.query_one("#in-wh-url", Input).value = "https://hook.example/x"
+        await form.action_save()
+        await pilot.pause()
+        assert sets == [("webhook.url", "https://hook.example/x", True)]
+        assert app.screen is form          # still open, not "saved"
 
 
 def test_wizard_notify_step_prefills_topic(isolated_env: Path) -> None:

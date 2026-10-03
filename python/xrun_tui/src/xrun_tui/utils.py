@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -223,6 +224,55 @@ def render_sparkline(values: list[float], width: int = 10) -> str:
         _SPARK_BARS[min(int((v - lo) / rng * (n_bars - 1)), n_bars - 1)]
         for v in sampled
     )
+
+
+# Lower-is-better name rule. Keep identical to `best_direction` in
+# crates/xrun-cli/src/commands/diff.rs (same tokens, same matching).
+_MIN_EXACT_TOKENS = frozenset({
+    "mae", "mse", "rmse", "ppl", "wer", "cer", "fid", "nll", "eer", "bpb", "bpc",
+})
+
+
+# lower/digit then upper, or the last capital of an upper run before a
+# lowercase letter ("FIDScore" -> "FID_Score").
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _name_direction(key: str) -> str:
+    # Tokens, not raw substrings: "overall"/"merge" must not hit "err"/"mse",
+    # and short words ("cer", "fid") only count as a whole token. camelCase
+    # is a boundary too, so "valError" / "valMAE" split like "val_error".
+    for t in re.split(r"[\W_]+", _CAMEL_BOUNDARY.sub("_", key).lower()):
+        if not t:
+            continue
+        if (
+            # "lossless" is not a loss
+            "loss" in t.replace("lossless", "")
+            or t.startswith(("err", "perplexity"))
+            or t in _MIN_EXACT_TOKENS
+            or (t.endswith("s") and t[:-1] in _MIN_EXACT_TOKENS)
+        ):
+            return "min"
+    return "max"
+
+
+def metric_direction(key: str, manifest: dict | None = None) -> str:
+    """Which value of a metric is best: "min" or "max".
+
+    Same rule as `xrun diff` (minus the CLI override, which callers apply
+    first): the manifest's policy.early_stop.mode when its metric is `key`
+    (mode defaults to max), else the name heuristic.
+    """
+    if isinstance(manifest, dict):
+        es = (manifest.get("policy") or {}).get("early_stop")
+        if isinstance(es, dict) and es.get("metric") == key:
+            return "min" if es.get("mode") == "min" else "max"
+    return _name_direction(key)
+
+
+def is_better(a: float, b: float, direction: str) -> bool:
+    """True when `a` beats `b` for the given direction."""
+    return a < b if direction == "min" else a > b
 
 
 def fmt_metric_value(v: float) -> str:

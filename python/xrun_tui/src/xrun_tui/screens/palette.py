@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Awaitable, Callable
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -9,24 +7,16 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
+from xrun_tui.screens.registry import by_slug, iter_screens
+
 
 # Each entry: (label, target action key)
-# Target keys are interpreted by `_run_target` below.
+# Target keys are interpreted by `run_target` below. Screen destinations come
+# from the registry; only the non-navigation actions are listed by hand.
 PALETTE_COMMANDS: list[tuple[str, str]] = [
-    ("Go: Dashboard",                "go:dashboard"),
-    ("Go: Runs",                     "go:runs"),
-    ("Go: Watch  (live active runs)","go:watch"),
-    ("Go: Budget & Spend",           "go:budget"),
-    ("Go: Sweep results",            "go:sweep"),
-    ("Go: Instances",                "go:instances"),
-    ("Go: Vendors",                  "go:vendors"),
-    ("Go: Sinks  (metrics & logs)",  "go:sinks"),
-    ("Go: Doctor (system health)",   "go:doctor"),
-    ("Go: Launch manifest",          "go:launch"),
-    ("Go: Settings",                 "go:settings"),
-    ("Go: Notifications history",    "go:notifications"),
-    ("Go: Notifications setup (push)", "go:notify"),
-    ("Show: Keyboard help",          "go:help"),
+    (f"{'Show' if e.slug == 'help' else 'Go'}: {e.description}", e.target)
+    for e in iter_screens()
+] + [
     ("Refresh current screen",       "act:refresh"),
     ("Quit xrun TUI",                "act:quit"),
 ]
@@ -106,15 +96,6 @@ class CommandPalette(ModalScreen[str | None]):
 
 async def run_target(app, target: str) -> None:
     """Resolve a palette target into a screen-push or app action."""
-    from xrun_tui.screens.dashboard  import DashboardScreen
-    from xrun_tui.screens.runs       import RunsScreen
-    from xrun_tui.screens.instances  import InstancesScreen
-    from xrun_tui.screens.vendors    import VendorsScreen
-    from xrun_tui.screens.doctor     import DoctorScreen
-    from xrun_tui.screens.launch     import LaunchScreen
-    from xrun_tui.screens.settings   import SettingsScreen
-    from xrun_tui.screens.help       import HelpScreen
-
     if target == "act:quit":
         app.exit()
         return
@@ -123,49 +104,44 @@ async def run_target(app, target: str) -> None:
         if hasattr(scr, "action_refresh"):
             await scr.action_refresh()  # type: ignore[func-returns-value]
         return
-    if target == "go:help":
-        await app.push_screen(HelpScreen())
+    entry = by_slug(target[3:]) if target.startswith("go:") else None
+    if entry is None:
         return
-    if target == "go:notifications":
-        from xrun_tui.screens.notifications import NotificationsScreen
-        await app.push_screen(NotificationsScreen())
-        return
-
-    from xrun_tui.screens.watch  import WatchScreen
-    from xrun_tui.screens.budget import BudgetScreen
-    from xrun_tui.screens.sweep  import SweepScreen
-
-    from xrun_tui.screens.sinks import SinksScreen
-    from xrun_tui.screens.notify_setup import NotifySetupScreen
-
-    factories: dict[str, Callable[[], Any]] = {
-        "go:dashboard":  DashboardScreen,
-        "go:runs":       RunsScreen,
-        "go:instances":  InstancesScreen,
-        "go:vendors":    VendorsScreen,
-        "go:sinks":      SinksScreen,
-        "go:notify":     NotifySetupScreen,
-        "go:doctor":     DoctorScreen,
-        "go:launch":     LaunchScreen,
-        "go:settings":   SettingsScreen,
-        "go:watch":      WatchScreen,
-        "go:budget":     BudgetScreen,
-        "go:sweep":      SweepScreen,
-    }
-    factory = factories.get(target)
-    if factory is None:
-        return
+    cls = entry.load()
     # One instance per destination. Pushing a fresh screen on every `g …`
     # grew the stack without bound — each visit left a mounted copy behind —
     # so going somewhere already open unwinds back to it instead.
-    for screen in app.screen_stack:
-        if type(screen) is factory:
-            # One batched update: the screens in between are dropped
-            # without each being repainted on the way down.
-            screen.pop_until_active()
+    stack = list(app.screen_stack)
+    for depth, screen in enumerate(stack):
+        if type(screen) is cls:
+            await _unwind_to(app, screen, stack[depth + 1:])
             return
-    await app.push_screen(factory())
+    await app.push_screen(cls())
 
 
-# Re-export for typing
-from typing import Any  # noqa: E402
+async def _unwind_to(app, screen, dropped: list) -> None:
+    """Go back to `screen`, dropping the screens above it. A config form among
+    them gets the same protection as on Esc: unwinding used to throw away
+    unsaved edits without a word, and could cut a running save short."""
+    from xrun_tui.widgets.form import FormGuard
+
+    forms = [s for s in dropped if isinstance(s, FormGuard)]
+    if any(f._saving for f in forms):
+        app.notify("Save in progress — wait for it to finish",
+                   severity="warning")
+        return
+    if not any(f.form_dirty() for f in forms):
+        # One batched update: the screens in between are dropped
+        # without each being repainted on the way down.
+        screen.pop_until_active()
+        return
+
+    from xrun_tui.screens.confirm import ConfirmScreen
+
+    def _after(discard: bool | None) -> None:
+        if discard:
+            screen.pop_until_active()
+
+    await app.push_screen(
+        ConfirmScreen("Discard unsaved changes?", default_no=True), _after
+    )

@@ -16,11 +16,14 @@ async def _run(
     *args: str,
     timeout: int = 30,
     env: dict[str, str] | None = None,
+    stdin: str | None = None,
 ) -> tuple[int, str, str]:
     kwargs: dict[str, Any] = dict(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    if stdin is not None:
+        kwargs["stdin"] = asyncio.subprocess.PIPE
     if sys.platform == "win32":
         import subprocess as _sub
         kwargs["creationflags"] = _sub.CREATE_NO_WINDOW
@@ -32,7 +35,10 @@ async def _run(
         kwargs["env"] = merged
     try:
         proc = await asyncio.create_subprocess_exec("xrun", *args, **kwargs)
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        out, err = await asyncio.wait_for(
+            proc.communicate(stdin.encode() if stdin is not None else None),
+            timeout=timeout,
+        )
         return (
             proc.returncode or 0,
             out.decode(errors="replace"),
@@ -66,6 +72,36 @@ async def probe(
     except Exception as exc:
         return {"vendor": vendor, "ok": False,
                 "detail": f"parse error: {exc}", "elapsed_ms": 0}
+
+
+async def probe_sink(
+    sid: str, creds: dict[str, Any], global_config: dict[str, Any]
+) -> tuple[bool, str]:
+    """Probe a metrics sink (mlflow / wandb) with the stored credentials →
+    (ok, detail). The secrets travel in `XRUN_PROBE_*` env vars, never argv."""
+    env: dict[str, str] = {}
+    extra: list[str] = []
+    if sid == "mlflow":
+        m = creds.get("mlflow") or {}
+        if m.get("token"):
+            env["XRUN_PROBE_MLFLOW_TOKEN"] = m["token"]
+        if m.get("username") and m.get("password"):
+            env["XRUN_PROBE_MLFLOW_USERNAME"] = m["username"]
+            env["XRUN_PROBE_MLFLOW_PASSWORD"] = m["password"]
+        url = (global_config.get("mlflow") or {}).get("url", "")
+        if url:
+            extra = ["--mlflow-url", url]
+    elif sid == "wandb":
+        key = (creds.get("wandb") or {}).get("api_key", "")
+        if key:
+            env["XRUN_PROBE_WANDB_KEY"] = key
+    else:
+        return False, "unsupported sink"
+    try:
+        obj = await probe(sid, env=env, extra_args=extra, timeout=12)
+        return bool(obj.get("ok")), str(obj.get("detail", ""))
+    except Exception as exc:
+        return False, str(exc)
 
 
 async def xrun_version() -> str | None:
@@ -226,6 +262,47 @@ async def pull(
 
 
 # ── Reads ─────────────────────────────────────────────────────────────────────
+
+# ── Config writes ─────────────────────────────────────────────────────────────
+# `xrun config` is the only writer of config.toml and credentials.toml: the
+# CLI owns the schema, so the TUI never serialises those files itself.
+
+async def config_set(
+    key: str, value: str, *, secret: bool = False
+) -> tuple[bool, str]:
+    """`xrun config set <key> <value>` → (ok, error text).
+
+    `secret=True` pipes the value through stdin (`--stdin`), so a credential
+    never shows up in the process list.
+    """
+    if secret:
+        code, out, err = await _run(
+            "config", "set", key, "--stdin", timeout=15, stdin=value
+        )
+    else:
+        # `--` so a value like `-1` is not parsed as a flag.
+        code, out, err = await _run(
+            "config", "set", key, "--", value, timeout=15
+        )
+    return code == 0, (err or out).strip()
+
+
+async def config_unset(key: str) -> tuple[bool, str]:
+    """`xrun config unset <key>` → (ok, error text). Clears a credential, or
+    puts a config key back to its default."""
+    code, out, err = await _run("config", "unset", key, timeout=15)
+    return code == 0, (err or out).strip()
+
+
+def secret_placeholder(stored: str | None, empty: str) -> str:
+    """Placeholder for a secret Input. A stored secret is never put into the
+    field itself: the user sees its tail and leaves the field blank to keep it.
+    """
+    if not stored:
+        return empty
+    tail = stored[-6:] if len(stored) > 6 else "*" * len(stored)
+    return f"…{tail}  (leave blank to keep)"
+
 
 async def config_show(secrets: bool = False) -> tuple[bool, dict[str, Any], str]:
     """Run `xrun config show --json`. When `secrets=True`, includes a

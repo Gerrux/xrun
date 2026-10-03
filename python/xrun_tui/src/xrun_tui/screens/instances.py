@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from rich.text import Text
@@ -25,6 +26,10 @@ if TYPE_CHECKING:
     from xrun_tui.app import XrunApp
 
 
+TAB_ALL = "tab-all"
+TAB_VAST = "tab-vast"
+
+
 class InstancesScreen(LiveScreen):
     TITLE = "xrun — instances"
     BINDINGS = [
@@ -38,28 +43,36 @@ class InstancesScreen(LiveScreen):
     def __init__(self) -> None:
         super().__init__()
         self._remote_instances: list[dict] = []
+        # One summary line per tab; `#inst-summary` shows the active tab's
+        self._summary_all = ""
+        self._summary_vast = ""
+        # Set by the last remote refresh; the 20 s timer skips vast without a key
+        self._has_vast_key = True
 
     def compose(self) -> ComposeResult:
         yield TitleBar("instances")
         yield Static("Instances", classes="screen-title", id="inst-title")
         yield Static("", id="inst-summary", classes="stats-bar")
-        with TabbedContent(id="inst-tabs"):
-            with TabPane("Remote  (vast.ai)", id="tab-remote"):
+        # The DB tab is vendor-neutral, so it comes first; the vast.ai live
+        # tab only matters to people with a vast key. Tables keep their ids
+        # (the tcss selects on them); tabs are addressed by id, not position.
+        with TabbedContent(initial=TAB_ALL, id="inst-tabs"):
+            with TabPane("All vendors", id=TAB_ALL):
+                yield DataTable(id="local-table", cursor_type="row", zebra_stripes=True)
+            with TabPane("vast.ai (live)", id=TAB_VAST):
                 yield DataTable(id="remote-table", cursor_type="row", zebra_stripes=True)
                 yield Static(
                     "[#565f89]x[/] [#c0caf5]Destroy instance[/]   "
                     "[#565f89]ctrl+r[/] [#c0caf5]Refresh[/]",
                     classes="vendor-hint",
                 )
-            with TabPane("Local  (DB)", id="tab-local"):
-                yield DataTable(id="local-table", cursor_type="row", zebra_stripes=True)
         yield StatusBar()
         yield Footer()
 
     def on_mount(self) -> None:
         self._setup_remote_table()
         self._setup_local_table()
-        self.set_interval(20, self._refresh_remote)
+        self.set_interval(20, self._tick_remote)
         self.kick(self._load_all)
 
     # ── Column setup ─────────────────────────────────────────────────────────
@@ -99,8 +112,23 @@ class InstancesScreen(LiveScreen):
         await self._refresh_local()
         await self._refresh_remote()
 
+    async def _tick_remote(self) -> None:
+        # Without a key the refresh would only rebuild the "not configured"
+        # row; ctrl+r and opening the vast tab re-check for a new key.
+        if self._has_vast_key:
+            await self._refresh_remote()
+
+    def _show_summary(self) -> None:
+        if not self.is_mounted:
+            return
+        active_vast = self.query_one(TabbedContent).active == TAB_VAST
+        self.query_one("#inst-summary", Static).update(
+            self._summary_vast if active_vast else self._summary_all
+        )
+
     async def _refresh_remote(self) -> None:
         api_key = config.get_vast_api_key()
+        self._has_vast_key = bool(api_key)
         table = self.query_one("#remote-table", DataTable)
 
         # Fetch before touching the table: the old rows stay readable (and
@@ -118,21 +146,34 @@ class InstancesScreen(LiveScreen):
         if not self.is_mounted:
             return
 
+        # `clear()` puts the cursor back on row 0 and the API order is not
+        # stable, so remember the instance under the cursor by id: the 20 s
+        # tick must not slide the highlight (and `x`) onto another instance.
+        prev = self._selected_remote_instance(any_tab=True)
+        prev_key = str(prev.get("id", "")) if prev else ""
         table.clear()
         self._remote_instances = []
 
         if not api_key:
-            self.query_one("#inst-summary", Static).update(
-                "[#565f89]No API key configured — press [/][#7aa2f7]v[/][#565f89] to open Vendors[/]"
-            )
+            # Neutral: a user on local/ssh/kaggle has no reason to want a
+            # vast key, their instances are in the "All vendors" tab.
+            self._summary_vast = "[#565f89]vast.ai is not configured[/]"
+            self._show_summary()
             table.add_row(
-                Text(""), Text("No API key — go to Vendors [v]", style="#414868"),
+                Text(""),
+                Text(
+                    "This tab lists live vast.ai instances only. vast.ai is not "
+                    "configured; instances of other vendors are in the "
+                    "\"All vendors\" tab.",
+                    style="#414868",
+                ),
                 *[Text("") for _ in range(7)],
             )
             return
 
         if error is not None:
-            self.query_one("#inst-summary", Static).update(f"[#f7768e]Error: {error}[/]")
+            self._summary_vast = f"[#f7768e]Error: {error}[/]"
+            self._show_summary()
             table.add_row(
                 Text("✗", style="#f7768e"),
                 Text(str(error)[:60], style="#f7768e"),
@@ -177,6 +218,11 @@ class InstancesScreen(LiveScreen):
                 Text(region, style="#565f89"),
                 key=str(inst.get("id", "")),
             )
+        if prev_key:
+            try:
+                table.move_cursor(row=table.get_row_index(prev_key))
+            except Exception:
+                pass  # that instance is gone: row 0 is as good as any
 
     def _render_remote_summary(self, instances: list[dict]) -> None:
         running   = [i for i in instances if (i.get("actual_status") or "") == "running"]
@@ -196,22 +242,49 @@ class InstancesScreen(LiveScreen):
         if total_up > 0:
             parts.append(f"[#565f89]{_fmt_uptime(total_up)} uptime[/]")
 
-        self.query_one("#inst-summary", Static).update("  ".join(parts))
+        self._summary_vast = "  ".join(parts)
+        self._show_summary()
+
+    def _render_local_summary(self, instances: list[dict]) -> None:
+        active = [i for i in instances if not i.get("destroyed_at")]
+        parts: list[str] = []
+        if active:
+            parts.append(f"[bold #9ece6a]● {len(active)} active[/]")
+            by_vendor = Counter(i.get("vendor") or "?" for i in active)
+            parts.append(
+                "[#7dcfff]"
+                + " · ".join(f"{v} {n}" for v, n in sorted(by_vendor.items()))
+                + "[/]"
+            )
+        elif instances:
+            parts.append("[#565f89]none active[/]")
+        else:
+            parts.append("[#414868]no instances recorded[/]")
+        if len(instances) > len(active):
+            parts.append(f"[#565f89]{len(instances) - len(active)} destroyed[/]")
+        self._summary_all = "  ".join(parts)
+        self._show_summary()
 
     async def _refresh_local(self) -> None:
         app: XrunApp = self.app  # type: ignore[assignment]
         try:
             instances = await app.db.instances()
         except Exception as exc:
-            self.notify(f"DB error: {exc}", severity="error", timeout=8)
+            if self.is_mounted:
+                self.notify(f"DB error: {exc}", severity="error", timeout=8)
+            return
+        if not self.is_mounted:
             return
 
         table = self.query_one("#local-table", DataTable)
         table.clear()
+        self._render_local_summary(instances)
 
         if not instances:
             table.add_row(
-                Text(""), Text("No local instances in DB", style="#414868"),
+                Text(""),
+                Text("No instances recorded yet — they appear after `xrun launch`",
+                     style="#414868"),
                 *[Text("") for _ in range(6)],
             )
             return
@@ -249,20 +322,26 @@ class InstancesScreen(LiveScreen):
     # ── Tab switch ───────────────────────────────────────────────────────────
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        if event.pane and event.pane.id == "tab-local":
+        if not event.pane:
+            return
+        if event.pane.id == TAB_ALL:
             self.call_after_refresh(self._refresh_local)
+        elif event.pane.id == TAB_VAST:
+            # Also picks up a key added since the timer stopped polling
+            self.call_after_refresh(self._refresh_remote)
+        self.call_after_refresh(self._show_summary)
 
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def _active_table(self) -> DataTable:
         tabs = self.query_one(TabbedContent)
-        if tabs.active == "tab-remote":
+        if tabs.active == TAB_VAST:
             return self.query_one("#remote-table", DataTable)
         return self.query_one("#local-table", DataTable)
 
-    def _selected_remote_instance(self) -> dict | None:
+    def _selected_remote_instance(self, *, any_tab: bool = False) -> dict | None:
         tabs = self.query_one(TabbedContent)
-        if tabs.active != "tab-remote":
+        if tabs.active != TAB_VAST and not any_tab:
             return None
         table = self.query_one("#remote-table", DataTable)
         row = table.cursor_row
@@ -283,6 +362,13 @@ class InstancesScreen(LiveScreen):
         self.kick(self._load_all)
 
     async def action_destroy(self) -> None:
+        if self.query_one(TabbedContent).active != TAB_VAST:
+            self.notify(
+                "Destroy works on the vast.ai (live) tab; stop runs of other "
+                "vendors with `s` on the Runs screen",
+                severity="warning",
+            )
+            return
         inst = self._selected_remote_instance()
         if not inst:
             self.notify("Select a remote instance first", severity="warning")
@@ -304,7 +390,7 @@ class InstancesScreen(LiveScreen):
 
         gpu = inst.get("gpu_name") or str(inst_id)
         await self.app.push_screen(
-            ConfirmScreen(f"Destroy {gpu} (id {inst_id})?"), _do
+            ConfirmScreen(f"Destroy {gpu} (id {inst_id})?", default_no=True), _do
         )
 
 

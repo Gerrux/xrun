@@ -403,41 +403,10 @@ class DashboardScreen(LiveScreen):
         self._set_sinks("  ".join(rebuilt), "#c0caf5")
 
     async def _probe_one_sink(self, sid: str) -> tuple[bool, str]:
-        """Run `xrun config probe --vendor <sid>` with stored creds piped via
-        env so secrets stay out of argv.
+        from xrun_tui import config, services
 
-        Mirrors `SinksScreen._probe` but lives here too — duplicating the
-        ~20 lines beats a circular-import refactor for a non-core feature.
-        """
-        from xrun_tui import config
-
-        creds = config.read_credentials()
-        env: dict[str, str] = {}
-        extra: list[str] = []
-        if sid == "mlflow":
-            m = creds.get("mlflow", {})
-            if m.get("token"):
-                env["XRUN_PROBE_MLFLOW_TOKEN"] = m["token"]
-            if m.get("username") and m.get("password"):
-                env["XRUN_PROBE_MLFLOW_USERNAME"] = m["username"]
-                env["XRUN_PROBE_MLFLOW_PASSWORD"] = m["password"]
-            url = config.read_global_config().get("mlflow", {}).get("url", "")
-            if url:
-                extra = ["--mlflow-url", url]
-        elif sid == "wandb":
-            key = creds.get("wandb", {}).get("api_key", "")
-            if key:
-                env["XRUN_PROBE_WANDB_KEY"] = key
-        else:
-            return False, "unsupported sink"
-
-        from xrun_tui import services
-        try:
-            obj = await services.probe(sid, env=env, extra_args=extra,
-                                       timeout=12)
-            return bool(obj.get("ok")), str(obj.get("detail", ""))
-        except Exception as exc:
-            return False, str(exc)
+        return await services.probe_sink(
+            sid, config.read_credentials(), config.read_global_config())
 
     def _set_sinks(self, text: str, style: str) -> None:
         self._sinks_text = (text, style)

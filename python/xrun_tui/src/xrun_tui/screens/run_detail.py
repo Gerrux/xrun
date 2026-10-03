@@ -7,6 +7,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from xrun_tui import run_actions
 from xrun_tui.live import LiveScreen
 from textual.widgets import (
     Button,
@@ -422,62 +423,20 @@ class RunDetailScreen(LiveScreen):
     async def action_stop_run(self) -> None:
         if not self._run:
             return
-        from xrun_tui.screens.confirm import ConfirmScreen
+        await run_actions.stop(self, self._run, after=self._after_action)
 
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import services
-            ok, msg = await services.stop_run(self._run_id)
-            if ok:
-                self.notify(f"Stopped {self._run_id[:8]}", severity="information")
-                await self._load_run()
-            else:
-                self.notify(f"Stop failed: {msg}", severity="error", timeout=8)
-
-        await self.app.push_screen(
-            ConfirmScreen(f"Stop {self._run.get('name', self._run_id[:8])}?"), _do
-        )
+    async def _after_action(self, ok: bool) -> None:
+        await self._load_run()
 
     async def action_rerun(self) -> None:
         if not self._run:
             return
-        from xrun_tui.screens.confirm import ConfirmScreen
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import services
-            ok, msg = await services.rerun_run(self._run_id)
-            if ok:
-                self.notify("Rerun launched", severity="information")
-                await self._load_run()
-            else:
-                self.notify(f"Rerun failed: {msg}", severity="error", timeout=8)
-
-        await self.app.push_screen(
-            ConfirmScreen(f"Rerun {self._run.get('name', self._run_id[:8])}?"), _do
-        )
+        await run_actions.rerun(self, self._run, after=self._after_action)
 
     async def action_pull(self) -> None:
         if not self._run:
             return
-        from xrun_tui.screens.confirm import ConfirmScreen
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import services
-            self.notify("Pulling artifacts…", severity="information")
-            ok, msg = await services.pull(self._run_id, ckpt="latest")
-            if ok:
-                self.notify("Pull complete", severity="information")
-            else:
-                self.notify(f"Pull failed: {msg[:80]}", severity="error", timeout=10)
-
-        await self.app.push_screen(
-            ConfirmScreen(f"Pull latest checkpoint for {self._run_id[:8]}?"), _do
-        )
+        await run_actions.pull(self, self._run)
 
     async def action_artifacts(self) -> None:
         if not self._run:
@@ -521,17 +480,7 @@ class RunDetailScreen(LiveScreen):
     async def action_sync_status(self) -> None:
         if not self._run:
             return
-        from xrun_tui import services
-        self.notify(f"Reconciling {self._run_id[:8]}…", severity="information")
-        ok, msg = await services.fix_status(self._run_id)
-        if ok:
-            tail = msg.splitlines()[-1] if msg else "no change"
-            self.notify(f"Sync ok: {tail}", severity="information", timeout=6)
-            await self._load_run()
-        else:
-            self.notify(
-                f"Sync failed: {msg[:200]}", severity="error", timeout=10
-            )
+        await run_actions.sync(self, self._run, after=self._after_action)
 
     def action_toggle_search(self) -> None:
         inp = self.query_one("#log-search-input", Input)

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class ErrorDetailScreen(ModalScreen[str | None]):
     BINDINGS = [
         Binding("escape", "dismiss_none", show=False),
-        Binding("r",      "action_rerun", show=False),
+        Binding("r",      "rerun", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -137,23 +137,13 @@ class ErrorDetailScreen(ModalScreen[str | None]):
                 self.run_worker(self.action_rerun())
 
     async def action_rerun(self) -> None:
-        from xrun_tui.screens.confirm import ConfirmScreen
+        from xrun_tui import run_actions
 
-        run_id = self._run.get("id") or ""
-        name = self._run.get("name") or run_id[:8]
-
-        async def _do(confirmed: bool) -> None:
-            if not confirmed:
-                return
-            from xrun_tui import services
-            ok, msg = await services.rerun_run(run_id)
+        async def _after(ok: bool) -> None:
             if ok:
-                self.notify("Rerun launched", severity="information")
                 self.dismiss("rerun_ok")
-            else:
-                self.notify(f"Rerun failed: {msg[:80]}", severity="error", timeout=8)
 
-        await self.app.push_screen(ConfirmScreen(f"Rerun {name}?"), _do)
+        await run_actions.rerun(self, self._run, after=_after)
 
     def action_dismiss_none(self) -> None:
         self.dismiss(None)

@@ -9,9 +9,9 @@ Every card is fully driven from the keyboard:
     t        send a real test notification through that channel
     r        forget the channel's credentials
 
-Config writes go through `xrun config set …` (schema-driven coercion, same
-as the CLI) and `config.write_credentials` for secrets — the TUI never
-invents its own file format.
+Every write (config and credentials) goes through `xrun config set/unset`
+via `services` — secrets over stdin — so the TUI never invents its own file
+format. A stored secret is never put into an Input; blank means "keep".
 """
 from __future__ import annotations
 
@@ -26,8 +26,11 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, RadioButton, RadioSet, Rule, Static
 
-from xrun_tui import config
+from xrun_tui import config, services
+from xrun_tui.screens.confirm import ConfirmScreen
 from xrun_tui.services import _run as _xrun
+from xrun_tui.widgets.cards import CardCursor, pill
+from xrun_tui.widgets.form import FormGuard, single_save
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
@@ -54,18 +57,6 @@ PRESETS: list[tuple[str, str, list[str]]] = [
     ("money",    "Money only — budget thresholds, auto-destroy, cleanup failed, orphans, poller dead",
                  ["budget.*", "instance.*", "poller.dead"]),
 ]
-
-
-def _pill(state: str) -> str:
-    return {
-        "on":       "[#1a1b26 on #9ece6a] ON [/]",
-        "off":      "[#1a1b26 on #7aa2f7] OFF [/]",
-        "empty":    "[#c0caf5 on #414868] EMPTY [/]",
-        "checking": "[#1a1b26 on #e0af68] TEST [/]",
-        "ok":       "[#1a1b26 on #9ece6a] ✓ SENT [/]",
-        "error":    "[#c0caf5 on #f7768e] ERROR [/]",
-        "info":     "[#c0caf5 on #414868] · [/]",
-    }.get(state, "[#c0caf5 on #414868] · [/]")
 
 
 def _read_state() -> tuple[dict, dict]:
@@ -101,14 +92,17 @@ def generate_topic() -> str:
     return f"xrun-{secrets.token_hex(6)}"
 
 
-async def _config_set(key: str, value: str) -> tuple[bool, str]:
-    code, out, err = await _xrun("config", "set", key, value, timeout=15)
-    return code == 0, (err or out).strip()
+# Credential keys each channel owns — what Revoke clears.
+_REVOKE_KEYS = {
+    "ntfy":     ("ntfy.url", "ntfy.topic", "ntfy.token"),
+    "telegram": ("telegram.bot_token", "telegram.chat_id"),
+    "webhook":  ("webhook.url",),
+}
 
 
 async def set_channels(channels: list[str]) -> tuple[bool, str]:
     # An empty list is a valid "off" — `xrun config set` treats "" as [].
-    return await _config_set("notify.channels", ",".join(channels))
+    return await services.config_set("notify.channels", ",".join(channels))
 
 
 async def test_channel(cid: str) -> tuple[bool, str]:
@@ -163,10 +157,12 @@ async def detect_telegram_chat_id(bot_token: str) -> tuple[str | None, str]:
     return await asyncio.to_thread(_fetch)
 
 
-class NotifySetupScreen(Screen):
+class NotifySetupScreen(CardCursor, Screen):
     """Channel cards + rules + watchdog scheduler."""
 
     TITLE = "xrun — notifications"
+    _CARD_PREFIX = "nrow"
+    _CARD_COUNT = _N_ROWS
     BINDINGS = [
         Binding("escape,q",  "go_back",  "Back"),
         Binding("enter,e",   "edit",     "Edit"),
@@ -258,7 +254,7 @@ class NotifySetupScreen(Screen):
                         yield Static(f"[{_BRAND[cid]}]{_LOGOS[cid]}[/]", classes="vendor-logo")
                         yield Static(f"[bold #c0caf5]{name}[/]  [#565f89]{desc}[/]",
                                      classes="vendor-card-title")
-                        yield Static(_pill(st), id=f"nstatus-{i}", classes="vendor-card-pill")
+                        yield Static(pill(st), id=f"nstatus-{i}", classes="vendor-card-pill")
                     with Horizontal(classes="vendor-card-foot"):
                         yield Static(self._foot(cid), id=f"ninfo-{i}", classes="vendor-card-info")
             rh, rf = self._rules_text()
@@ -266,7 +262,7 @@ class NotifySetupScreen(Screen):
                 with Horizontal(classes="vendor-card-head"):
                     yield Static("[#7aa2f7]⚙[/]", classes="vendor-logo")
                     yield Static(rh, classes="vendor-card-title")
-                    yield Static(_pill("info"), id=f"nstatus-{_RULES_ROW}", classes="vendor-card-pill")
+                    yield Static(pill("info"), id=f"nstatus-{_RULES_ROW}", classes="vendor-card-pill")
                 with Horizontal(classes="vendor-card-foot"):
                     yield Static(rf, id=f"ninfo-{_RULES_ROW}", classes="vendor-card-info")
             wh, wf = self._watchdog_text()
@@ -274,7 +270,7 @@ class NotifySetupScreen(Screen):
                 with Horizontal(classes="vendor-card-head"):
                     yield Static("[#f7768e]♥[/]", classes="vendor-logo")
                     yield Static(wh, classes="vendor-card-title")
-                    yield Static(_pill("info"), id=f"nstatus-{_WATCHDOG_ROW}", classes="vendor-card-pill")
+                    yield Static(pill("info"), id=f"nstatus-{_WATCHDOG_ROW}", classes="vendor-card-pill")
                 with Horizontal(classes="vendor-card-foot"):
                     yield Static(wf, id=f"ninfo-{_WATCHDOG_ROW}", classes="vendor-card-info")
             yield Rule()
@@ -302,22 +298,7 @@ class NotifySetupScreen(Screen):
             self._sched = {"installed": False}
         self._refresh_row(_WATCHDOG_ROW)
 
-    # ── cursor ───────────────────────────────────────────────────────────
-    def _highlight(self, idx: int) -> None:
-        for i in range(_N_ROWS):
-            try:
-                self.query_one(f"#nrow-{i}", Vertical).set_class(i == idx, "vendor-row-active")
-            except Exception:
-                pass
-
-    def action_next(self) -> None:
-        self._cursor = (self._cursor + 1) % _N_ROWS
-        self._highlight(self._cursor)
-
-    def action_prev(self) -> None:
-        self._cursor = (self._cursor - 1) % _N_ROWS
-        self._highlight(self._cursor)
-
+    # j/k cursor: CardCursor
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
@@ -327,6 +308,8 @@ class NotifySetupScreen(Screen):
 
     # ── refresh ──────────────────────────────────────────────────────────
     def _refresh_all(self) -> None:
+        if not self.is_attached:
+            return  # the user left while the CLI write was still running
         self._creds, self._notify = _read_state()
         for i in range(_N_ROWS):
             self._refresh_row(i)
@@ -339,7 +322,7 @@ class NotifySetupScreen(Screen):
             return
         if i < len(CHANNELS):
             cid = CHANNELS[i][0]
-            status_w.update(_pill(self._state(cid)))
+            status_w.update(pill(self._state(cid)))
             info_w.update(self._foot(cid))
         elif i == _RULES_ROW:
             info_w.update(self._rules_text()[1])
@@ -409,12 +392,16 @@ class NotifySetupScreen(Screen):
                 self.notify(f"could not enable {name}: {err}", severity="error")
                 return
             self._creds, self._notify = _read_state()
+            if not self.is_attached:
+                return
         status_w = self.query_one(f"#nstatus-{i}", Static)
         info_w = self.query_one(f"#ninfo-{i}", Static)
-        status_w.update(_pill("checking"))
+        status_w.update(pill("testing"))
         info_w.update("[#e0af68]sending test…[/]")
         ok, detail = await test_channel(cid)
-        status_w.update(_pill("ok" if ok else "error"))
+        if not self.is_attached:
+            return
+        status_w.update(pill("sent" if ok else "error"))
         info_w.update(f"[#9ece6a]✓ {detail} — check your device[/]" if ok
                       else f"[#f7768e]✗ {detail}[/]")
         if ok:
@@ -427,13 +414,25 @@ class NotifySetupScreen(Screen):
         cid, name, _ = CHANNELS[i]
         if cid == "desktop" or not channel_configured(self._creds, cid):
             return
-        creds = dict(self._creds)
-        creds.pop(cid, None)
-        config.write_credentials(creds)
-        enabled = [c for c in self._enabled() if c != cid]
-        await set_channels(enabled)
-        self._refresh_all()
-        self.notify(f"{name} credentials removed", severity="warning")
+
+        async def _after(yes: bool | None) -> None:
+            if not yes:
+                return
+            failed = []
+            for k in _REVOKE_KEYS[cid]:
+                ok, err = await services.config_unset(k)
+                if not ok:
+                    failed.append(f"{k}: {err or 'failed'}")
+            ok, err = await set_channels([c for c in self._enabled() if c != cid])
+            if not ok:
+                failed.append(f"notify.channels: {err or 'failed'}")
+            self._refresh_all()
+            if failed:
+                self.notify("; ".join(failed)[:200], severity="error", timeout=8)
+            else:
+                self.notify(f"{name} credentials removed", severity="warning")
+
+        self.app.push_screen(ConfirmScreen(f"Remove {name} credentials?", default_no=True), _after)
 
     async def _toggle_schedule(self) -> None:
         installed = bool(self._sched and self._sched.get("installed"))
@@ -458,7 +457,7 @@ class NotifySetupScreen(Screen):
 #  Channel edit form
 # ════════════════════════════════════════════════════════════════════════════
 
-class ChannelEditScreen(Screen[dict | None]):
+class ChannelEditScreen(FormGuard, Screen[dict | None]):
     """One form per channel. Saving writes credentials, enables the channel
     and hands `{"test_channel": cid}` back so the parent fires a test."""
 
@@ -497,8 +496,9 @@ class ChannelEditScreen(Screen[dict | None]):
                                 classes="form-input")
                 with Horizontal(classes="form-row"):
                     yield Label("Token:", classes="form-label")
-                    yield Input(n.get("token") or "", id="in-ntfy-token", password=True,
-                                placeholder="(optional) tk_… for protected topics",
+                    yield Input(id="in-ntfy-token", password=True,
+                                placeholder=services.secret_placeholder(
+                                    n.get("token"), "(optional) tk_… for protected topics"),
                                 classes="form-input")
             elif self._cid == "telegram":
                 t = self._creds.get("telegram") or {}
@@ -509,8 +509,10 @@ class ChannelEditScreen(Screen[dict | None]):
                     classes="form-section")
                 with Horizontal(classes="form-row"):
                     yield Label("Bot token:", classes="form-label")
-                    yield Input(t.get("bot_token") or "", id="in-tg-token", password=True,
-                                placeholder="123456789:AAH…", classes="form-input")
+                    yield Input(id="in-tg-token", password=True,
+                                placeholder=services.secret_placeholder(
+                                    t.get("bot_token"), "123456789:AAH…"),
+                                classes="form-input")
                 with Horizontal(classes="form-row"):
                     yield Label("Chat id:", classes="form-label")
                     yield Input(str(t.get("chat_id") or ""), id="in-tg-chat",
@@ -527,8 +529,9 @@ class ChannelEditScreen(Screen[dict | None]):
                     classes="form-section")
                 with Horizontal(classes="form-row"):
                     yield Label("URL:", classes="form-label")
-                    yield Input(w.get("url") or "", id="in-wh-url", password=True,
-                                placeholder="https://hooks.slack.com/services/…",
+                    yield Input(id="in-wh-url", password=True,
+                                placeholder=services.secret_placeholder(
+                                    w.get("url"), "https://hooks.slack.com/services/…"),
                                 classes="form-input")
             yield Static("", classes="form-spacer")
             with Horizontal(classes="form-actions"):
@@ -536,6 +539,9 @@ class ChannelEditScreen(Screen[dict | None]):
                 yield Button("Back  [Esc]", id="btn-back")
         yield StatusBar()
         yield Footer()
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self.snapshot_form)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
@@ -549,48 +555,71 @@ class ChannelEditScreen(Screen[dict | None]):
             await self._detect_chat()
 
     async def _detect_chat(self) -> None:
-        token = self.query_one("#in-tg-token", Input).value.strip()
+        # Blank field → the stored token (never shown in the Input).
+        token = (self.query_one("#in-tg-token", Input).value.strip()
+                 or (self._creds.get("telegram") or {}).get("bot_token") or "")
         out = self.query_one("#tg-detect-result", Static)
         if not token:
             out.update("[#f7768e]paste the bot token first[/]")
             return
         out.update("[#e0af68]asking Telegram…[/]")
         chat_id, detail = await detect_telegram_chat_id(token)
+        if not self.is_attached:
+            return
         if chat_id:
             self.query_one("#in-tg-chat", Input).value = chat_id
             out.update(f"[#9ece6a]✓ {detail}[/]")
         else:
             out.update(f"[#f7768e]✗ {detail}[/]")
 
+    @single_save
     async def action_save(self) -> None:
-        creds = dict(self._creds)
-        entry: dict[str, Any] = {}
+        stored = self._creds.get(self._cid) or {}
+        # (key, value, secret, unset). A blank secret field means "keep the
+        # stored one", so it produces no write at all.
+        writes: list[tuple[str, str, bool, bool]] = []
         if self._cid == "ntfy":
             topic = self.query_one("#in-ntfy-topic", Input).value.strip()
             if not topic:
                 self.notify("topic is required", severity="error")
                 return
-            entry["topic"] = topic
-            if url := self.query_one("#in-ntfy-url", Input).value.strip():
-                entry["url"] = url
+            if topic != (stored.get("topic") or ""):
+                # The topic is effectively a secret — keep it out of argv.
+                writes.append(("ntfy.topic", topic, True, False))
+            url = self.query_one("#in-ntfy-url", Input).value.strip()
+            if url != (stored.get("url") or ""):
+                writes.append(("ntfy.url", url, False, not url))
             if tok := self.query_one("#in-ntfy-token", Input).value.strip():
-                entry["token"] = tok
+                writes.append(("ntfy.token", tok, True, False))
         elif self._cid == "telegram":
             tok = self.query_one("#in-tg-token", Input).value.strip()
             chat = self.query_one("#in-tg-chat", Input).value.strip()
-            if not tok or not chat:
+            if (not tok and not stored.get("bot_token")) or not chat:
                 self.notify("bot token and chat id are both required (use Detect)",
                             severity="error")
                 return
-            entry = {"bot_token": tok, "chat_id": chat}
+            if tok:
+                writes.append(("telegram.bot_token", tok, True, False))
+            if chat != str(stored.get("chat_id") or ""):
+                writes.append(("telegram.chat_id", chat, False, False))
         elif self._cid == "webhook":
             url = self.query_one("#in-wh-url", Input).value.strip()
-            if not url.startswith("http"):
+            if not url and not stored.get("url"):
                 self.notify("URL must start with http(s)://", severity="error")
                 return
-            entry = {"url": url}
-        creds[self._cid] = entry
-        config.write_credentials(creds)
+            if url:
+                if not url.startswith("http"):
+                    self.notify("URL must start with http(s)://", severity="error")
+                    return
+                writes.append(("webhook.url", url, True, False))
+        for key, value, secret, unset in writes:
+            if unset:
+                ok, err = await services.config_unset(key)
+            else:
+                ok, err = await services.config_set(key, value, secret=secret)
+            if not ok:
+                self.notify(f"{key}: {err or 'failed'}", severity="error", timeout=8)
+                return
         notify = config.read_global_config().get("notify", {}) or {}
         enabled = [str(c) for c in (notify.get("channels") or [])]
         if self._cid not in enabled:
@@ -598,13 +627,15 @@ class ChannelEditScreen(Screen[dict | None]):
             if not ok:
                 self.notify(f"saved credentials, but could not enable: {err}",
                             severity="error", timeout=8)
-                self.dismiss({})
+                if self.is_attached:
+                    self.dismiss({})
                 return
         self.notify(f"{self._name} saved and enabled — running runs pick it up within ~5 s",
                     severity="information")
-        self.dismiss({"test_channel": self._cid})
+        if self.is_attached:
+            self.dismiss({"test_channel": self._cid})
 
-    def action_go_back(self) -> None:
+    def _leave(self) -> None:
         self.dismiss(None)
 
 
@@ -612,7 +643,7 @@ class ChannelEditScreen(Screen[dict | None]):
 #  Rules form
 # ════════════════════════════════════════════════════════════════════════════
 
-class RulesEditScreen(Screen[dict | None]):
+class RulesEditScreen(FormGuard, Screen[dict | None]):
     TITLE = "xrun — notification rules"
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
@@ -655,42 +686,48 @@ class RulesEditScreen(Screen[dict | None]):
         yield StatusBar()
         yield Footer()
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(self.snapshot_form)
+
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-save":
             await self.action_save()
         elif event.button.id == "btn-back":
             self.action_go_back()
 
+    @single_save
     async def action_save(self) -> None:
-        rs = self.query_one("#preset-radio", RadioSet)
+        rs =self.query_one("#preset-radio", RadioSet)
         pressed = (rs.pressed_button.id if rs.pressed_button else None) or "preset-custom"
         pid = pressed[len("preset-"):]
-        errors: list[str] = []
-        if pid != "custom":
-            pats = next(p[2] for p in PRESETS if p[0] == pid)
-            ok, err = await _config_set("notify.events", ",".join(pats))
-            if not ok:
-                errors.append(f"events: {err}")
+        # Validate every field before the first write.
         raw_pct = self.query_one("#in-pct", Input).value
         pct = [p.strip() for p in raw_pct.split(",") if p.strip()]
         if not all(p.isdigit() and 0 < int(p) < 100 for p in pct):
             self.notify("warn % must be whole numbers between 1 and 99", severity="error")
             return
-        ok, err = await _config_set("notify.cost_warn_pct", ",".join(pct))
-        if not ok:
-            errors.append(f"cost_warn_pct: {err}")
         stale = self.query_one("#in-stale", Input).value.strip()
         if not stale.isdigit() or int(stale) < 1:
             self.notify("stale minutes must be a whole number ≥ 1", severity="error")
             return
-        ok, err = await _config_set("notify.heartbeat_stale_min", stale)
+        errors: list[str] = []
+        if pid != "custom":
+            pats = next(p[2] for p in PRESETS if p[0] == pid)
+            ok, err = await services.config_set("notify.events", ",".join(pats))
+            if not ok:
+                errors.append(f"events: {err}")
+        ok, err = await services.config_set("notify.cost_warn_pct", ",".join(pct))
+        if not ok:
+            errors.append(f"cost_warn_pct: {err}")
+        ok, err = await services.config_set("notify.heartbeat_stale_min", stale)
         if not ok:
             errors.append(f"heartbeat_stale_min: {err}")
         if errors:
             self.notify("; ".join(errors)[:200], severity="error", timeout=10)
             return
         self.notify("rules saved", severity="information")
-        self.dismiss({})
+        if self.is_attached:
+            self.dismiss({})
 
-    def action_go_back(self) -> None:
+    def _leave(self) -> None:
         self.dismiss(None)

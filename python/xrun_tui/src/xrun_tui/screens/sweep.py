@@ -14,6 +14,8 @@ from xrun_tui.widgets.title_bar import TitleBar
 
 from xrun_tui.utils import (
     cost,
+    is_better,
+    metric_direction,
     rel_time,
     status_dot_for,
     status_label_for,
@@ -34,6 +36,26 @@ def _group_key(run: dict) -> str:
     return name.split("-")[0] or name[:16] or "other"
 
 
+def pick_best(
+    runs: list[dict],
+    latest_metrics: dict,
+    key: str,
+    direction: str,
+) -> tuple[str, float | None]:
+    """Best run for `key` among `runs`: (run_id, value), ("", None) if none.
+
+    `latest_metrics` maps run id -> (key, value); NaN values never win.
+    """
+    best_id, best_val = "", None
+    for r in runs:
+        mk = latest_metrics.get(r["id"])
+        if not mk or mk[0] != key or mk[1] != mk[1]:
+            continue
+        if best_val is None or is_better(mk[1], best_val, direction):
+            best_id, best_val = r["id"], mk[1]
+    return best_id, best_val
+
+
 # ── Screen ────────────────────────────────────────────────────────────────────
 
 class SweepScreen(LiveScreen):
@@ -47,12 +69,19 @@ class SweepScreen(LiveScreen):
         Binding("j,down",    "cursor_down", "Down",    show=False),
         Binding("k,up",      "cursor_up",   "Up",      show=False),
         Binding("ctrl+r,f5", "refresh",     "Refresh"),
+        Binding("m",         "flip_direction", "Min/max"),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         # None entries mark group-header rows (not selectable)
         self._run_ids: list[str | None] = []
+        # Group label per table row (parallel to _run_ids), for the `m` key
+        self._row_groups: list[str] = []
+        # Groups whose min/max was flipped by the user this session (rule 1)
+        self._flipped: set[str] = set()
+        # Group label -> its dominant metric key ("" when the group has none)
+        self._group_keys: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield TitleBar("sweep")
@@ -128,6 +157,18 @@ class SweepScreen(LiveScreen):
             latest_metrics = await app.db.latest_metrics_for_runs(all_run_ids)
         except Exception:
             latest_metrics = {}
+        # Whole-history min/max per run and key: "best" is over the history,
+        # like `xrun diff`, not the last value.
+        try:
+            extremes = await app.db.metric_extremes_for_runs(all_run_ids)
+        except Exception:
+            extremes = {}
+
+        if not self.is_mounted:
+            return
+
+        # Per-run value shown and ranked for the group's key; filled per group
+        group_values: dict[str, tuple[str, float]] = {}
 
         for label, runs in groups.items():
             # Count which metric key appears most often across runs in group
@@ -138,19 +179,28 @@ class SweepScreen(LiveScreen):
                     key_counter[mk[0]] += 1
             dominant_key = key_counter.most_common(1)[0][0] if key_counter else ""
 
-            best_run_id = ""
-            best_val: float | None = None
+            # Rule 2 (early_stop) is skipped: run rows carry only a manifest
+            # path and the TUI has no YAML dependency. Name rule + `m` flip.
+            direction = metric_direction(dominant_key) if dominant_key else "max"
+            if label in self._flipped:
+                direction = "max" if direction == "min" else "min"
+            ranked: dict[str, tuple[str, float]] = {}
             for r in runs:
-                mk = latest_metrics.get(r["id"])
-                if mk and mk[0] == dominant_key:
-                    if best_val is None or mk[1] > best_val:
-                        best_val = mk[1]
-                        best_run_id = r["id"]
+                lo_hi = extremes.get(r["id"], {}).get(dominant_key)
+                if lo_hi:
+                    ranked[r["id"]] = (
+                        dominant_key, lo_hi[0] if direction == "min" else lo_hi[1]
+                    )
+            group_values.update(ranked)
+            best_run_id, best_val = pick_best(
+                runs, ranked, dominant_key, direction
+            )
 
             group_meta[label] = {
                 "key": dominant_key,
                 "best_run_id": best_run_id,
                 "best_val": best_val,
+                "direction": direction,
             }
 
         if not self.is_mounted:
@@ -159,12 +209,20 @@ class SweepScreen(LiveScreen):
         # ── Preserve cursor ───────────────────────────────────────────────────
         old_run_ids = self._run_ids
         selected_id: str | None = None
+        # On a group header there is no run id; keep the group instead, or
+        # `clear()` drops the cursor to row 0 and the next `m` flips the
+        # first group rather than the one the user was on.
+        selected_header: str | None = None
         if old_run_ids and table.cursor_row < len(old_run_ids):
             candidate = old_run_ids[table.cursor_row]
             if candidate is not None:
                 selected_id = candidate
+            elif table.cursor_row < len(self._row_groups):
+                selected_header = self._row_groups[table.cursor_row]
 
         self._run_ids = []
+        self._row_groups = []
+        self._group_keys = {label: meta["key"] for label, meta in group_meta.items()}
         table.clear()
 
         n_sweeps = len([g for g in groups if g != "other"])
@@ -176,8 +234,10 @@ class SweepScreen(LiveScreen):
             best_val = meta["best_val"]
 
             # Group header row
+            arrow = "↓" if meta["direction"] == "min" else "↑"
+            manual = " (flipped)" if label in self._flipped else ""
             best_str = (
-                f"best {dominant_key}: {best_val:.4g}"
+                f"best {arrow} {dominant_key}: {best_val:.4g}{manual}"
                 if dominant_key and best_val is not None
                 else ""
             )
@@ -193,12 +253,16 @@ class SweepScreen(LiveScreen):
                 Text(""), Text(""), Text(""), Text(""), Text(""), Text(""),
             )
             self._run_ids.append(None)  # not selectable
+            self._row_groups.append(label)
 
             # Child rows
             for r in runs:
                 rid = r["id"]
                 self._run_ids.append(rid)
-                mk = latest_metrics.get(rid)
+                self._row_groups.append(label)
+                # The group's best value when the run has the group's key
+                # (what the ranking used), else the run's own latest point.
+                mk = group_values.get(rid) or latest_metrics.get(rid)
                 metric_key_str = mk[0][:16] if mk else ""
                 metric_val_str = f"{mk[1]:.4g}" if mk else "—"
 
@@ -217,6 +281,11 @@ class SweepScreen(LiveScreen):
         # Restore cursor
         if selected_id and selected_id in self._run_ids:
             table.move_cursor(row=self._run_ids.index(selected_id))
+        elif selected_header is not None:
+            for i, (rid, label) in enumerate(zip(self._run_ids, self._row_groups)):
+                if rid is None and label == selected_header:
+                    table.move_cursor(row=i)
+                    break
 
         # Stats bar
         summary = (
@@ -250,6 +319,21 @@ class SweepScreen(LiveScreen):
             await self.app.push_screen(RunDetailScreen(run_id))
 
     async def action_refresh(self) -> None:
+        await self._refresh()
+
+    async def action_flip_direction(self) -> None:
+        """Flip best=min/max for the group under the cursor (this session)."""
+        row = self.query_one(DataTable).cursor_row
+        if row >= len(self._row_groups):
+            return
+        label = self._row_groups[row]
+        if not self._group_keys.get(label):
+            # Nothing to rank: a silent flip would only surface later, once
+            # the group gets a metric, as an unexplained reversed "best".
+            self.notify(f"No metric in {label} — nothing to flip",
+                        severity="warning")
+            return
+        self._flipped.symmetric_difference_update({label})
         await self._refresh()
 
     def action_go_back(self) -> None:

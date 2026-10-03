@@ -51,8 +51,8 @@ def _safe_id(key: str) -> str:
 class PatchLaunchScreen(ModalScreen[bool | None]):
     BINDINGS = [
         Binding("escape",      "dismiss_none", show=False),
-        Binding("ctrl+s",      "action_submit", show=False),
-        Binding("ctrl+enter",  "action_submit", show=False),
+        Binding("ctrl+s",      "submit", show=False),
+        Binding("ctrl+enter",  "submit", show=False),
     ]
 
     DEFAULT_CSS = """

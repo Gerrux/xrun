@@ -79,7 +79,8 @@ class MetricsView(Vertical):
     """
 
     BINDINGS = [
-        Binding("g", "toggle_group",  "Group"),
+        # Not lowercase g: the app-level chord leader is priority and wins.
+        Binding("G", "toggle_group",  "Group"),
         Binding("L", "toggle_log",    "Log-y"),
         Binding("M", "toggle_smooth", "Smooth"),
         Binding("C", "toggle_lines",  "Lines"),

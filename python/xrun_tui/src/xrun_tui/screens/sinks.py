@@ -13,18 +13,16 @@ write a docs page.
 """
 from __future__ import annotations
 
-import asyncio
-import os
-import subprocess
-from typing import Any
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, Rule, Static
 
-from xrun_tui import config
+from xrun_tui import config, services
+from xrun_tui.screens.confirm import ConfirmScreen
+from xrun_tui.widgets.cards import CardCursor, pill
+from xrun_tui.widgets.form import FormGuard, single_save
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
@@ -43,21 +41,6 @@ _BRAND = {
     "wandb":  "#ffbe0b",
     "comet":  "#2bd4f6",
 }
-
-
-def _pill(state: str) -> str:
-    """state ∈ {empty, paused, checking, ok, error, disabled}."""
-    if state == "checking":
-        return "[#1a1b26 on #e0af68] CHECK [/]"
-    if state == "ok":
-        return "[#1a1b26 on #9ece6a] READY [/]"
-    if state == "error":
-        return "[#c0caf5 on #f7768e] ERROR [/]"
-    if state == "paused":
-        return "[#1a1b26 on #7aa2f7] PAUSED [/]"
-    if state == "disabled":
-        return "[#c0caf5 on #414868] v0.8 [/]"
-    return "[#c0caf5 on #414868] EMPTY [/]"
 
 
 def _read_state() -> tuple[dict, list[str]]:
@@ -90,34 +73,34 @@ def _sink_configured(creds: dict, sid: str) -> bool:
     return False
 
 
-def _set_metrics_sinks(sinks: list[str]) -> None:
-    """Persist the `metrics.sinks` list back to config.toml.
+# Credential keys each sink owns — what Revoke clears.
+_REVOKE_KEYS = {
+    "mlflow": ("mlflow.token", "mlflow.username", "mlflow.password"),
+    "wandb":  ("wandb.api_key",),
+}
 
-    We shell out to `xrun config set metrics.sinks "<csv>"` rather than
-    editing the TOML directly: it's the one path that already knows how
-    to coerce the comma-separated input into the array shape Rust expects.
 
-    Resolves the binary via PATH. On Windows we still pass the plain name
-    (`xrun`) — `_winapi.CreateProcess` honours PATHEXT, so the `.exe`
-    suffix is found automatically.
+async def _set_metrics_sinks(sinks: list[str]) -> tuple[bool, str]:
+    """Persist the `metrics.sinks` list via `xrun config set metrics.sinks`.
+
+    The CLI is the only config writer; it also coerces the comma-separated
+    input into the array shape Rust expects. Returns (ok, error text).
     """
-    csv = ",".join(sinks)
-    subprocess.run(
-        ["xrun", "config", "set", "metrics.sinks", csv],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    return await services.config_set("metrics.sinks", ",".join(sinks))
 
 
 # ════════════════════════════════════════════════════════════════════════════
 #  Overview screen
 # ════════════════════════════════════════════════════════════════════════════
 
-class SinksScreen(Screen):
+class SinksScreen(CardCursor, Screen):
     """List of metric/log sinks. Mirrors Vendors but for tracking servers."""
 
     TITLE = "xrun — sinks"
+    _CARD_PREFIX = "srow"
+    _CARD_COUNT = len(_SINKS)
+    # Same class as Vendors (CardCursor's default): it is the one both
+    # stylesheets style; the old "selected" had no rule, so no cursor showed.
     BINDINGS = [
         Binding("escape,q",   "go_back",  "Back"),
         Binding("enter,e",    "edit",     "Edit"),
@@ -152,7 +135,7 @@ class SinksScreen(Screen):
                             f"[bold #c0caf5]{name}[/]  [#565f89]{desc}[/]",
                             classes="vendor-card-title",
                         )
-                        yield Static(_pill(state),
+                        yield Static(pill(state),
                                      id=f"sstatus-{i}", classes="vendor-card-pill")
                     with Horizontal(classes="vendor-card-foot"):
                         yield Static(
@@ -198,23 +181,10 @@ class SinksScreen(Screen):
             return "[#9ece6a]✓ active[/]  [#565f89]entity probed on first launch[/]"
         return ""
 
-    def _highlight(self, idx: int) -> None:
-        for i in range(len(_SINKS)):
-            row = self.query_one(f"#srow-{i}")
-            row.set_class(i == idx, "selected")
-
     def on_mount(self) -> None:
         self._highlight(self._cursor)
 
-    # ── navigation ───────────────────────────────────────────────────────
-    def action_next(self) -> None:
-        self._cursor = (self._cursor + 1) % len(_SINKS)
-        self._highlight(self._cursor)
-
-    def action_prev(self) -> None:
-        self._cursor = (self._cursor - 1) % len(_SINKS)
-        self._highlight(self._cursor)
-
+    # ── navigation (j/k: CardCursor) ─────────────────────────────────────
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
@@ -225,9 +195,11 @@ class SinksScreen(Screen):
             self.notify(f"{name} arrives in v0.8 — not editable yet",
                         severity="warning")
             return
+        # `push_screen` returns once the form is mounted, not when it closes:
+        # the cards are re-read in `on_screen_resume`.
         await self.app.push_screen(SinkEditScreen(sid, name))
-        # Re-read state after edit returns
-        self._creds, self._sinks_list = _read_state()
+
+    def on_screen_resume(self) -> None:
         self._refresh_cards()
 
     async def action_test(self) -> None:
@@ -241,68 +213,36 @@ class SinksScreen(Screen):
         idx = self._cursor
         status_w = self.query_one(f"#sstatus-{idx}", Static)
         info_w   = self.query_one(f"#sinfo-{idx}",   Static)
-        status_w.update(_pill("checking"))
+        status_w.update(pill("checking"))
         info_w.update("[#e0af68]probing…[/]")
-        try:
-            ok, detail = await self._probe(sid)
-            status_w.update(_pill("ok" if ok else "error"))
-            info_w.update(
-                f"[#9ece6a]✓ {detail}[/]" if ok
-                else f"[#f7768e]✗ {detail}[/]"
-            )
-        except Exception as exc:
-            status_w.update(_pill("error"))
-            info_w.update(f"[#f7768e]{exc}[/]")
-
-    async def _probe(self, sid: str) -> tuple[bool, str]:
-        """Run `xrun config probe --vendor <sid>` with the stored creds piped
-        in via env vars (so the key never lands in the process argv)."""
-        env = {}
-        if sid == "mlflow":
-            m = self._creds.get("mlflow", {})
-            if m.get("token"):
-                env["XRUN_PROBE_MLFLOW_TOKEN"] = m["token"]
-            if m.get("username") and m.get("password"):
-                env["XRUN_PROBE_MLFLOW_USERNAME"] = m["username"]
-                env["XRUN_PROBE_MLFLOW_PASSWORD"] = m["password"]
-            url = config.read_global_config().get("mlflow", {}).get("url", "")
-            extra = ["--mlflow-url", url] if url else []
-        elif sid == "wandb":
-            key = self._creds.get("wandb", {}).get("api_key", "")
-            if key:
-                env["XRUN_PROBE_WANDB_KEY"] = key
-            extra = []
-        else:
-            return False, "unsupported sink"
-
-        proc = await asyncio.create_subprocess_exec(
-            "xrun", "config", "probe", "--vendor", sid, *extra,
-            env={**os.environ, **env},
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        ok, detail = await services.probe_sink(
+            sid, self._creds, config.read_global_config())
+        if not self.is_attached:
+            return
+        status_w.update(pill("ok" if ok else "error"))
+        info_w.update(
+            f"[#9ece6a]✓ {detail}[/]" if ok
+            else f"[#f7768e]✗ {detail}[/]"
         )
-        out, err = await proc.communicate()
-        try:
-            import json
-            obj = json.loads(out.decode("utf-8"))
-            return bool(obj.get("ok")), str(obj.get("detail", ""))
-        except Exception:
-            return False, (err.decode("utf-8").strip()
-                           or "probe returned non-JSON")
 
-    def action_toggle_default(self) -> None:
+    async def action_toggle_default(self) -> None:
         sid, name, _, enabled = _SINKS[self._cursor]
         if not enabled:
             return
         if sid in self._sinks_list:
-            self._sinks_list = [s for s in self._sinks_list if s != sid]
+            new = [s for s in self._sinks_list if s != sid]
             msg = f"{name} removed from default sinks"
         else:
-            self._sinks_list.append(sid)
+            new = [*self._sinks_list, sid]
             msg = f"{name} added to default sinks"
-        _set_metrics_sinks(self._sinks_list)
+        ok, err = await _set_metrics_sinks(new)
+        # On failure _refresh_cards re-reads the real state, so the card
+        # does not show a change that never reached config.toml.
         self._refresh_cards()
-        self.notify(msg, severity="information")
+        if ok:
+            self.notify(msg, severity="information")
+        else:
+            self.notify(f"metrics.sinks: {err or 'failed'}", severity="error")
 
     async def action_revoke(self) -> None:
         sid, name, _, enabled = _SINKS[self._cursor]
@@ -310,25 +250,32 @@ class SinksScreen(Screen):
             return
         if not _sink_configured(self._creds, sid):
             return
-        # No confirm modal here — Vendors uses one but for simplicity the
-        # Sinks screen relies on the user noticing the EMPTY pill after
-        # revoke; we can add a confirm in slice 5 if it bites.
-        if sid == "mlflow":
-            self._creds.setdefault("mlflow", {})
-            for k in ("token", "username", "password"):
-                self._creds["mlflow"].pop(k, None)
-        elif sid == "wandb":
-            self._creds.setdefault("wandb", {}).pop("api_key", None)
-        config.write_credentials(self._creds)
-        self._refresh_cards()
-        self.notify(f"{name} credentials revoked", severity="warning")
+
+        async def _after(yes: bool | None) -> None:
+            if not yes:
+                return
+            failed = []
+            for k in _REVOKE_KEYS[sid]:
+                ok, err = await services.config_unset(k)
+                if not ok:
+                    failed.append(f"{k}: {err or 'failed'}")
+            self._refresh_cards()
+            if failed:
+                self.notify("; ".join(failed), severity="error")
+            else:
+                self.notify(f"{name} credentials revoked", severity="warning")
+
+        self.app.push_screen(
+            ConfirmScreen(f"Revoke {name} credentials?", default_no=True), _after)
 
     # ── refresh after a state change ─────────────────────────────────────
     def _refresh_cards(self) -> None:
+        if not self.is_attached:
+            return  # the user left while the CLI write was still running
         self._creds, self._sinks_list = _read_state()
         for i, (sid, _, _, enabled) in enumerate(_SINKS):
             state = self._compute_state(sid, enabled)
-            self.query_one(f"#sstatus-{i}", Static).update(_pill(state))
+            self.query_one(f"#sstatus-{i}", Static).update(pill(state))
             self.query_one(f"#sinfo-{i}",   Static).update(
                 self._foot_text(sid, state, enabled)
             )
@@ -338,7 +285,7 @@ class SinksScreen(Screen):
 #  Edit screen
 # ════════════════════════════════════════════════════════════════════════════
 
-class SinkEditScreen(Screen):
+class SinkEditScreen(FormGuard, Screen):
     """Per-sink credential editor. MLflow has a longer form (url + auth);
     WandB is a single api_key field."""
 
@@ -374,8 +321,9 @@ class SinkEditScreen(Screen):
                              classes="form-section")
                 with Horizontal(classes="form-row"):
                     yield Label("Token:", classes="form-label")
-                    yield Input(m.get("token") or "", id="input-mlflow-token",
-                                password=True, placeholder="(optional Bearer token)",
+                    yield Input(id="input-mlflow-token", password=True,
+                                placeholder=services.secret_placeholder(
+                                    m.get("token"), "(optional Bearer token)"),
                                 classes="form-input")
                 with Horizontal(classes="form-row"):
                     yield Label("Username:", classes="form-label")
@@ -385,10 +333,18 @@ class SinkEditScreen(Screen):
                                 classes="form-input")
                 with Horizontal(classes="form-row"):
                     yield Label("Password:", classes="form-label")
-                    yield Input(m.get("password") or "",
-                                id="input-mlflow-pass",
-                                password=True, placeholder="…paired with username",
+                    yield Input(id="input-mlflow-pass", password=True,
+                                placeholder=services.secret_placeholder(
+                                    m.get("password"), "…paired with username"),
                                 classes="form-input")
+                with Horizontal(classes="form-row"):
+                    yield Label("Default experiment:", classes="form-label")
+                    yield Input(
+                        self._global.get("mlflow", {}).get(
+                            "experiment_default", "") or "",
+                        id="input-mlflow-exp",
+                        placeholder="(experiment name when a run sets none)",
+                        classes="form-input")
             elif self._sid == "wandb":
                 w = self._creds.get("wandb", {})
                 yield Static("[bold #bb9af7]API key[/] "
@@ -396,9 +352,9 @@ class SinkEditScreen(Screen):
                              classes="form-section")
                 with Horizontal(classes="form-row"):
                     yield Label("Key:", classes="form-label")
-                    yield Input(w.get("api_key") or "", id="input-wandb-key",
-                                password=True,
-                                placeholder="wandb_v1_…",
+                    yield Input(id="input-wandb-key", password=True,
+                                placeholder=services.secret_placeholder(
+                                    w.get("api_key"), "wandb_v1_…"),
                                 classes="form-input")
                 yield Static(
                     "[#565f89]Tip:[/] entity is probed automatically on first "
@@ -413,46 +369,94 @@ class SinkEditScreen(Screen):
         yield StatusBar()
         yield Footer()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def on_mount(self) -> None:
+        self.call_after_refresh(self.snapshot_form)
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-save":
-            self.action_save()
+            await self.action_save()
         elif event.button.id == "btn-back":
             self.action_go_back()
 
-    def action_save(self) -> None:
-        creds = dict(self._creds)
+    @single_save
+    async def action_save(self) -> None:
+        # (key, value, secret, unset) — blank secret means "keep", so it is
+        # simply not in the list.
+        writes: list[tuple[str, str, bool, bool]] = []
         if self._sid == "mlflow":
             url   = self.query_one("#input-mlflow-url",   Input).value.strip()
             token = self.query_one("#input-mlflow-token", Input).value.strip()
             user  = self.query_one("#input-mlflow-user",  Input).value.strip()
             pwd   = self.query_one("#input-mlflow-pass",  Input).value.strip()
-            entry: dict[str, Any] = {}
+            exp   = self.query_one("#input-mlflow-exp",   Input).value.strip()
+            if url and not url.lower().startswith(("http://", "https://")):
+                self.notify("MLflow URL must start with http:// or https://",
+                            severity="error")
+                return
+            old_url = self._global.get("mlflow", {}).get("url", "") or ""
+            if url and url != old_url:
+                writes.append(("mlflow.url", url, False, False))
+            elif not url and old_url:
+                writes.append(("mlflow.url", "", False, True))
             if token:
-                entry["token"] = token
-            if user:
-                entry["username"] = user
+                writes.append(("mlflow.token", token, True, False))
+            old_user = self._creds.get("mlflow", {}).get("username") or ""
+            if user and user != old_user:
+                writes.append(("mlflow.username", user, False, False))
+            elif not user and old_user:
+                writes.append(("mlflow.username", "", False, True))
             if pwd:
-                entry["password"] = pwd
-            creds["mlflow"] = entry
-            # URL lives in global config, not credentials. Shell out to
-            # `xrun config set mlflow.url …` so we get the schema-driven
-            # type coercion (TOML can't store nullable strings the way
-            # Python would).
-            if url:
-                subprocess.run(
-                    ["xrun", "config", "set", "mlflow.url", url],
-                    check=False, capture_output=True, text=True,
-                )
+                writes.append(("mlflow.password", pwd, True, False))
+            old_exp = self._global.get("mlflow", {}).get(
+                "experiment_default", "") or ""
+            if exp != old_exp:
+                if exp:
+                    writes.append(("mlflow.experiment_default", exp, False, False))
+                else:
+                    writes.append(("mlflow.experiment_default", "", False, True))
         elif self._sid == "wandb":
             key = self.query_one("#input-wandb-key", Input).value.strip()
-            entry = {}
             if key:
-                entry["api_key"] = key
-            creds["wandb"] = entry
-        config.write_credentials(creds)
-        self._creds = creds
-        self.notify(f"{self._sname} credentials saved",
+                writes.append(("wandb.api_key", key, True, False))
+
+        saved = 0
+        for k, v, secret, unset in writes:
+            if unset:
+                ok, err = await services.config_unset(k)
+            else:
+                ok, err = await services.config_set(k, v, secret=secret)
+            if not ok:
+                self.notify(f"{k}: {err or 'failed'}"
+                            + (f" (saved {saved} before it)" if saved else ""),
+                            severity="error")
+                self._creds = config.read_credentials()
+                self._global = config.read_global_config()
+                return
+            saved += 1
+        self._creds = config.read_credentials()
+        self._global = config.read_global_config()
+        if not self.is_attached:
+            return  # the user left while the CLI writes were running
+        self._reset_secret_inputs()
+        self.snapshot_form()
+        self.notify(f"{self._sname}: saved {saved}" if saved
+                    else f"{self._sname}: nothing to change",
                     severity="information")
 
-    def action_go_back(self) -> None:
-        self.app.pop_screen()
+    def _reset_secret_inputs(self) -> None:
+        """After a save: clear the secret fields and show the new stored tail
+        in their placeholders."""
+        m = self._creds.get("mlflow") or {}
+        fields = {
+            "#input-mlflow-token": (m.get("token"), "(optional Bearer token)"),
+            "#input-mlflow-pass": (m.get("password"), "…paired with username"),
+            "#input-wandb-key": ((self._creds.get("wandb") or {}).get("api_key"),
+                                 "wandb_v1_…"),
+        }
+        for sel, (stored, empty) in fields.items():
+            try:
+                inp = self.query_one(sel, Input)
+            except Exception:
+                continue  # the other sink's form
+            inp.value = ""
+            inp.placeholder = services.secret_placeholder(stored, empty)

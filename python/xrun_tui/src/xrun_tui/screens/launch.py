@@ -156,8 +156,7 @@ class LaunchScreen(LiveScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:
-            case "btn-launch": self.run_worker(self._do_launch(False),
-                                               exclusive=True)
+            case "btn-launch": self._confirm_launch()
             case "btn-dryrun": self.run_worker(self._do_launch(True),
                                                exclusive=True)
             case "btn-back":   self.action_go_back()
@@ -168,7 +167,30 @@ class LaunchScreen(LiveScreen):
     async def action_launch(self) -> None:
         if isinstance(self.focused, Input):
             return  # Don't fire on Enter inside text inputs
-        await self._do_launch(False)
+        self._confirm_launch()
+
+    def _confirm_launch(self) -> None:
+        # A launch can start a billed instance, so it never fires on a single
+        # keypress: the user confirms the manifest first.
+        manifest_path = self.query_one("#launch-path", Input).value.strip()
+        if not manifest_path:
+            self.notify("Choose a manifest first", severity="warning")
+            return
+        from xrun_tui.screens.confirm import ConfirmScreen
+
+        def _do(confirmed: bool | None) -> None:
+            if confirmed:
+                self.run_worker(self._do_launch(False), exclusive=True)
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Launch {Path(manifest_path).name}?\n"
+                "This may start a billed instance. "
+                "Ctrl+D shows the plan without launching.",
+                default_no=True,
+            ),
+            _do,
+        )
 
     async def _do_launch(self, dry: bool) -> None:
         manifest_path = self.query_one("#launch-path", Input).value.strip()

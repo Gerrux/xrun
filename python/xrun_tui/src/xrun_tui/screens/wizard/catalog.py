@@ -13,7 +13,7 @@ VENDOR_CARDS = [
         "Free notebooks; live logs via MLflow mirror",
         "https://www.kaggle.com/settings/account", True, True),
     ("ssh",    "SSH machine",
-        "Your own server / NAS / VPS over SSH (configure host in Vendors screen)",
+        "Your own server / NAS / VPS over SSH (add hosts later in Vendors (g v) → SSH hosts)",
         "https://www.openssh.com/manual.html", True, False),
     ("runpod", "RunPod",
         "REST + SSH cloud (v0.7)",
