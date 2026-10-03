@@ -46,8 +46,8 @@ class ConfirmSkip(ModalScreen[bool]):
                 markup=True,
             )
             with Horizontal():
-                yield Button("Yes, skip [Y]", id="confirm-yes", variant="warning")
-                yield Button("No, keep editing [N]", id="confirm-no", variant="primary")
+                yield Button("Yes, skip \\[Y]", id="confirm-yes", variant="warning")
+                yield Button("No, keep editing \\[N]", id="confirm-no", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm-yes")

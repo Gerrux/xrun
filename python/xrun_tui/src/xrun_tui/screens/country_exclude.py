@@ -126,8 +126,8 @@ class CountryExcludeScreen(ModalScreen[list[str] | None]):
             with Horizontal(id="cx-buttons"):
                 yield Button("Save  [Ctrl+S]", id="btn-cx-save",
                              variant="primary")
-                yield Button("Reload  [r]",   id="btn-cx-reload")
-                yield Button("Cancel  [Esc]", id="btn-cx-cancel")
+                yield Button("Reload  \\[r]",   id="btn-cx-reload")
+                yield Button("Cancel  \\[Esc]", id="btn-cx-cancel")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -165,7 +165,7 @@ class CountryExcludeScreen(ModalScreen[list[str] | None]):
 
         if not counts:
             status.update(
-                "[#414868]No offers returned — cannot enumerate countries. "
+                "[#565f89]No offers returned — cannot enumerate countries. "
                 "Type codes manually in Settings instead.[/]"
             )
             return

@@ -26,8 +26,8 @@ class ConfirmScreen(ModalScreen[bool]):
         with Vertical(classes="confirm-dialog"):
             yield Static(self._message, classes="confirm-message")
             with Horizontal(classes="confirm-buttons"):
-                yield Button("Yes  [y]", id="btn-yes", variant="primary")
-                yield Button("No  [n]", id="btn-no")
+                yield Button("Yes  \\[y]", id="btn-yes", variant="primary")
+                yield Button("No  \\[n]", id="btn-no")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn-yes")

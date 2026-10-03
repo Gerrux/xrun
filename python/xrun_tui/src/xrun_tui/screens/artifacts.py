@@ -95,7 +95,7 @@ class ArtifactsScreen(Screen):
 
         if not entries:
             summary.update(
-                "[#414868]No artifacts yet —[/] [#7aa2f7]press `a`[/] "
+                "[#565f89]No artifacts yet —[/] [#7aa2f7]press `a`[/] "
                 "[#565f89]to run `xrun pull --artifacts`[/]"
             )
             table.add_row(

@@ -156,7 +156,7 @@ class WizardScreen(Screen):
             pass
         with Horizontal(id="wizard-actions", classes="form-actions"):
             yield Button("Back  [Ctrl+B]", id="btn-back")
-            yield Button("Skip  [Esc]",    id="btn-skip")
+            yield Button("Skip  \\[Esc]",    id="btn-skip")
             yield Button("Next  [Ctrl+N]", id="btn-next", variant="primary")
         yield StatusBar()
         yield Footer()

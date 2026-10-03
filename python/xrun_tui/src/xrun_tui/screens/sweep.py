@@ -56,6 +56,30 @@ def pick_best(
     return best_id, best_val
 
 
+_SWEEP_COLUMNS = (
+    ("dot", " "), ("name", "Name"), ("id", "ID"), ("status", "Status"),
+    ("metric", "Metric"), ("value", "Value"), ("cost", "Cost"),
+    ("when", "When"),
+)
+_PAD = 2  # DataTable cell padding: 1 on each side
+
+
+def fit_sweep_widths(total: int) -> dict[str, int]:
+    """Content widths of the sweep columns so the row fits `total` cells.
+
+    Name takes whatever the fixed columns leave (min 12); on very narrow
+    tables Metric gives up width before Name does.
+    """
+    fixed = {"dot": 1, "id": 8, "status": 15, "metric": 12, "value": 9,
+             "cost": 8, "when": 11}
+    name = total - sum(fixed.values()) - _PAD * len(_SWEEP_COLUMNS)
+    if name < 12:
+        give = min(12 - name, fixed["metric"] - 6)
+        fixed["metric"] -= give
+        name += give
+    return {"name": max(name, 6), **fixed}
+
+
 # ── Screen ────────────────────────────────────────────────────────────────────
 
 class SweepScreen(LiveScreen):
@@ -95,18 +119,28 @@ class SweepScreen(LiveScreen):
     def on_mount(self) -> None:
         self.query_one("#sweep-empty", Static).display = False
         table = self.query_one("#sweep-table", DataTable)
-        table.add_columns(
-            Text(" ",       style="#565f89"),
-            Text("ID",      style="#565f89"),
-            Text("Name",    style="#565f89"),
-            Text("Status",  style="#565f89"),
-            Text("Metric",  style="#565f89"),
-            Text("Value",   style="#565f89"),
-            Text("Cost",    style="#565f89"),
-            Text("When",    style="#565f89"),
-        )
+        # Name comes first of the text columns: group headers live in it
+        # (it is the one column that flexes with the terminal width).
+        widths = fit_sweep_widths(100)
+        for key, label in _SWEEP_COLUMNS:
+            table.add_column(Text(label, style="#565f89"), key=key,
+                             width=widths[key])
         table.focus()
         self.kick(self._refresh)
+
+    def _fit_columns(self) -> None:
+        table = self.query_one("#sweep-table", DataTable)
+        total = table.scrollable_content_region.width
+        if total <= 0:
+            return
+        for key, w in fit_sweep_widths(total).items():
+            table.columns[key].width = w  # type: ignore[index]
+            table.columns[key].auto_width = False  # type: ignore[index]
+        table._require_update_dimensions = True
+        table.refresh(layout=True)
+
+    def on_resize(self, event) -> None:
+        self._fit_columns()
 
     async def _refresh(self) -> None:
         if not self.is_mounted:
@@ -247,6 +281,8 @@ class SweepScreen(LiveScreen):
                 Text(f"{n_runs_str}  ", style="#565f89"),
                 Text(best_str, style="#9ece6a"),
             )
+            header_text.no_wrap = True
+            header_text.overflow = "ellipsis"
             table.add_row(
                 Text(""),
                 header_text,
@@ -263,15 +299,17 @@ class SweepScreen(LiveScreen):
                 # The group's best value when the run has the group's key
                 # (what the ranking used), else the run's own latest point.
                 mk = group_values.get(rid) or latest_metrics.get(rid)
-                metric_key_str = mk[0][:16] if mk else ""
+                metric_key_str = mk[0] if mk else ""
                 metric_val_str = f"{mk[1]:.4g}" if mk else "—"
 
                 table.add_row(
                     status_dot_for(r),
-                    Text("  " + rid[:8],               style="#565f89"),
-                    Text("  " + (r.get("name") or ""), overflow="ellipsis"),
+                    Text("  " + (r.get("name") or ""),
+                         no_wrap=True, overflow="ellipsis"),
+                    Text(rid[:8],                       style="#565f89"),
                     status_label_for(r),
-                    Text(metric_key_str,                style="#bb9af7"),
+                    Text(metric_key_str,                style="#bb9af7",
+                         no_wrap=True, overflow="ellipsis"),
                     Text(metric_val_str,                style="#9ece6a"),
                     Text(cost(r),                       style="#e0af68"),
                     Text(rel_time(r.get("created_at")), style="#565f89"),
@@ -293,7 +331,7 @@ class SweepScreen(LiveScreen):
             f"  [#414868]┊[/]"
             f"  [#7aa2f7]{n_total}[/] [#565f89]total runs[/]"
             f"  [#414868]┊[/]"
-            f"  [#565f89][G] group view in Runs[/]"
+            f"  [#565f89]\\[G] group view in Runs[/]"
         )
         self.query_one("#sweep-summary", Static).update(summary)
 
@@ -302,7 +340,10 @@ class SweepScreen(LiveScreen):
         empty.display = not has_rows
         table.display = has_rows
         if not has_rows:
-            empty.update("[#414868]No runs yet — launch with:  xrun launch <manifest.yaml>[/]")
+            empty.update("[#565f89]No runs yet — launch with:  xrun launch <manifest.yaml>[/]")
+        self._fit_columns()
+        # The table may have just been (un)hidden: fit again after layout.
+        self.call_after_refresh(self._fit_columns)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 

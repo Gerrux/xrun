@@ -101,8 +101,8 @@ class SplashScreen(Screen):
     .splash-step-pending { color: #565f89; }
     #splash-version {
         content-align: center middle;
-        height: 1;
-        color: #414868;
+        height: 3;
+        color: #565f89;
         padding-top: 2;
     }
     """
@@ -137,12 +137,12 @@ class SplashScreen(Screen):
                     with Vertical(id="splash-steps"):
                         for sid, label in self._STEPS:
                             yield Static(
-                                self._format_line("·", "#414868", label, "waiting"),
+                                self._format_line("·", "#565f89", label, "waiting"),
                                 id=f"step-{sid}",
                                 classes="splash-step splash-step-pending",
                             )
                     yield Static(
-                        f"[#414868]xrun[/] [#565f89]v{self._version}[/]",
+                        f"[#565f89]xrun v{self._version}[/]",
                         id="splash-version",
                     )
 
@@ -173,7 +173,7 @@ class SplashScreen(Screen):
             if v and self.is_mounted:
                 self._version = v
                 self.query_one("#splash-version", Static).update(
-                    f"[#414868]xrun[/] [#565f89]v{v}[/]"
+                    f"[#565f89]xrun v{v}[/]"
                 )
         except Exception:
             pass

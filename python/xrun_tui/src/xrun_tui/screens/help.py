@@ -86,7 +86,7 @@ class HelpScreen(ModalScreen[None]):
     #help-title {
         color: #7aa2f7;
         text-style: bold;
-        height: 1;
+        height: 3;
         padding-bottom: 1;
         border-bottom: solid #414868;
     }
@@ -99,7 +99,7 @@ class HelpScreen(ModalScreen[None]):
     .help-row { height: 1; padding-left: 2; }
     #help-footer {
         color: #565f89;
-        height: 1;
+        height: 3;
         padding-top: 1;
         border-top: solid #414868;
         content-align: center middle;

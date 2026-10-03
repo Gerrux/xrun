@@ -81,9 +81,9 @@ class ErrorDetailScreen(ModalScreen[str | None]):
                 wrap=True,
             )
             with Horizontal(id="error-actions"):
-                yield Button("Rerun  [r]",    id="btn-rerun",  variant="primary")
+                yield Button("Rerun  \\[r]",    id="btn-rerun",  variant="primary")
                 yield Button("Full logs",     id="btn-logs")
-                yield Button("Close  [Esc]",  id="btn-close")
+                yield Button("Close  \\[Esc]",  id="btn-close")
 
     def on_mount(self) -> None:
         self.call_after_refresh(self._load_log)
@@ -102,7 +102,7 @@ class ErrorDetailScreen(ModalScreen[str | None]):
                 if len(all_lines) > tail_size:
                     skipped = len(all_lines) - tail_size
                     lines = [
-                        f"[#414868]… ({skipped} earlier lines) …[/]",
+                        f"[#565f89]… ({skipped} earlier lines) …[/]",
                         *all_lines[-tail_size:],
                     ]
                 else:
@@ -120,7 +120,7 @@ class ErrorDetailScreen(ModalScreen[str | None]):
         else:
             short_id = run_id[:8]
             log.write(
-                "[#414868]No local log snapshot found.[/]\n\n"
+                "[#565f89]No local log snapshot found.[/]\n\n"
                 "[#565f89]View full output with:[/]\n"
                 f"[bold #7aa2f7]  xrun logs {short_id}[/]"
             )

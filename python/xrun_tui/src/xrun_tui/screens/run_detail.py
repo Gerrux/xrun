@@ -83,13 +83,13 @@ class RunDetailScreen(LiveScreen):
                 yield Static("", id="chip-projected", classes="chip")
             yield Rule(classes="detail-rule")
             with Horizontal(id="detail-actions"):
-                yield Button("Stop  [s]",       id="btn-stop",      classes="action-btn danger")
-                yield Button("Rerun [r]",       id="btn-rerun",     classes="action-btn")
-                yield Button("Patch [R]",       id="btn-patch",     classes="action-btn")
-                yield Button("Pull  [p]",       id="btn-pull",      classes="action-btn")
-                yield Button("Artifacts [a]",   id="btn-artifacts", classes="action-btn")
-                yield Button("Relaunch",        id="btn-relaunch",  classes="action-btn")
-                yield Button("Error detail [E]",id="btn-error",     classes="action-btn danger")
+                yield Button("Stop  \\[s]",       id="btn-stop",      classes="action-btn danger")
+                yield Button("Rerun \\[r]",       id="btn-rerun",     classes="action-btn")
+                yield Button("Patch \\[R]",       id="btn-patch",     classes="action-btn")
+                yield Button("Pull  \\[p]",       id="btn-pull",      classes="action-btn")
+                yield Button("Artifacts \\[a]",   id="btn-artifacts", classes="action-btn")
+                yield Button("Relaunch",          id="btn-relaunch",  classes="action-btn")
+                yield Button("Error detail \\[E]",id="btn-error",     classes="action-btn danger")
         with TabbedContent(id="detail-tabs"):
             with TabPane("Stages [1]", id="tab-stages"):
                 yield DataTable(id="stages-table",
@@ -130,7 +130,7 @@ class RunDetailScreen(LiveScreen):
         # Without this the screen flashes empty after push.
         self.query_one("#run-name", Static).update(
             f"[bold #c0caf5]{self._run_id[:16]}[/]")
-        self.query_one("#run-badge", Static).update("[#414868]loading…[/]")
+        self.query_one("#run-badge", Static).update("[#565f89]loading…[/]")
         t.loading = True
         # Run on a worker — `call_after_refresh` awaits the coroutine on the
         # screen's message pump, so a sequence of `query_one(...).update(...)`
@@ -234,8 +234,8 @@ class RunDetailScreen(LiveScreen):
             return
         if not events:
             table.add_row(
-                Text("—", style="#414868"),
-                Text("no events yet", style="#414868"),
+                Text("—", style="#565f89"),
+                Text("no events yet", style="#565f89"),
                 Text(""), Text(""),
             )
             return
@@ -265,7 +265,7 @@ class RunDetailScreen(LiveScreen):
                 lines = raw.splitlines()
                 if len(lines) > 500:
                     lines = [
-                        f"[#414868]… ({len(lines) - 500} earlier lines omitted) …[/]",
+                        f"[#565f89]… ({len(lines) - 500} earlier lines omitted) …[/]",
                         *lines[-500:],
                     ]
                 self._log_lines = lines
@@ -273,12 +273,12 @@ class RunDetailScreen(LiveScreen):
                 self._log_lines = [f"[#f7768e]error reading log:[/] {exc}"]
         else:
             self._log_lines = [
-                "[#414868]No local log snapshot yet.[/]",
+                "[#565f89]No local log snapshot yet.[/]",
                 "",
                 "[#565f89]Stream live output with:[/]",
                 f"[bold #7aa2f7]  xrun logs -f {self._run_id}[/]",
                 "",
-                "[#414868]The poller writes a local snapshot every ~5 s once the run is running.[/]",
+                "[#565f89]The poller writes a local snapshot every ~5 s once the run is running.[/]",
             ]
         self._render_log()
         status = (self._run or {}).get("status", "")

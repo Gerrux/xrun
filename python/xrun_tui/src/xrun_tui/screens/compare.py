@@ -50,7 +50,7 @@ class CompareScreen(ModalScreen[None]):
             )
             yield DataTable(id="cmp-table", cursor_type="none", zebra_stripes=True)
             yield Static(
-                "[#414868]escape / q — close[/]",
+                "[#565f89]escape / q — close[/]",
                 classes="form-hint",
             )
         yield Footer()

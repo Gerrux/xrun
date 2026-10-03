@@ -27,19 +27,34 @@ if TYPE_CHECKING:
 _BAR_CHARS = "▏▎▍▌▋▊▉█"
 
 
-def _bar(fraction: float, width: int = 18) -> str:
-    """Return a bar of *width* chars filled proportionally to *fraction* [0,1]."""
+_TRACK = "░"
+_TRACK_COLOR = "#2d3149"   # faint: the empty part of a bar must not read as data
+
+
+def _bar_parts(fraction: float, width: int = 18) -> tuple[str, str]:
+    """Split a *width*-char bar into (filled, empty track) for *fraction* [0,1]."""
     if fraction <= 0:
-        return "░" * width
+        return "", _TRACK * width
     full_blocks = int(fraction * width)
     remainder = fraction * width - full_blocks
     partial_idx = int(remainder * len(_BAR_CHARS))
     # Clamp so we never exceed width
-    bar = _BAR_CHARS[-1] * min(full_blocks, width)
+    filled = _BAR_CHARS[-1] * min(full_blocks, width)
     if full_blocks < width and partial_idx > 0:
-        bar += _BAR_CHARS[partial_idx - 1]
-    bar = bar.ljust(width, "░")
-    return bar[:width]
+        filled += _BAR_CHARS[partial_idx - 1]
+    filled = filled[:width]
+    return filled, _TRACK * (width - len(filled))
+
+
+def _bar_markup(fraction: float, color: str, width: int = 18) -> str:
+    """Rich markup for a bar: filled part in *color*, track in a faint colour."""
+    filled, empty = _bar_parts(fraction, width)
+    out = ""
+    if filled:
+        out += f"[{color}]{filled}[/]"
+    if empty:
+        out += f"[{_TRACK_COLOR}]{empty}[/]"
+    return out
 
 
 def _kpi(label: str, value: str, value_style: str) -> str:
@@ -105,7 +120,7 @@ class BudgetScreen(LiveScreen):
     }
 
     #budget-chart-col {
-        width: 40;
+        width: 44;
         margin-right: 1;
         height: 1fr;
     }
@@ -191,16 +206,16 @@ class BudgetScreen(LiveScreen):
         balance_str = f"${float(balance):.2f}" if balance is not None else "—"
 
         self.query_one("#bkpi-today",   Static).update(
-            _kpi("Today",   f"${spend_today:.2f}", "#e0af68" if spend_today else "#414868")
+            _kpi("Today",   f"${spend_today:.2f}", "#e0af68" if spend_today else "#565f89")
         )
         self.query_one("#bkpi-7d",      Static).update(
-            _kpi("7 days",  f"${spend_7d:.2f}",    "#e0af68" if spend_7d   else "#414868")
+            _kpi("7 days",  f"${spend_7d:.2f}",    "#e0af68" if spend_7d   else "#565f89")
         )
         self.query_one("#bkpi-30d",     Static).update(
-            _kpi("30 days", f"${spend_30d:.2f}",   "#e0af68" if spend_30d  else "#414868")
+            _kpi("30 days", f"${spend_30d:.2f}",   "#e0af68" if spend_30d  else "#565f89")
         )
         self.query_one("#bkpi-balance", Static).update(
-            _kpi("Balance", balance_str, "#7aa2f7" if balance is not None else "#414868")
+            _kpi("Balance", balance_str, "#7aa2f7" if balance is not None else "#565f89")
         )
 
         # ── ASCII bar chart ───────────────────────────────────────────────────
@@ -211,15 +226,16 @@ class BudgetScreen(LiveScreen):
             spend   = entry["spend"]
             is_today = day_str == today_str
             fraction = (spend / max_spend) if max_spend > 1e-12 else 0.0
-            bar = _bar(fraction, 18)
+            bar_color = "#7aa2f7" if is_today else "#e0af68"
+            bar = _bar_markup(fraction, bar_color, 18)
             mm_dd = day_str[5:]  # MM-DD
             amount = f"${spend:.2f}"
+            amount_color = "#e0af68" if spend > 0 else "#565f89"
             today_marker = "  [#565f89]← today[/]" if is_today else ""
-            bar_color = "#7aa2f7" if is_today else "#e0af68"
             lines.append(
-                f"[#565f89]{mm_dd}[/] [{bar_color}]{bar}[/] [#e0af68]{amount:>6}[/]{today_marker}"
+                f"[#565f89]{mm_dd}[/] {bar} [{amount_color}]{amount:>6}[/]{today_marker}"
             )
-        chart_text = "\n".join(lines) if lines else "[#414868]No spend data[/]"
+        chart_text = "\n".join(lines) if lines else "[#565f89]No spend data[/]"
         self.query_one("#budget-chart", Static).update(chart_text)
 
         # ── Top runs table ────────────────────────────────────────────────────

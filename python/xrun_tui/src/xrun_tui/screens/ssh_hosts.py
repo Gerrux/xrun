@@ -310,7 +310,7 @@ class SshHostEditScreen(FormGuard, Screen):
             with Horizontal(classes="form-actions"):
                 yield Button("Save  [Ctrl+S]", id="btn-save", variant="primary")
                 yield Button("Test  [Ctrl+T]", id="btn-test")
-                yield Button("Back  [Esc]",    id="btn-back")
+                yield Button("Back  \\[Esc]",    id="btn-back")
         yield StatusBar()
         yield Footer()
 

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -251,7 +252,7 @@ class RunsScreen(LiveScreen):
         if stale:
             parts.append(f"[bold #e0af68]⚠ {stale} stale[/] [#565f89](S to sync)[/]")
 
-        summary = "  ".join(parts) if parts else "[#414868]no runs[/]"
+        summary = "  ".join(parts) if parts else "[#565f89]no runs[/]"
         if visible:
             if self._filter_text:
                 summary += f"  [#414868]┊[/]  [#7aa2f7]{len(visible)}/{total}[/] [#565f89]matching[/]"
@@ -282,14 +283,16 @@ class RunsScreen(LiveScreen):
         table.display = has_rows
         if not has_rows:
             if self._filter_text:
-                empty.update(f"[#414868]No runs match '{self._filter_text}'[/]")
+                empty.update(
+                    f"[#565f89]No runs match '{escape(self._filter_text)}'[/]"
+                )
             else:
                 label = {
                     "all":    "No runs yet — launch with:  xrun launch <manifest.yaml>",
                     "active": "No active runs",
                     "recent": "No completed runs",
                 }.get(self._filter, "No runs")
-                empty.update(f"[#414868]{label}[/]")
+                empty.update(f"[#565f89]{label}[/]")
 
     # ── Tab filter ──────────────────────────────────────────────────────────
 

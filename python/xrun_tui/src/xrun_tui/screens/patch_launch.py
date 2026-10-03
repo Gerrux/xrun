@@ -154,7 +154,7 @@ class PatchLaunchScreen(ModalScreen[bool | None]):
                     )
             with Horizontal(id="patch-actions"):
                 yield Button("Launch  [Ctrl+S]", id="btn-launch", variant="primary")
-                yield Button("Cancel  [Esc]",    id="btn-cancel")
+                yield Button("Cancel  \\[Esc]",    id="btn-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:

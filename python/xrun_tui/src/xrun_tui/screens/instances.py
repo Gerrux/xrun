@@ -29,6 +29,16 @@ if TYPE_CHECKING:
 TAB_ALL = "tab-all"
 TAB_VAST = "tab-vast"
 
+# Local table column widths (cells are cut to these with a visible ellipsis).
+LOCAL_ID_W = 30
+LOCAL_ID_W_WIDE = 44  # terminals >= 140 cols
+LOCAL_GPU_W = 16
+
+
+def _ellipsize(text: str, width: int) -> str:
+    """Cut `text` to `width` cells, marking the cut with an ellipsis."""
+    return text if len(text) <= width else text[: width - 1] + "…"
+
 
 class InstancesScreen(LiveScreen):
     TITLE = "xrun — instances"
@@ -93,16 +103,18 @@ class InstancesScreen(LiveScreen):
 
     def _setup_local_table(self) -> None:
         t = self.query_one("#local-table", DataTable)
-        t.add_columns(
-            Text(" ",       style="#565f89"),
-            Text("ID",      style="#565f89"),
-            Text("Vendor",  style="#565f89"),
-            Text("Run",     style="#565f89"),
-            Text("GPU",     style="#565f89"),
-            Text("$/hr",    style="#565f89"),
-            Text("Created", style="#565f89"),
-            Text("State",   style="#565f89"),
-        )
+        # Fixed widths (cells are ellipsized to them) so the row never scrolls
+        # sideways at 120 cols and ID gets the biggest share.
+        self._local_id_w = self._id_width()
+        for label, width in (
+            (" ", 1), ("ID", self._local_id_w), ("Vendor", 7), ("Run", 8),
+            ("GPU", LOCAL_GPU_W), ("$/hr", 6), ("Created", 9), ("State", 9),
+        ):
+            t.add_column(Text(label, style="#565f89"), width=width)
+
+    def _id_width(self) -> int:
+        """ID column share: wider on roomy terminals, fixed otherwise."""
+        return LOCAL_ID_W_WIDE if self.app.size.width >= 140 else LOCAL_ID_W
 
     # ── Loading ──────────────────────────────────────────────────────────────
 
@@ -165,7 +177,7 @@ class InstancesScreen(LiveScreen):
                     "This tab lists live vast.ai instances only. vast.ai is not "
                     "configured; instances of other vendors are in the "
                     "\"All vendors\" tab.",
-                    style="#414868",
+                    style="#565f89",
                 ),
                 *[Text("") for _ in range(7)],
             )
@@ -186,7 +198,7 @@ class InstancesScreen(LiveScreen):
 
         if not instances:
             table.add_row(
-                Text(""), Text("No instances running on vast.ai", style="#414868"),
+                Text(""), Text("No instances running on vast.ai", style="#565f89"),
                 *[Text("") for _ in range(7)],
             )
             return
@@ -235,7 +247,7 @@ class InstancesScreen(LiveScreen):
         elif instances:
             parts.append(f"[#565f89]{len(instances)} instances[/]")
         else:
-            parts.append("[#414868]no instances[/]")
+            parts.append("[#565f89]no instances[/]")
 
         if total_dph > 0:
             parts.append(f"[#e0af68]${total_dph:.3f}/hr total[/]")
@@ -259,7 +271,8 @@ class InstancesScreen(LiveScreen):
         elif instances:
             parts.append("[#565f89]none active[/]")
         else:
-            parts.append("[#414868]no instances recorded[/]")
+            parts.append("[#565f89]no instances recorded — they appear "
+                         "after `xrun launch`[/]")
         if len(instances) > len(active):
             parts.append(f"[#565f89]{len(instances) - len(active)} destroyed[/]")
         self._summary_all = "  ".join(parts)
@@ -283,8 +296,7 @@ class InstancesScreen(LiveScreen):
         if not instances:
             table.add_row(
                 Text(""),
-                Text("No instances recorded yet — they appear after `xrun launch`",
-                     style="#414868"),
+                Text("No instances · xrun launch", style="#565f89"),
                 *[Text("") for _ in range(6)],
             )
             return
@@ -310,10 +322,10 @@ class InstancesScreen(LiveScreen):
 
             table.add_row(
                 dot,
-                Text((inst.get("id") or "")[:20], style="#565f89"),
-                Text(inst.get("vendor") or "",    style="#7dcfff"),
+                Text(_ellipsize(inst.get("id") or "", self._local_id_w), style="#565f89"),
+                Text(_ellipsize(inst.get("vendor") or "", 7), style="#7dcfff"),
                 Text(run_id,                      style="#565f89"),
-                Text(gpu[:20] if gpu else "—",    style="#c0caf5"),
+                Text(_ellipsize(gpu, LOCAL_GPU_W) if gpu else "—", style="#c0caf5"),
                 Text(f"${price:.3f}" if price is not None else "—", style="#e0af68"),
                 Text(rel_time(inst.get("created_at")), style="#565f89"),
                 state,

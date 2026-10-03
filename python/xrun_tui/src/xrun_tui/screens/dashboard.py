@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Horizontal, Vertical
+from textual.containers import Grid, Vertical
 from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
 from xrun_tui.widgets.status_bar import StatusBar
@@ -33,6 +33,33 @@ _ACTIVE_STATES = ("provisioning", "uploading", "running")
 # Slow-tick TTL for Doctor + Sinks probes. They're network-bound, so we don't
 # spam them on every 5s tick — just refresh them every minute and on Ctrl+R.
 _HEALTH_TTL_SEC = 60.0
+
+
+_EMPTY_ACTIVE = "[#565f89]No active runs — press [/][#7aa2f7]l[/][#565f89] to launch[/]"
+_EMPTY_RECENT = "[#565f89]No completed runs yet[/]"
+
+# Fixed content widths (cell padding of 1 each side is added by DataTable).
+# The Name column takes whatever is left, bounded so it never forces a
+# horizontal scrollbar and never grows into a wall of text.
+_CELL_PAD = 2
+_NAME_MIN = 10
+_NAME_MAX = 50
+_SCROLLBAR = 2   # room kept for the vertical scrollbar
+_ACTIVE_FIXED = (1, 10, 8, 14, 10, 8, 26)   # dot id vendor status when cost metric
+_RECENT_FIXED = (1, 10, 8, 14, 10, 8)       # dot id vendor status when cost
+
+
+def name_width(avail: int, fixed: tuple[int, ...]) -> int:
+    """Width for the flexible Name column in a table *avail* cells wide.
+
+    Every column costs its width plus cell padding; the Name column gets the
+    remainder, clamped to [_NAME_MIN, _NAME_MAX]. An unmeasured table
+    (avail <= 0) gets a safe middle value.
+    """
+    if avail <= 0:
+        return 24
+    used = sum(w + _CELL_PAD for w in fixed) + _CELL_PAD
+    return max(_NAME_MIN, min(_NAME_MAX, avail - used - _SCROLLBAR))
 
 
 def _kpi(label: str, value: str, value_style: str, sub: str | None = None) -> str:
@@ -101,6 +128,8 @@ class DashboardScreen(LiveScreen):
         self._doctor_text:  tuple[str, str] = ("checking…", "#e0af68")
         self._sinks_text:   tuple[str, str] = ("checking…", "#e0af68")
         self._health_last:  float = 0.0
+        # Name column width each table was last built with, by table id.
+        self._name_w:       dict[str, int] = {}
 
     def compose(self) -> ComposeResult:
         yield TitleBar("dashboard")
@@ -119,15 +148,19 @@ class DashboardScreen(LiveScreen):
                              id="health-doctor", classes="health-card")
                 yield Static(_health("Sinks",  "checking…", "#e0af68"),
                              id="health-sinks",  classes="health-card")
-            with Horizontal(id="dash-cols"):
+            with Vertical(id="dash-cols"):
                 with Vertical(id="dash-active-col"):
                     yield Static("Active runs", classes="dash-section")
                     yield DataTable(id="dash-active",
                                     cursor_type="row", zebra_stripes=True)
+                    yield Static(_EMPTY_ACTIVE, id="dash-active-empty",
+                                 classes="empty-state")
                 with Vertical(id="dash-recent-col"):
                     yield Static("Recently completed", classes="dash-section")
                     yield DataTable(id="dash-recent",
                                     cursor_type="row", zebra_stripes=True)
+                    yield Static(_EMPTY_RECENT, id="dash-recent-empty",
+                                 classes="empty-state")
         yield StatusBar()
         yield Footer()
 
@@ -154,30 +187,52 @@ class DashboardScreen(LiveScreen):
 
     # ── Table setup ──────────────────────────────────────────────────────────
 
+    def _avail_width(self, col_id: str) -> int:
+        """Content width of the table inside *col_id* (its border is 2 wide).
+
+        Measured on the column, not the table: a hidden table has no size."""
+        try:
+            return max(0, self.query_one(col_id).size.width - 2)
+        except Exception:
+            return 0
+
+    def _set_columns(
+        self, t: DataTable, fixed: tuple[int, ...], labels: tuple[str, ...],
+        avail: int,
+    ) -> None:
+        """(Re)build *t*'s columns when the Name width changed.
+
+        Changing a column width in place is private DataTable API, so a width
+        change rebuilds the columns (the caller refills the rows)."""
+        nw = name_width(avail, fixed)
+        if self._name_w.get(t.id) == nw and t.columns:
+            return
+        self._name_w[t.id] = nw
+        t.clear(columns=True)
+        widths = [fixed[0], fixed[1], nw, *fixed[2:]]
+        for label, w in zip(labels, widths):
+            t.add_column(Text(label, style="#565f89"), width=w)
+
     def _setup_active_table(self) -> None:
         t = self.query_one("#dash-active", DataTable)
-        t.add_columns(
-            Text(" ",      style="#565f89"),
-            Text("ID",     style="#565f89"),
-            Text("Name",   style="#565f89"),
-            Text("Vendor", style="#565f89"),
-            Text("Status", style="#565f89"),
-            Text("When",   style="#565f89"),
-            Text("Cost",   style="#565f89"),
-            Text("Metric", style="#565f89"),
+        self._set_columns(
+            t, _ACTIVE_FIXED,
+            (" ", "ID", "Name", "Vendor", "Status", "When", "Cost", "Metric"),
+            self._avail_width("#dash-active-col"),
         )
 
     def _setup_recent_table(self) -> None:
         t = self.query_one("#dash-recent", DataTable)
-        t.add_columns(
-            Text(" ",      style="#565f89"),
-            Text("ID",     style="#565f89"),
-            Text("Name",   style="#565f89"),
-            Text("Vendor", style="#565f89"),
-            Text("Status", style="#565f89"),
-            Text("When",   style="#565f89"),
-            Text("Cost",   style="#565f89"),
+        self._set_columns(
+            t, _RECENT_FIXED,
+            (" ", "ID", "Name", "Vendor", "Status", "When", "Cost"),
+            self._avail_width("#dash-recent-col"),
         )
+
+    def on_resize(self, event) -> None:
+        # Name width depends on the screen width; refill so rows match.
+        if self.is_mounted:
+            self._kick_refresh()
 
     # ── Refresh: fast tick (runs/KPIs) ───────────────────────────────────────
 
@@ -190,7 +245,8 @@ class DashboardScreen(LiveScreen):
             return
 
         active = [r for r in all_runs if r["status"] in _ACTIVE_STATES][:8]
-        recent = [r for r in all_runs if r["status"] not in _ACTIVE_STATES][:8]
+        # The full-width table has room for more; it scrolls past this.
+        recent = [r for r in all_runs if r["status"] not in _ACTIVE_STATES][:20]
 
         # Sparklines: fetch series only for active runs (capped at 8).
         sparks = await self._collect_sparklines([r["id"] for r in active])
@@ -202,11 +258,9 @@ class DashboardScreen(LiveScreen):
         # up behind 16 add_row calls + 4 KPI updates with rich markup. The
         # refresh runs on a worker (`_kick_refresh`), but its sync widget
         # work still hogs the asyncio loop without these yield points.
-        self._fill_active("#dash-active", active, sparks,
-                          "[#414868]No active runs[/]")
+        self._fill_active("#dash-active", active, sparks)
         await asyncio.sleep(0)
-        self._fill_recent("#dash-recent", recent,
-                          "[#414868]No completed runs yet[/]")
+        self._fill_recent("#dash-recent", recent)
         await asyncio.sleep(0)
         self._update_kpis(all_runs, burn_dph)
 
@@ -355,7 +409,7 @@ class DashboardScreen(LiveScreen):
             if not enabled:
                 continue
             if not _sink_configured(creds, sid):
-                parts.append(f"[#414868]⊘ {name}[/]")
+                parts.append(f"[#565f89]⊘ {name}[/]")
                 continue
             if sid not in sinks_list:
                 parts.append(f"[#7aa2f7]◌ {name}[/]")  # configured but paused
@@ -365,7 +419,7 @@ class DashboardScreen(LiveScreen):
             probe_targets.append((sid, name))
 
         if not parts:
-            self._set_sinks("none configured", "#414868")
+            self._set_sinks("none configured", "#565f89")
             return
 
         # Show static state immediately, then run probes in parallel.
@@ -386,7 +440,7 @@ class DashboardScreen(LiveScreen):
             if not enabled:
                 continue
             if not _sink_configured(creds, sid):
-                rebuilt.append(f"[#414868]⊘ {name}[/]")
+                rebuilt.append(f"[#565f89]⊘ {name}[/]")
                 continue
             if sid not in sinks_list:
                 rebuilt.append(f"[#7aa2f7]◌ {name}[/]")
@@ -424,22 +478,22 @@ class DashboardScreen(LiveScreen):
         sel: str,
         runs: list[dict],
         sparks: dict[str, tuple[str, float]],
-        empty_msg: str,
     ) -> None:
         t = self.query_one(sel, DataTable)
-        t.clear()
-        if not runs:
-            t.add_row(
-                Text(""),
-                Text.from_markup(empty_msg),
-                *[Text("") for _ in range(6)],
-            )
+        if self._toggle_empty(sel, bool(runs)):
+            t.clear()
             return
+        self._set_columns(
+            t, _ACTIVE_FIXED,
+            (" ", "ID", "Name", "Vendor", "Status", "When", "Cost", "Metric"),
+            self._avail_width("#dash-active-col"),
+        )
+        t.clear()
         for r in runs:
             spark = sparks.get(r["id"])
             spark_cell = (
-                Text(spark[0], style="#7aa2f7")
-                if spark else Text("—", style="#414868")
+                Text(spark[0], style="#7aa2f7", overflow="ellipsis", no_wrap=True)
+                if spark else Text("—", style="#565f89")
             )
             t.add_row(
                 status_dot_for(r),
@@ -454,16 +508,25 @@ class DashboardScreen(LiveScreen):
                 key=r["id"],
             )
 
-    def _fill_recent(self, sel: str, runs: list[dict], empty_msg: str) -> None:
+    def _toggle_empty(self, sel: str, has_rows: bool) -> bool:
+        """Show the table when it has rows, a centred message otherwise.
+
+        Returns True when the empty state is showing."""
+        self.query_one(sel, DataTable).display = has_rows
+        self.query_one(f"{sel}-empty", Static).display = not has_rows
+        return not has_rows
+
+    def _fill_recent(self, sel: str, runs: list[dict]) -> None:
         t = self.query_one(sel, DataTable)
-        t.clear()
-        if not runs:
-            t.add_row(
-                Text(""),
-                Text.from_markup(empty_msg),
-                *[Text("") for _ in range(5)],
-            )
+        if self._toggle_empty(sel, bool(runs)):
+            t.clear()
             return
+        self._set_columns(
+            t, _RECENT_FIXED,
+            (" ", "ID", "Name", "Vendor", "Status", "When", "Cost"),
+            self._avail_width("#dash-recent-col"),
+        )
+        t.clear()
         for r in runs:
             t.add_row(
                 status_dot_for(r),
@@ -500,14 +563,14 @@ class DashboardScreen(LiveScreen):
                 "Active runs",
                 active_value,
                 "bold #e0af68" if stale else
-                ("bold #9ece6a" if active else "#414868"),
+                ("bold #9ece6a" if active else "#565f89"),
             )
         )
         self.query_one("#kpi-done", Static).update(
-            _kpi("Done", str(done), "#7aa2f7" if done else "#414868")
+            _kpi("Done", str(done), "#7aa2f7" if done else "#565f89")
         )
         self.query_one("#kpi-failed", Static).update(
-            _kpi("Failed", str(failed), "bold #f7768e" if failed else "#414868")
+            _kpi("Failed", str(failed), "bold #f7768e" if failed else "#565f89")
         )
 
         # Spent KPI: cumulative $ + live burn-rate subline. We only show the
@@ -519,7 +582,7 @@ class DashboardScreen(LiveScreen):
             sub = None
         self.query_one("#kpi-spent", Static).update(
             _kpi("Spent", spent_str,
-                 "#e0af68" if spent else "#414868",
+                 "#e0af68" if spent else "#565f89",
                  sub=sub)
         )
 

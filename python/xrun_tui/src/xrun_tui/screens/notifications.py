@@ -95,14 +95,14 @@ class NotificationsScreen(ModalScreen[None]):
     #notif-title {
         color: #7aa2f7;
         text-style: bold;
-        height: 1;
+        height: 3;
         padding-bottom: 1;
         border-bottom: solid #414868;
     }
     #notif-empty {
         height: 1fr;
         content-align: center middle;
-        color: #414868;
+        color: #565f89;
         text-style: italic;
     }
     #notif-table { height: 1fr; }
@@ -114,7 +114,7 @@ class NotificationsScreen(ModalScreen[None]):
                         id="notif-title")
             yield DataTable(id="notif-table", cursor_type="row",
                             zebra_stripes=True)
-            yield Static("[#414868]no notifications yet[/]", id="notif-empty")
+            yield Static("[#565f89]no notifications yet[/]", id="notif-empty")
 
     def on_mount(self) -> None:
         t = self.query_one("#notif-table", DataTable)

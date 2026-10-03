@@ -26,6 +26,14 @@ class LaunchScreen(LiveScreen):
     """Pick a manifest, preview it, dry-run or launch."""
 
     TITLE = "xrun — launch"
+    DEFAULT_CSS = """
+    LaunchScreen #launch-empty {
+        height: 1fr;
+        width: 1fr;
+        padding: 1 2;
+        border: tall #2d3149;
+    }
+    """
     BINDINGS = [
         Binding("escape,q",   "go_back",   "Back"),
         Binding("j,down",     "cursor_down", "Down", show=False),
@@ -50,6 +58,7 @@ class LaunchScreen(LiveScreen):
                 yield Static("Manifests (cwd / exp/)", classes="dash-section")
                 yield DataTable(id="launch-table",
                                 cursor_type="row", zebra_stripes=True)
+                yield Static("", id="launch-empty")
             with Vertical(id="launch-preview-col"):
                 yield Static("Preview", classes="dash-section")
                 yield RichLog(id="launch-preview",
@@ -67,10 +76,10 @@ class LaunchScreen(LiveScreen):
                             classes="form-input")
             yield Static("", id="launch-result", classes="form-hint")
             with Horizontal(classes="form-actions"):
-                yield Button("Launch  [enter]",   id="btn-launch",
+                yield Button("Launch  \\[enter]",   id="btn-launch",
                              variant="primary")
-                yield Button("Dry-run  [ctrl+d]", id="btn-dryrun")
-                yield Button("Back  [esc]",      id="btn-back")
+                yield Button("Dry-run  \\[ctrl+d]", id="btn-dryrun")
+                yield Button("Back  \\[esc]",      id="btn-back")
         yield StatusBar()
         yield Footer()
 
@@ -81,9 +90,9 @@ class LaunchScreen(LiveScreen):
             Text("Manifest", style="#565f89"),
             Text("Modified", style="#565f89"),
         )
-        self.query_one("#launch-preview", RichLog).write(
-            "[#414868]select a manifest to preview[/]"
-        )
+        self._write_placeholder()
+        empty = self.query_one("#launch-empty", Static)
+        empty.display = False
         t.focus()
         self.kick(self._refresh)
 
@@ -96,18 +105,19 @@ class LaunchScreen(LiveScreen):
         t = self.query_one("#launch-table", DataTable)
         t.clear()
         cwd = Path.cwd()
+        empty = self.query_one("#launch-empty", Static)
+        t.display = bool(self._manifests)
+        empty.display = not self._manifests
         if not self._manifests:
-            scoped = exp_dir or "exp/  experiments/  manifests/"
-            t.add_row(
-                Text(""),
-                Text(
-                    f"no manifests found in {scoped} — "
-                    f"pass a path to `xrun launch <file>` "
-                    f"or set defaults.exp_dir",
-                    style="#414868",
-                ),
-                Text(""),
-            )
+            scoped = exp_dir or "exp/, experiments/, manifests/"
+            empty.update(Text(
+                f"No manifests found in {scoped}.\n\n"
+                "Type a path into the \"Manifest path\" field below, "
+                "or set defaults.exp_dir.",
+                style="#565f89",
+            ))
+            self._selected = None
+            self._write_placeholder()
         else:
             for p in self._manifests:
                 try:
@@ -137,6 +147,13 @@ class LaunchScreen(LiveScreen):
         if 0 <= idx < len(self._manifests):
             self._select(self._manifests[idx])
 
+    def _write_placeholder(self) -> None:
+        # The log is not markup-enabled (YAML contains `[...]`), so the
+        # placeholder is a Text object, not a markup string.
+        log = self.query_one("#launch-preview", RichLog)
+        log.clear()
+        log.write(Text("select a manifest to preview", style="#565f89"))
+
     def _select(self, path: Path) -> None:
         self._selected = path
         self.query_one("#launch-path", Input).value = str(path)
@@ -146,7 +163,7 @@ class LaunchScreen(LiveScreen):
         try:
             content = path.read_text(encoding="utf-8")
         except OSError as e:
-            log.write(f"[#f7768e]cannot read manifest: {e}[/]")
+            log.write(Text(f"cannot read manifest: {e}", style="#f7768e"))
             return
         if len(content) > 8000:
             content = content[:8000] + "\n# … (truncated)"
@@ -169,12 +186,19 @@ class LaunchScreen(LiveScreen):
             return  # Don't fire on Enter inside text inputs
         self._confirm_launch()
 
+    def _notify_no_manifest(self) -> None:
+        if self._manifests:
+            msg = "Choose a manifest first"
+        else:
+            msg = "No manifests found — type a path into the Manifest path field"
+        self.notify(msg, severity="warning")
+
     def _confirm_launch(self) -> None:
         # A launch can start a billed instance, so it never fires on a single
         # keypress: the user confirms the manifest first.
         manifest_path = self.query_one("#launch-path", Input).value.strip()
         if not manifest_path:
-            self.notify("Choose a manifest first", severity="warning")
+            self._notify_no_manifest()
             return
         from xrun_tui.screens.confirm import ConfirmScreen
 
@@ -195,7 +219,7 @@ class LaunchScreen(LiveScreen):
     async def _do_launch(self, dry: bool) -> None:
         manifest_path = self.query_one("#launch-path", Input).value.strip()
         if not manifest_path:
-            self.notify("Choose a manifest first", severity="warning")
+            self._notify_no_manifest()
             return
         if not Path(manifest_path).is_file():
             self.notify(f"File not found: {manifest_path}", severity="error")

@@ -82,7 +82,7 @@ class ImagePreviewScreen(ModalScreen[None]):
         return (
             f"[bold #c0caf5]{self._path.name}[/]  "
             f"[#565f89]{_human_size(size)}[/]   "
-            f"[#414868]Esc / q close · o open externally[/]"
+            f"[#565f89]Esc / q close · o open externally[/]"
         )
 
     def _redraw_image(self) -> None:

@@ -190,7 +190,7 @@ class WatchScreen(LiveScreen):
                 f"  [#414868]┊[/]  [#565f89]auto-refresh 10s[/]"
             )
         else:
-            summary = "[#414868]no active runs[/]  [#565f89]auto-refresh 10s[/]"
+            summary = "[#565f89]no active runs[/]  [#565f89]auto-refresh 10s[/]"
         self.query_one("#watch-summary", Static).update(summary)
 
         empty = self.query_one("#watch-empty", Static)
@@ -198,7 +198,7 @@ class WatchScreen(LiveScreen):
         empty.display = not has_rows
         table.display = has_rows
         if not has_rows:
-            empty.update("[#414868]No active runs — start one with:  xrun launch <manifest.yaml>[/]")
+            empty.update("[#565f89]No active runs — start one with:  xrun launch <manifest.yaml>[/]")
 
     # ── Actions ───────────────────────────────────────────────────────────────
 

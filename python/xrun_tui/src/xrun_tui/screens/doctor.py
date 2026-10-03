@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,6 +13,24 @@ from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
 
+def _cell(text: str, style: str) -> Text:
+    """Single-line cell that ellipsizes instead of widening the column."""
+    return Text(text.replace("\n", " "), style=style,
+                no_wrap=True, overflow="ellipsis")
+
+
+def fit_doctor_widths(total: int, names: list[str]) -> dict[str, int]:
+    """Column widths (content, without cell padding) filling `total` cells."""
+    pad = 2  # DataTable cell padding is 1 on each side
+    dot, status = 1, 6
+    check = min(max([len(n) for n in names] + [5]), 24)
+    detail = total - (dot + check + status) - 4 * pad
+    if detail < 10:  # very narrow terminal: squeeze Check instead
+        check = max(5, check - (10 - detail))
+        detail = max(4, total - (dot + check + status) - 4 * pad)
+    return {"dot": dot, "check": check, "status": status, "detail": detail}
+
+
 class DoctorScreen(LiveScreen):
     """System health diagnostics — wraps `xrun doctor --json`."""
 
@@ -20,6 +39,12 @@ class DoctorScreen(LiveScreen):
         Binding("escape,q",  "go_back", "Back"),
         Binding("ctrl+r,f5", "refresh", "Refresh"),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Parallel to the table rows: (name, status, full detail) per check
+        self._rows: list[tuple[str, str, str]] = []
+        self._paths_line = ""
 
     def compose(self) -> ComposeResult:
         yield TitleBar("doctor")
@@ -34,13 +59,50 @@ class DoctorScreen(LiveScreen):
 
     def on_mount(self) -> None:
         t = self.query_one("#doctor-table", DataTable)
-        t.add_columns(
-            Text(" ",      style="#565f89"),
-            Text("Check",  style="#565f89"),
-            Text("Status", style="#565f89"),
-            Text("Detail", style="#565f89"),
-        )
+        t.add_column(Text(" ",      style="#565f89"), key="dot", width=1)
+        t.add_column(Text("Check",  style="#565f89"), key="check", width=12)
+        t.add_column(Text("Status", style="#565f89"), key="status", width=6)
+        t.add_column(Text("Detail", style="#565f89"), key="detail", width=20)
         self.kick(self._refresh)
+
+    # ── Layout ──────────────────────────────────────────────────────────────
+
+    def _fit_columns(self) -> None:
+        """Detail takes the width the other columns leave; no h-scroll."""
+        t = self.query_one("#doctor-table", DataTable)
+        width = t.scrollable_content_region.width
+        if width <= 0:
+            return
+        widths = fit_doctor_widths(width, [r[0] for r in self._rows])
+        for key, w in widths.items():
+            t.columns[key].width = w  # type: ignore[index]
+            t.columns[key].auto_width = False  # type: ignore[index]
+        t._require_update_dimensions = True
+        t.refresh(layout=True)
+
+    def on_resize(self, event) -> None:
+        self._fit_columns()
+
+    def on_data_table_row_highlighted(
+        self, event: DataTable.RowHighlighted
+    ) -> None:
+        self._update_footer(event.cursor_row)
+
+    def _update_footer(self, row: int | None = None) -> None:
+        footer = self.query_one("#doctor-footer", Static)
+        if row is None:
+            row = self.query_one("#doctor-table", DataTable).cursor_row
+        parts: list[Text] = []
+        if 0 <= row < len(self._rows):
+            name, status, detail = self._rows[row]
+            head = Text(name, style="bold #c0caf5")
+            head.append(f"  {status}", style="#565f89")
+            parts.append(head)
+            if detail:
+                parts.append(Text(detail, style="#c0caf5"))
+        if self._paths_line:
+            parts.append(Text.from_markup(self._paths_line))
+        footer.update(Text("\n").join(parts) if parts else "")
 
     async def _refresh(self) -> None:
         from xrun_tui import services
@@ -50,6 +112,8 @@ class DoctorScreen(LiveScreen):
         ok, data, err = await services.doctor()
         table = self.query_one("#doctor-table", DataTable)
         table.clear()
+        self._rows = []
+        self._paths_line = ""
 
         if not ok:
             self.query_one("#doctor-summary", Static).update(
@@ -59,8 +123,11 @@ class DoctorScreen(LiveScreen):
                 Text("✗", style="#f7768e"),
                 Text("doctor invocation"),
                 Text("failed", style="bold #f7768e"),
-                Text(err[:120] if err else "", style="#f7768e"),
+                _cell(err[:120] if err else "", "#f7768e"),
             )
+            self._rows = [("doctor invocation", "failed", err or "")]
+            self._fit_columns()
+            self._update_footer(0)
             return
 
         checks = self._extract_checks(data)
@@ -78,7 +145,10 @@ class DoctorScreen(LiveScreen):
                 Text(dot, style=dot_style),
                 Text(str(c.get("name", "?")), style="#c0caf5"),
                 Text(status, style=st_style),
-                Text(str(c.get("detail", ""))[:200], style="#565f89"),
+                _cell(str(c.get("detail", "")), "#565f89"),
+            )
+            self._rows.append(
+                (str(c.get("name", "?")), status, str(c.get("detail", "")))
             )
 
         # Footer hint with key paths from JSON
@@ -86,10 +156,13 @@ class DoctorScreen(LiveScreen):
         for k in ("db_path", "config_dir", "data_dir"):
             v = meta.get(k)
             if v:
-                footer_bits.append(f"[#565f89]{k}:[/] [#7dcfff]{v}[/]")
-        self.query_one("#doctor-footer", Static).update(
-            "   ".join(footer_bits) or ""
-        )
+                footer_bits.append(
+                    f"[#565f89]{k}:[/] [#7dcfff]{escape(str(v))}[/]"
+                )
+        self._paths_line = "   ".join(footer_bits)
+        self._fit_columns()
+        self.call_after_refresh(self._fit_columns)
+        self._update_footer()
 
     def _extract_checks(self, data: Any) -> list[dict[str, Any]]:
         # `xrun doctor --json` may return either a bare list of check dicts,
@@ -135,9 +208,9 @@ class DoctorScreen(LiveScreen):
         parts = [
             f"[bold #9ece6a]✓ {passed} pass[/]",
             f"[#e0af68]! {warns} warn[/]" if warns
-                else "[#414868]! 0 warn[/]",
+                else "[#565f89]! 0 warn[/]",
             f"[bold #f7768e]✗ {fails} fail[/]" if fails
-                else "[#414868]✗ 0 fail[/]",
+                else "[#565f89]✗ 0 fail[/]",
         ]
         version = data.get("version") or data.get("xrun_version") or ""
         if version:

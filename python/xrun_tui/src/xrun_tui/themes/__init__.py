@@ -6,7 +6,14 @@ written into the user's config dir, and loaded via App.CSS_PATH at startup.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
+
+from rich.color import Color as RichColor
+from rich.segment import Segment
+from rich.style import Style
+from textual.color import Color
+from textual.filter import LineFilter
 
 THEMES_DIR = Path(__file__).parent
 
@@ -120,6 +127,49 @@ def render_theme(name: str) -> str:
         if src != dst:
             css = css.replace(src, dst)
     return css
+
+
+class PaletteFilter(LineFilter):
+    """Remap Tokyo Night colours in rendered output to another palette.
+
+    `render_theme` recolours the stylesheet, but most colours live in Rich
+    markup and widget DEFAULT_CSS inside the screens (`[#565f89]…[/]`). Those
+    never pass through the sheet, so without this filter every other theme
+    painted Tokyo Night text over its own background.
+    """
+
+    def __init__(self, palette: dict[str, str]) -> None:
+        super().__init__()
+        self._map = {
+            RichColor.parse(src).triplet: RichColor.parse(dst)
+            for src, dst in palette.items()
+            if src != dst
+        }
+        self._recolour = lru_cache(maxsize=4096)(self._recolour_style)
+
+    def _swap(self, color: RichColor | None) -> RichColor | None:
+        if color is None or color.triplet is None:
+            return None
+        return self._map.get(color.triplet)
+
+    def _recolour_style(self, style: Style) -> Style:
+        fg, bg = self._swap(style.color), self._swap(style.bgcolor)
+        if fg is None and bg is None:
+            return style
+        return style + Style.from_color(fg, bg)
+
+    def apply(self, segments: list[Segment], background: Color) -> list[Segment]:
+        recolour = self._recolour
+        return [
+            Segment(text, recolour(style) if style else style, control)
+            for text, style, control in segments
+        ]
+
+
+def palette_filter(name: str) -> PaletteFilter | None:
+    """The filter for theme `name`; None for Tokyo Night (nothing to remap)."""
+    palette = PALETTES.get(name, TOKYO_NIGHT)
+    return None if palette is TOKYO_NIGHT else PaletteFilter(palette)
 
 
 def write_theme_for_app(name: str, target_dir: Path) -> Path:

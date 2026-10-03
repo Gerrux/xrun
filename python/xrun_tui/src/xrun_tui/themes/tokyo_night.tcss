@@ -44,13 +44,14 @@ Footer FooterKey > .footer-key--description {
 
 /* ── Screen title bar ────────────────────────────────────────────────────── */
 
+/* Heights are border-box: a border or vertical padding on a `height: 1` widget
+   takes its only row and the text is never drawn (tests/test_layout.py). */
 .screen-title {
     background: #24283b;
     color: #7aa2f7;
     text-style: bold;
     padding: 0 2;
     height: 1;
-    border-bottom: solid #414868;
 }
 
 /* ── Stats bar (runs, instances) ─────────────────────────────────────────── */
@@ -59,7 +60,6 @@ Footer FooterKey > .footer-key--description {
     background: #1e2030;
     padding: 0 2;
     height: 1;
-    border-bottom: solid #2d3149;
     color: #565f89;
 }
 
@@ -68,7 +68,7 @@ Footer FooterKey > .footer-key--description {
 .empty-state {
     height: 1fr;
     content-align: center middle;
-    color: #414868;
+    color: #565f89;
     text-style: italic;
 }
 
@@ -317,7 +317,7 @@ ModalScreen {
 }
 
 #detail-chips {
-    height: 1;
+    height: 2;
     align: left middle;
     padding: 0 0 1 0;
 }
@@ -630,28 +630,57 @@ LoadingIndicator {
     content-align: left middle;
 }
 
+/* Active runs above Recently completed, both full width: the active table
+   (id, name, status, when, cost, metric) does not fit in half a screen. */
 #dash-cols {
     height: 1fr;
     padding: 1 2;
 }
 
-#dash-active-col, #dash-recent-col {
-    width: 1fr;
-    margin-right: 1;
+#dash-active-col {
+    width: 100%;
+    height: auto;
+}
+
+#dash-recent-col {
+    width: 100%;
+    height: 1fr;
+    min-height: 8;
+}
+
+#dash-active {
+    height: auto;
+    max-height: 8;
+}
+
+/* Replaces an empty table: a centred, muted line instead of a fake row.
+   Scoped: the global `.empty-state` above fills the screen on Runs/Watch. */
+#dash-cols .empty-state {
+    width: 100%;
+    height: 3;
+    content-align: center middle;
+    text-align: center;
+    color: #565f89;
+}
+
+#dash-cols #dash-recent-empty {
     height: 1fr;
 }
 
 .dash-section {
     color: #bb9af7;
     text-style: bold;
-    height: 1;
+    height: 2;
     padding: 0 1 0 1;
     border-bottom: solid #2d3149;
 }
 
 #dash-active, #dash-recent {
-    height: 1fr;
     border: tall #2d3149;
+}
+
+#dash-recent {
+    height: 1fr;
 }
 
 .nav-btn {
@@ -681,8 +710,11 @@ LoadingIndicator {
     border: tall #2d3149;
 }
 
+/* Selected check's full detail (wraps) plus the key paths line. */
 .doctor-footer {
-    height: 1;
+    height: auto;
+    min-height: 3;
+    max-height: 7;
     padding: 1 1 0 1;
     color: #565f89;
 }

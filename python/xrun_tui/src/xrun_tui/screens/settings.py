@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -183,14 +184,15 @@ class SettingsScreen(FormGuard, Screen):
         with Vertical(id="settings-footer"):
             yield Static("", id="prefill-status", classes="form-hint")
             yield Static(
-                "[#565f89]Save writes only the fields you changed, through[/] "
-                "[#7dcfff]xrun config set[/][#565f89]. Clearing a field "
-                "puts it back to its default.[/]",
+                "[#565f89]Save writes only changed fields via[/] "
+                "[#7dcfff]xrun config set[/][#565f89]. "
+                "A cleared field resets to default.[/]",
+                id="settings-note",
                 classes="form-hint",
             )
             with Horizontal(classes="form-actions"):
                 yield Button("Save  [Ctrl+S]", id="btn-save", variant="primary")
-                yield Button("Cancel  [Esc]",  id="btn-cancel")
+                yield Button("Cancel  \\[Esc]",  id="btn-cancel")
             yield Static("", id="settings-result", classes="form-hint")
 
         yield StatusBar()
@@ -222,7 +224,7 @@ class SettingsScreen(FormGuard, Screen):
             )
         except Exception as exc:
             self.query_one("#db-info", Static).update(
-                f"[#414868]DB info unavailable: {exc}[/]"
+                f"[#565f89]DB info unavailable: {escape(str(exc))}[/]"
             )
 
     async def _prefill_xrun_fields(self) -> None:
@@ -233,7 +235,7 @@ class SettingsScreen(FormGuard, Screen):
         if not self.is_attached:
             return
         if not ok:
-            ps.update(f"[#414868]prefill unavailable: {err[:80]}[/]")
+            ps.update(f"[#565f89]prefill unavailable: {escape(err[:80])}[/]")
             return
 
         filled: list[str] = []
@@ -253,9 +255,9 @@ class SettingsScreen(FormGuard, Screen):
 
         self.snapshot_form(only={f"input-xrun-{_sanitize(k)}" for k in filled})
         if filled:
-            ps.update(f"[#565f89]prefilled:[/] [#7aa2f7]{', '.join(filled)}[/]")
+            ps.update("[#565f89]Loaded current values from xrun config[/]")
         else:
-            ps.update("[#414868]no matching config keys found[/]")
+            ps.update("[#565f89]no matching config keys found[/]")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-save":

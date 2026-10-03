@@ -44,7 +44,7 @@ class _DetachedBar(StatusBar):
 
 def _plain(snap: dict) -> str:
     bar = _DetachedBar()
-    bar._render(snap)
+    bar._render_snapshot(snap)
     return bar.captured
 
 

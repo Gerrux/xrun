@@ -14,7 +14,7 @@ from textual.notifications import Notification
 from xrun_tui import config
 from xrun_tui.db import Database, find_db_path
 from xrun_tui.screens.registry import iter_screens
-from xrun_tui.themes import write_theme_for_app
+from xrun_tui.themes import palette_filter, write_theme_for_app
 
 XRUN_VERSION = "0.8.0"
 
@@ -77,9 +77,26 @@ class XrunApp(App):
         self._chord_leader: str | None = None
         self._chord_expires: float = 0.0
         self._compare_selection: list[str] = []
-        self.theme_name: str = (
+        self.theme_name = (
             (config.get_settings() or {}).get("theme") or "tokyo-night"
         )
+
+    @property
+    def theme_name(self) -> str:
+        return self._theme_name
+
+    @theme_name.setter
+    def theme_name(self, name: str) -> None:
+        # The filter follows the theme: Settings switches it at runtime, and a
+        # stale one would paint inline colours in the previous palette.
+        self._theme_name = name
+        self._palette_filter = palette_filter(name)
+
+    def get_line_filters(self):  # type: ignore[override]
+        filters = super().get_line_filters()
+        if self._palette_filter is None:
+            return filters
+        return [*filters, self._palette_filter]
 
     async def on_mount(self) -> None:
         # On Windows every sleeping Textual timer parks a thread of asyncio's

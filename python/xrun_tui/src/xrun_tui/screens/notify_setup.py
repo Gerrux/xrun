@@ -536,7 +536,7 @@ class ChannelEditScreen(FormGuard, Screen[dict | None]):
             yield Static("", classes="form-spacer")
             with Horizontal(classes="form-actions"):
                 yield Button("Save & test  [Ctrl+S]", id="btn-save", variant="primary")
-                yield Button("Back  [Esc]", id="btn-back")
+                yield Button("Back  \\[Esc]", id="btn-back")
         yield StatusBar()
         yield Footer()
 
@@ -682,7 +682,7 @@ class RulesEditScreen(FormGuard, Screen[dict | None]):
             yield Static("", classes="form-spacer")
             with Horizontal(classes="form-actions"):
                 yield Button("Save  [Ctrl+S]", id="btn-save", variant="primary")
-                yield Button("Back  [Esc]", id="btn-back")
+                yield Button("Back  \\[Esc]", id="btn-back")
         yield StatusBar()
         yield Footer()
 
