@@ -179,6 +179,9 @@ class SplashScreen(Screen):
             app._vast_status_cache = {  # type: ignore[attr-defined]
                 "vast_user": user,
                 "vast_credit": credit,
+                # Same values under the names Budget reads.
+                "username": user,
+                "credit": credit,
             }
             return f"vast ${credit:.2f}"
         except Exception:

@@ -143,8 +143,15 @@ class VendorsScreen(Screen):
 
     def on_mount(self) -> None:
         self._highlight(self._cursor)
-        self.run_worker(self._check_vast(),   exclusive=False, group="probe")
-        self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
+        # No probes here: `on_screen_resume` also fires on the first show,
+        # and starting them in both places sent every request twice.
+
+    @staticmethod
+    def _vast_info(name: str, credit: float) -> str:
+        return (
+            f"[#565f89]user:[/] [#c0caf5]{name}[/]  "
+            f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
+        )
 
     async def _check_vast(self) -> None:
         api_key = config.get_vast_api_key()
@@ -154,7 +161,14 @@ class VendorsScreen(Screen):
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
         status_widget.update(_pill("checking"))
-        info_widget.update("")
+        # The last known answer (splash or a previous visit) stays on screen
+        # while the request is out, instead of a blank row for a second.
+        cache = getattr(self.app, "_vast_status_cache", None)
+        if isinstance(cache, dict) and "vast_user" in cache:
+            info_widget.update(self._vast_info(
+                cache["vast_user"], float(cache.get("vast_credit") or 0)))
+        else:
+            info_widget.update("")
         self._start_pulse(idx, "vast")
         try:
             info = await _fetch_user(api_key)
@@ -164,13 +178,12 @@ class VendorsScreen(Screen):
             credit = float(info.get("credit", 0))
             self._stop_pulse(idx, ok=True, vid="vast")
             status_widget.update(_pill("ok"))
-            info_widget.update(
-                f"[#565f89]user:[/] [#c0caf5]{name}[/]  "
-                f"[#565f89]balance:[/] [#e0af68]${credit:.2f}[/]"
-            )
-            cache = getattr(self.app, "_vast_status_cache", None)
+            info_widget.update(self._vast_info(name, credit))
             if isinstance(cache, dict):
-                cache.update({"credit": credit, "username": name})
+                # `vast_*` is what the status bar and the splash use,
+                # `credit` is what Budget reads.
+                cache.update({"credit": credit, "username": name,
+                              "vast_credit": credit, "vast_user": name})
         except Exception as exc:
             if not self.is_attached:
                 return
@@ -194,7 +207,11 @@ class VendorsScreen(Screen):
         status_widget = self.query_one(f"#vstatus-{idx}", Static)
         info_widget   = self.query_one(f"#vinfo-{idx}",   Static)
         status_widget.update(_pill("checking"))
-        info_widget.update("")
+        cache = getattr(self.app, "_kaggle_status_cache", None)
+        if isinstance(cache, dict) and cache.get("kaggle_info"):
+            info_widget.update(cache["kaggle_info"])
+        else:
+            info_widget.update("")
         self._start_pulse(idx, "kaggle")
         try:
             label, info = await _test_kaggle_api(username, key, token)
@@ -202,10 +219,11 @@ class VendorsScreen(Screen):
                 return
             self._stop_pulse(idx, ok=True, vid="kaggle")
             status_widget.update(_pill("ok"))
-            info_widget.update(f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}")
-            cache = getattr(self.app, "_kaggle_status_cache", None)
+            markup = f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}"
+            info_widget.update(markup)
             if isinstance(cache, dict):
-                cache.update({"kaggle_user": label, "kaggle_connected": True})
+                cache.update({"kaggle_user": label, "kaggle_connected": True,
+                              "kaggle_info": markup})
         except Exception as exc:
             if not self.is_attached:
                 return
@@ -469,10 +487,10 @@ class VendorsScreen(Screen):
         self._creds = config.read_credentials()
         for i in range(len(_VENDORS)):
             self._refresh_row(i)
-        if self._creds.get("vast", {}).get("api_key"):
-            self.run_worker(self._check_vast(),   exclusive=False, group="probe")
-        if _vendor_configured(self._creds, "kaggle"):
-            self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
+        # Both return early when there is nothing to probe; `_check_vast`
+        # also honours the native vastai key file, which `_creds` lacks.
+        self.run_worker(self._check_vast(),   exclusive=False, group="probe")
+        self.run_worker(self._check_kaggle(), exclusive=False, group="probe")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

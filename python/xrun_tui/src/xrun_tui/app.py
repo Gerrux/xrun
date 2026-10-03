@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,8 @@ _CHORDS: dict[str, dict[str, str]] = {
 }
 
 _CHORD_TIMEOUT_S = 1.5
+# Cap of the shared thread pool (timer sleeps + blocking I/O), see on_mount.
+_IO_THREADS = 64
 
 
 def _wizard_pending() -> bool:
@@ -90,6 +94,17 @@ class XrunApp(App):
         )
 
     async def on_mount(self) -> None:
+        # On Windows every sleeping Textual timer parks a thread of asyncio's
+        # default executor (see textual/_win_sleep.py), and cancelling one
+        # needs a second. The default pool is cpu_count + 4 threads, and our
+        # blocking calls (`asyncio.to_thread`: vast.ai / Kaggle HTTP, manifest
+        # scan) draw from the same pool. A few screens' worth of timers plus
+        # three or four requests filled it: requests queued behind sleeps,
+        # and closing a screen waited for a free thread to cancel its timers.
+        # Threads are created on demand, so a roomy cap costs nothing idle.
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=_IO_THREADS, thread_name_prefix="xrun-io")
+        )
         try:
             await self.db.connect()
         except Exception as exc:

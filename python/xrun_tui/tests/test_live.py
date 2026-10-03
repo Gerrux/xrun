@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from textual.app import App
+from textual.css.query import NoMatches
 from textual.screen import Screen
 
 from xrun_tui.live import LiveScreen
@@ -51,6 +53,29 @@ def test_interval_refresh_does_not_hold_the_pump_or_pile_up() -> None:
             await asyncio.sleep(0.15)
             assert probe.finished >= 1
             assert probe.started >= 2  # ticking again once the first is done
+
+    asyncio.run(scenario())
+
+
+def test_refresh_outliving_its_screen_does_not_crash_the_app() -> None:
+    async def scenario() -> None:
+        app = _Host()
+        async with app.run_test() as pilot:
+            probe = _Probe()
+            await app.push_screen(probe)
+            await pilot.pause()
+
+            async def late_refresh() -> None:
+                probe.query_one("#gone")
+
+            # While the screen is up, a missing widget is a real bug.
+            with pytest.raises(NoMatches):
+                await probe._guarded(late_refresh)
+
+            await app.pop_screen()
+            await pilot.pause()
+            # Closed underneath the refresh: nothing left to update.
+            await probe._guarded(late_refresh)
 
     asyncio.run(scenario())
 

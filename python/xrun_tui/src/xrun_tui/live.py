@@ -4,10 +4,11 @@ Two rules the plain `Screen` does not enforce, and that every data screen
 used to get wrong in its own way:
 
 1. A refresh never runs on the screen's message pump. Awaiting a DB query, a
-   vast.ai request or `xrun doctor` inside a timer callback (or a
-   `call_after_refresh`) holds every key press queued behind it — on the
-   Instances and Doctor screens that was seconds, long enough for a `g …`
-   chord to expire unnoticed.
+   vast.ai request or `xrun doctor` from a handler or a `call_after_refresh`
+   holds every key press queued behind it — on the Instances and Doctor
+   screens that was seconds, long enough for a `g …` chord to expire
+   unnoticed. Timer ticks go through the same `kick`, so the first load, the
+   tick and a manual refresh share one path and never overlap.
 2. A screen that is not on top does not poll. Screens stay mounted while
    another one covers them; without this each visited screen kept hitting
    the DB / network on its own timer for the rest of the session.
@@ -17,6 +18,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.worker import Worker
@@ -40,8 +42,19 @@ class LiveScreen(Screen):
         if prev is not None and not prev.is_finished:
             return
         self._live_workers[name] = self.run_worker(
-            fn(), group=f"live:{name}", exclusive=False,
+            self._guarded(fn), group=f"live:{name}", exclusive=False,
         )
+
+    async def _guarded(self, fn: Callable[[], Any]) -> None:
+        try:
+            await fn()
+        except NoMatches:
+            # A refresh that comes back from I/O while its screen is being
+            # closed finds the widgets already gone (workers are cancelled
+            # only at unmount, after the children are pruned). That is not
+            # an error — and unhandled it would take the whole app down.
+            if self in self.app.screen_stack:
+                raise
 
     def set_interval(  # type: ignore[override]
         self,
