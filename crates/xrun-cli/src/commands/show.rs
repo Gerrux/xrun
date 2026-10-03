@@ -3,10 +3,11 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use xrun_core::{manifest::Manifest, paths, vendor::InstanceHandle, RunId, Store};
+use xrun_core::{manifest::Manifest, paths, vendor::InstanceHandle};
 use xrun_kaggle::snapshot;
 
 use crate::cli::ShowArgs;
+use crate::commands::common::{open_store, resolve_run};
 
 struct DatasetSummary {
     slug: String,
@@ -33,18 +34,9 @@ fn dataset_summary_for(run_dir: &Path) -> Option<DatasetSummary> {
 }
 
 pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
-    let id: RunId = args
-        .id
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.id))?;
-
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
-
-    let run = store
-        .get_run(&id)
-        .context("failed to query run")?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {}", args.id))?;
+    let store = open_store(db_path)?;
+    let run = resolve_run(&store, &args.id)?;
+    let id = run.id.clone();
 
     let events = store.list_events(&id).context("failed to list events")?;
     let metric_keys = store

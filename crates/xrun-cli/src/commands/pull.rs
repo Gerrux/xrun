@@ -3,48 +3,29 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use xrun_core::{
-    config::credentials::{KaggleCredentials, VastCredentials},
-    store::Run,
-    vendor::InstanceHandle,
-    Credentials, RunId, Store, VendorAdapter,
-};
-use xrun_kaggle::KaggleAdapter;
-use xrun_local::LocalAdapter;
-use xrun_ssh::SshAdapter;
-use xrun_vast::VastAdapter;
+use xrun_core::{store::Run, vendor::InstanceHandle};
 
 use crate::cli::PullArgs;
+use crate::commands::common::{
+    build_adapter, open_store, select_run, AdapterCtx, RunSelection, SshSource,
+};
 
 pub fn run(args: &PullArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let store = open_store(db_path)?;
 
-    let id_owned;
-    let id: &str = match &args.id {
-        Some(id) => id.as_str(),
-        None => {
-            let active = store.list_active_runs()?;
-            match active.len() {
-                0 => {
-                    println!("no active runs to act on (pass a run ID)");
-                    return Ok(());
-                }
-                1 => {
-                    id_owned = active[0].id.to_string();
-                    id_owned.as_str()
-                }
-                _ => anyhow::bail!("multiple active runs ({}); pass a run ID", active.len()),
-            }
+    let run = match select_run(&store, args.id.as_deref())? {
+        RunSelection::Run(run) => *run,
+        RunSelection::NoActive => {
+            println!("no active runs to act on (pass a run ID)");
+            return Ok(());
+        }
+        RunSelection::Multiple(n) => {
+            anyhow::bail!("multiple active runs ({n}); pass a run ID")
         }
     };
-
-    let parsed: RunId = id
-        .parse()
-        .with_context(|| format!("invalid run ID: {id}"))?;
-    let run = store
-        .get_run(&parsed)?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
+    // Full id for messages: the user may have typed an abbreviation.
+    let id = run.id.to_string();
+    let id = id.as_str();
 
     let instance_id = run
         .instance_id
@@ -70,13 +51,11 @@ pub fn run(args: &PullArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
 
     drop(store);
 
-    let adapter_store = Store::open(db_path)?;
-    let data_dir = db_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let adapter = build_adapter(&run.vendor, runs_dir, config_dir, &data_dir, adapter_store)?;
-    adapter.set_run_id(&run.id);
+    // XRUN_SSH_ALIAS overrides; otherwise the host the run was launched on.
+    // Unlike stop, pull still works when the saved manifest copy is gone.
+    let mut ctx = AdapterCtx::new("pull", db_path, runs_dir, config_dir, &run.id);
+    ctx.ssh = SshSource::EnvThenSavedManifest;
+    let adapter = build_adapter(&run.vendor, &ctx)?;
 
     let remote = ckpt_to_remote_pattern(&args.ckpt, args.artifacts);
 
@@ -184,92 +163,4 @@ fn synthesize_handle(run: &Run, instance_id: &str) -> Result<InstanceHandle> {
         ssh_port: None,
         ssh_user: "xrun".to_string(),
     })
-}
-
-fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.vast.api_key.is_some() {
-            return creds.vast;
-        }
-    }
-    if let Ok(Some(token)) = Credentials::import_vast_native() {
-        return VastCredentials {
-            api_key: Some(token),
-        };
-    }
-    VastCredentials::default()
-}
-
-fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.kaggle.token.is_some()
-            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
-        {
-            return creds.kaggle;
-        }
-    }
-    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
-        return KaggleCredentials {
-            token: None,
-            username: Some(username),
-            key: Some(key),
-        };
-    }
-    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
-        return KaggleCredentials {
-            token: Some(token),
-            username: None,
-            key: None,
-        };
-    }
-    KaggleCredentials::default()
-}
-
-fn build_adapter(
-    vendor: &str,
-    runs_dir: &Path,
-    config_dir: &Path,
-    data_dir: &Path,
-    store: Store,
-) -> Result<Box<dyn VendorAdapter>> {
-    match vendor {
-        "vast" => {
-            let creds = resolve_vast_credentials(config_dir);
-            Ok(Box::new(VastAdapter::new(creds, store)))
-        }
-        "kaggle" => {
-            let creds = resolve_kaggle_credentials(config_dir);
-            // §1: pull's post-download ingest opens the store from store_path,
-            // so hand it the data_dir (parent of runs.db). Drop our handle so
-            // we don't hold an extra connection.
-            drop(store);
-            Ok(Box::new(
-                KaggleAdapter::new()
-                    .with_credentials(creds)
-                    .with_store_path(data_dir.to_path_buf()),
-            ))
-        }
-        "local" => Ok(Box::new(LocalAdapter::with_store_and_runs_dir(
-            store,
-            runs_dir.to_path_buf(),
-        ))),
-        "ssh" => {
-            let creds = Credentials::load(config_dir).unwrap_or_default();
-            let alias = std::env::var("XRUN_SSH_ALIAS")
-                .ok()
-                .or_else(|| creds.ssh_hosts.keys().next().cloned())
-                .ok_or_else(|| anyhow::anyhow!("pull: no ssh hosts in credentials.toml"))?;
-            let host_creds = creds
-                .ssh_hosts
-                .get(&alias)
-                .ok_or_else(|| anyhow::anyhow!("pull: ssh alias '{alias}' missing"))?;
-            let conn = SshAdapter::resolve_conn(&alias, host_creds)?;
-            let workdir_root = host_creds
-                .default_workdir
-                .clone()
-                .unwrap_or_else(|| "/tmp/xrun".to_string());
-            Ok(Box::new(SshAdapter::new(store, conn, workdir_root)))
-        }
-        other => anyhow::bail!("pull not implemented for vendor: {other}"),
-    }
 }

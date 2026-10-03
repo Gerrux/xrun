@@ -338,7 +338,7 @@ fn vendor_orphans(
     store: &Store,
 ) -> Result<Vec<(String, f64, i64)>> {
     use xrun_vast::VastAdapter;
-    let creds = crate::commands::poll_daemon::resolve_vast_credentials(config_dir);
+    let creds = crate::commands::common::resolve_vast_credentials(config_dir);
     if creds.api_key.is_none() {
         return Ok(Vec::new());
     }

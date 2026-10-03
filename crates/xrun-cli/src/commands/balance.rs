@@ -6,14 +6,10 @@ use anyhow::{Context, Result};
 use xrun_core::config::credentials::Credentials;
 
 use crate::cli::BalanceArgs;
+use crate::commands::common::resolve_vast_credentials;
 
 fn resolve_vast_key(config_dir: &Path) -> Option<String> {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.vast.api_key.is_some() {
-            return creds.vast.api_key;
-        }
-    }
-    Credentials::import_vast_native().ok().flatten()
+    resolve_vast_credentials(config_dir).api_key
 }
 
 /// Best-effort Kaggle GPU/TPU quota readout. The Kaggle public API exposes

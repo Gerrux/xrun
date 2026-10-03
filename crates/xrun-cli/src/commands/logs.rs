@@ -9,12 +9,15 @@ use anyhow::{Context, Result};
 use xrun_core::{store::RunStatus, vendor::InstanceHandle, GlobalConfig, Run, RunId, Store};
 
 use crate::cli::LogsArgs;
+use crate::commands::common::{open_store, resolve_run};
 
 pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
-    let id: RunId = args
-        .id
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.id))?;
+    // A full ULID is used as-is (the saved log can be read even if the DB
+    // row is gone); anything else is an abbreviation resolved via the store.
+    let id: RunId = match args.id.parse() {
+        Ok(id) => id,
+        Err(_) => resolve_run(&open_store(db_path)?, &args.id)?.id,
+    };
 
     if args.follow {
         return follow_logs(&id, db_path, runs_dir, config_dir, args.grep.as_deref());
@@ -118,11 +121,8 @@ fn follow_logs(
     config_dir: &Path,
     grep: Option<&str>,
 ) -> Result<()> {
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
-    let run = store
-        .get_run(id)?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {id}"))?;
+    let store = open_store(db_path)?;
+    let run = resolve_run(&store, &id.to_string())?;
 
     if run.vendor == "kaggle" || run.vendor == "local" {
         return follow_local_file(id, &run, db_path, runs_dir, config_dir, grep);
@@ -144,8 +144,7 @@ fn follow_local_file(
     grep: Option<&str>,
 ) -> Result<()> {
     let log_path = runs_dir.join(id.to_string()).join("stdout.log");
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let store = open_store(db_path)?;
 
     let mut offset: u64 = 0;
     let mut warned_empty = false;
@@ -220,8 +219,7 @@ fn follow_remote(
         .instance_id
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("run {id} has no instance yet"))?;
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let store = open_store(db_path)?;
     let inst = store
         .get_instance(instance_id)?
         .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?;

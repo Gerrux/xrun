@@ -175,7 +175,7 @@ pub struct LsArgs {
     /// Show all runs instead of just active + last 10 completed
     #[arg(long)]
     pub all: bool,
-    /// Filter by vendor (vast, kaggle)
+    /// Filter by vendor (vast, kaggle, local, ssh)
     #[arg(long)]
     pub vendor: Option<String>,
     /// Filter by status (provisioning, uploading, running, done, failed, cancelled)
@@ -194,7 +194,7 @@ pub struct LsArgs {
 
 #[derive(Args)]
 pub struct ShowArgs {
-    /// Run ID (ULID)
+    /// Run ID: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: String,
     /// Output as JSON
     #[arg(long)]
@@ -203,7 +203,7 @@ pub struct ShowArgs {
 
 #[derive(Args)]
 pub struct LogsArgs {
-    /// Run ID (ULID)
+    /// Run ID: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: String,
     /// Filter lines matching this pattern
     #[arg(long)]
@@ -215,7 +215,7 @@ pub struct LogsArgs {
 
 #[derive(Args)]
 pub struct EventsArgs {
-    /// Run ID (ULID)
+    /// Run ID: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: String,
     /// Output as JSON
     #[arg(long)]
@@ -227,7 +227,7 @@ pub struct EventsArgs {
 
 #[derive(Args)]
 pub struct MetricsArgs {
-    /// Run ID (ULID)
+    /// Run ID: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: String,
     /// Comma-separated metric keys to show
     #[arg(long)]
@@ -253,7 +253,7 @@ pub struct MetricsArgs {
 
 #[derive(Args)]
 pub struct PullArgs {
-    /// Run ID (ULID)
+    /// Run ID: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: Option<String>,
     /// Checkpoint selection: latest, best, all, or glob
     #[arg(long, default_value = "latest")]
@@ -268,7 +268,7 @@ pub struct PullArgs {
 
 #[derive(Args)]
 pub struct StopArgs {
-    /// Run ID (ULID)
+    /// Run ID: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: Option<String>,
     /// Stop all active runs (and destroy their instances)
     #[arg(long)]
@@ -283,7 +283,9 @@ pub struct StopArgs {
 
 #[derive(Args)]
 pub struct ShellArgs {
-    /// Run ID (ULID) or vast instance ID. Defaults to the single active run.
+    /// Run ID (full ULID, or a unique prefix / suffix of 4+ characters) or
+    /// vast instance ID; an all-digit value is always taken as a vast instance
+    /// ID. Defaults to the single active run.
     pub id: Option<String>,
     /// Run a single command and exit, instead of an interactive shell.
     #[arg(long, short = 'c')]
@@ -302,7 +304,7 @@ pub struct GcArgs {
 
 #[derive(Args)]
 pub struct RerunArgs {
-    /// Run ID (ULID) to repeat
+    /// Run to repeat: full ULID, or a unique prefix / suffix of 4+ characters
     pub id: String,
     /// Patch a run parameter (jq-style path, e.g. run.args.--lr=5e-4)
     #[arg(long)]
@@ -393,13 +395,18 @@ pub struct DatasetArgs {
 
 #[derive(Args)]
 pub struct DiffArgs {
-    /// First run ID (ULID)
+    /// First run ID (full, or a unique prefix / suffix of 4+ characters)
     pub a: String,
-    /// Second run ID (ULID)
+    /// Second run ID (same forms)
     pub b: String,
     /// Comma-separated metric keys to include (default: union of both runs)
     #[arg(long)]
     pub keys: Option<String>,
+    /// Which value is "best" for a metric: KEY=min|max. Repeatable or
+    /// comma-separated. Default: the manifest's policy.early_stop.mode for
+    /// that metric, else guessed from the name (loss/error-like → min)
+    #[arg(long = "direction", value_name = "KEY=min|max", value_delimiter = ',')]
+    pub direction: Vec<String>,
     /// Skip the metrics section
     #[arg(long, conflicts_with = "metrics_only")]
     pub manifest_only: bool,
@@ -413,7 +420,8 @@ pub struct DiffArgs {
 
 #[derive(Args)]
 pub struct ResumeArgs {
-    /// Run ID (ULID) to resume. Omit to scan all runs in `running` status.
+    /// Run to resume: full ULID, or a unique prefix / suffix of 4+ characters.
+    /// Omit to scan all runs in `running` status.
     pub id: Option<String>,
     /// Show what would happen without spawning daemons or writing to the DB
     #[arg(long)]
@@ -425,7 +433,8 @@ pub struct ResumeArgs {
 
 #[derive(Args)]
 pub struct FixStatusArgs {
-    /// Run ID (ULID) to check. Omit to reconcile all runs in `running` status.
+    /// Run to check: full ULID, or a unique prefix / suffix of 4+ characters.
+    /// Omit to reconcile all runs in `running` status.
     pub id: Option<String>,
     /// Show what would change without writing to the DB
     #[arg(long)]

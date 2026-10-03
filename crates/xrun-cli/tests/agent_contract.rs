@@ -170,6 +170,68 @@ fn sweep_failure_is_valid_json_and_nonzero_exit() {
 }
 
 #[test]
+fn abbreviated_run_ids_resolve_and_ambiguous_stop_touches_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let mut store = Store::open(&tmp.path().join("data/runs.db")).unwrap();
+    let a = store
+        .create_run("a", "hash", "manifest", "local", &[])
+        .unwrap();
+    let b = store
+        .create_run("b", "hash", "manifest", "local", &[])
+        .unwrap();
+    for id in [&a, &b] {
+        store.update_run_status(id, RunStatus::Running).unwrap();
+    }
+    let (full_a, full_b) = (a.to_string(), b.to_string());
+
+    // A unique, lower-cased tail resolves; JSON carries the full id.
+    let output = command(&tmp)
+        .args([
+            "show",
+            &full_a[full_a.len() - 10..].to_lowercase(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let shown: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(shown["run"]["id"], full_a.as_str());
+
+    // Both ids share the timestamp prefix: stop must refuse, not pick one.
+    let shared: String = full_a
+        .chars()
+        .zip(full_b.chars())
+        .take_while(|(x, y)| x == y)
+        .map(|(x, _)| x)
+        .collect();
+    assert!(shared.len() >= 4, "ids created together share a prefix");
+    let output = command(&tmp)
+        .args(["stop", &shared])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ambiguous (2 matches)"), "{stderr}");
+    for id in [&a, &b] {
+        assert_eq!(
+            store.get_run(id).unwrap().unwrap().status,
+            RunStatus::Running
+        );
+    }
+
+    // Unknown id: the uniform message.
+    command(&tmp)
+        .args(["show", "ZZZZZZZZ"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "run not found: ZZZZZZZZ (see `xrun ls`)",
+        ));
+}
+
+#[test]
 fn keep_instance_does_not_falsely_mark_run_cancelled() {
     let tmp = TempDir::new().unwrap();
     let mut store = Store::open(&tmp.path().join("data/runs.db")).unwrap();

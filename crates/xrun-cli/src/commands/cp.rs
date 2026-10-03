@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use xrun_core::Credentials;
 use xrun_vast::transfer::{resolve_ssh, transfer, SshConn, TransferEndpoint};
+
+use crate::commands::common::resolve_vast_credentials;
 
 #[derive(Debug, clap::Args)]
 pub struct CpArgs {
@@ -38,18 +39,13 @@ pub fn run(args: &CpArgs, config_dir: &Path) -> Result<()> {
 }
 
 fn load_api_key(config_dir: &Path) -> Result<String> {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if let Some(key) = creds.vast.api_key {
-            return Ok(key);
-        }
+    match resolve_vast_credentials(config_dir).api_key {
+        Some(key) => Ok(key),
+        None => bail!(
+            "vast API key not found — run `xrun config set vast.api_key <KEY>` \
+             or `vastai set api-key <KEY>`"
+        ),
     }
-    if let Ok(Some(key)) = Credentials::import_vast_native() {
-        return Ok(key);
-    }
-    bail!(
-        "vast API key not found — run `xrun config set vast.api_key <KEY>` \
-         or `vastai set api-key <KEY>`"
-    )
 }
 
 enum RawEndpoint {

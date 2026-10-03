@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use xrun_core::{config::credentials::KaggleCredentials, paths, Credentials};
+use xrun_core::{config::credentials::KaggleCredentials, paths};
 use xrun_kaggle::{snapshot, KaggleAdapter};
 
 use crate::cli::{DatasetListArgs, DatasetPushArgs, DatasetStatusArgs, DatasetVerifyArgs};
+use crate::commands::common::resolve_kaggle_credentials;
 
 #[derive(Subcommand)]
 pub enum DatasetSubcommand {
@@ -89,31 +90,6 @@ fn run_verify(args: &DatasetVerifyArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
-}
-
-fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.kaggle.token.is_some()
-            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
-        {
-            return creds.kaggle;
-        }
-    }
-    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
-        return KaggleCredentials {
-            token: None,
-            username: Some(username),
-            key: Some(key),
-        };
-    }
-    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
-        return KaggleCredentials {
-            token: Some(token),
-            username: None,
-            key: None,
-        };
-    }
-    KaggleCredentials::default()
 }
 
 /// Normalise a user-supplied dataset slug into the `<owner>/<name>` form Kaggle

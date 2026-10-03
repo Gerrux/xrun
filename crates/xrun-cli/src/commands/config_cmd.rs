@@ -37,8 +37,17 @@ pub enum ConfigCommand {
     Set {
         /// Config key (e.g. mlflow.url, vast.api_key)
         key: String,
-        /// Value to set
-        value: String,
+        /// Value to set (exactly one of VALUE / --stdin)
+        value: Option<String>,
+        /// Read the value from stdin instead of argv (keeps secrets out of the
+        /// process list). One trailing newline is stripped.
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Clear a credential, drop an ssh host, or reset a config key to its default
+    Unset {
+        /// Config key (e.g. vast.api_key, ssh.lab, ssh.lab.port, budget.max_lifetime_hours)
+        key: String,
     },
     /// Probe a vendor / sink with the credentials in `XRUN_PROBE_*` env vars.
     /// Used by the first-run wizard to validate pasted keys before persisting
@@ -50,8 +59,36 @@ pub fn run(args: &ConfigArgs, config_dir: &Path) -> Result<()> {
     match &args.command {
         ConfigCommand::Init => cmd_init(config_dir),
         ConfigCommand::Show { json, secrets } => cmd_show(config_dir, *json, *secrets),
-        ConfigCommand::Set { key, value } => cmd_set(config_dir, key, value),
+        ConfigCommand::Set { key, value, stdin } => {
+            let value = resolve_value(value.as_deref(), *stdin, &mut std::io::stdin().lock())?;
+            cmd_set(config_dir, key, &value)
+        }
+        ConfigCommand::Unset { key } => cmd_unset(config_dir, key),
         ConfigCommand::Probe(args) => crate::commands::probe::run(args),
+    }
+}
+
+/// Pick the value source for `config set`: exactly one of the positional
+/// argument or `--stdin`. From stdin only a single trailing `\n` / `\r\n` is
+/// stripped — secrets may legitimately contain other whitespace.
+fn resolve_value(arg: Option<&str>, stdin: bool, input: &mut impl std::io::Read) -> Result<String> {
+    match (arg, stdin) {
+        (Some(_), true) => bail!("pass either VALUE or --stdin, not both"),
+        (None, false) => bail!("missing value: pass VALUE or --stdin"),
+        (Some(v), false) => Ok(v.to_string()),
+        (None, true) => {
+            let mut buf = String::new();
+            input
+                .read_to_string(&mut buf)
+                .context("failed to read value from stdin")?;
+            if buf.ends_with('\n') {
+                buf.pop();
+                if buf.ends_with('\r') {
+                    buf.pop();
+                }
+            }
+            Ok(buf)
+        }
     }
 }
 
@@ -214,6 +251,12 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
     }
 
     if is_credential_key(key) {
+        // An empty credential is never meaningful, and it is what an unset
+        // shell variable piped into `--stdin` produces: refuse it instead of
+        // overwriting a working key with "".
+        if value.trim().is_empty() {
+            bail!("empty value for `{key}`; to clear it run `xrun config unset {key}`");
+        }
         let creds = Credentials::load(config_dir)?;
         let mut json = serde_json::to_value(&creds)?;
         let defaults = serde_json::to_value(Credentials::default())?;
@@ -240,6 +283,151 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
         serde_json::from_value(json).with_context(|| format!("invalid value for `{key}`"))?;
     updated.save(config_dir)?;
     println!("{key} = {value}");
+    Ok(())
+}
+
+/// `config unset <key>`: the inverse of `cmd_set`. Idempotent — clearing a key
+/// that is already unset succeeds. Output never includes a value.
+fn cmd_unset(config_dir: &Path, key: &str) -> Result<()> {
+    if let Some(rest) = key.strip_prefix("ssh.") {
+        return cmd_unset_ssh(config_dir, key, rest);
+    }
+
+    if let Some(rest) = key.strip_prefix("vendors.") {
+        return cmd_unset_vendor(config_dir, rest);
+    }
+
+    if is_credential_key(key) {
+        let creds = Credentials::load(config_dir)?;
+        let mut json = serde_json::to_value(&creds)?;
+        let defaults = serde_json::to_value(Credentials::default())?;
+        reset_dotted(&mut json, key, &defaults)?;
+        let updated: Credentials =
+            serde_json::from_value(json).with_context(|| format!("invalid state for `{key}`"))?;
+        updated.save(config_dir)?;
+        println!("{key}: <unset>");
+        return Ok(());
+    }
+
+    let cfg = GlobalConfig::load(config_dir)?;
+    let mut json = serde_json::to_value(&cfg)?;
+    let defaults = serde_json::to_value(GlobalConfig::default())?;
+    reset_dotted(&mut json, key, &defaults)?;
+    let updated: GlobalConfig =
+        serde_json::from_value(json).with_context(|| format!("invalid state for `{key}`"))?;
+    updated.save(config_dir)?;
+    println!("{key}: <unset>");
+    Ok(())
+}
+
+/// `ssh.<alias>` removes the whole host entry, `ssh.<alias>.<field>` clears
+/// one field. A missing alias is not an error (idempotent), an unknown field is.
+fn cmd_unset_ssh(config_dir: &Path, key: &str, rest: &str) -> Result<()> {
+    let mut creds = Credentials::load(config_dir)?;
+    match rest.split_once('.') {
+        None => {
+            creds.ssh_hosts.remove(rest);
+        }
+        Some((alias, field)) => {
+            // Validate the field even when the alias is absent, so typos
+            // don't silently succeed.
+            if !matches!(field, "host" | "user" | "port" | "key" | "default_workdir") {
+                bail!("unknown SSH field `{field}` (expected host/user/port/key/default_workdir)");
+            }
+            if let Some(entry) = creds.ssh_hosts.get_mut(alias) {
+                match field {
+                    "host" => entry.host = None,
+                    "user" => entry.user = None,
+                    "port" => entry.port = None,
+                    "key" => entry.key = None,
+                    _ => entry.default_workdir = None,
+                }
+            }
+        }
+    }
+    creds.save(config_dir)?;
+    println!("{key}: <unset>");
+    Ok(())
+}
+
+/// `vendors.<name>.<field>` goes back to the `VendorDefaults` value;
+/// `vendors.<name>.extra.<k>` drops that entry from the `extra` map.
+fn cmd_unset_vendor(config_dir: &Path, rest: &str) -> Result<()> {
+    let key = format!("vendors.{rest}");
+    let (name, field) = rest.split_once('.').ok_or_else(|| {
+        anyhow!("vendors key must be `vendors.<name>.<field>` (e.g. vendors.vast.default_gpu)")
+    })?;
+    Vendor::from_str(name).map_err(|e| anyhow!(e))?;
+
+    let cfg = GlobalConfig::load(config_dir)?;
+    let mut json = serde_json::to_value(&cfg)?;
+    // Absent entry (or absent `vendors` map) means everything is already default.
+    if let Some(entry) = json.get_mut("vendors").and_then(|v| v.get_mut(name)) {
+        if let Some(extra_key) = field.strip_prefix("extra.") {
+            if let Some(extra) = entry.get_mut("extra").and_then(Value::as_object_mut) {
+                extra.remove(extra_key);
+            }
+        } else {
+            let defaults = serde_json::to_value(VendorDefaults::default())?;
+            reset_dotted(entry, field, &defaults)?;
+        }
+    }
+    let updated: GlobalConfig =
+        serde_json::from_value(json).with_context(|| format!("invalid state for `{key}`"))?;
+    updated.save(config_dir)?;
+    println!("{key}: <unset>");
+    Ok(())
+}
+
+/// Counterpart of `set_dotted`: walk the dotted path and put the schema
+/// default back at the leaf (removing it when the default is skipped on
+/// serialization). Unknown keys fail the same way as in `set`.
+fn reset_dotted(target: &mut Value, key: &str, defaults: &Value) -> Result<()> {
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        bail!("invalid config key: `{key}`");
+    }
+    let (leaf, parents) = parts
+        .split_last()
+        .ok_or_else(|| anyhow!("empty config key"))?;
+
+    let mut cur: &mut Value = target;
+    for (i, p) in parents.iter().enumerate() {
+        let map = cur
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("config path `{key}` traverses a non-object"))?;
+        if !map.contains_key(*p) {
+            // Parent skipped on serialization (e.g. empty map): the key is
+            // valid only if the defaults know it, and then it's already default.
+            if nav(defaults, &parts[..=i]).is_some() {
+                return Ok(());
+            }
+            bail!("unknown config key: `{key}`");
+        }
+        cur = map.get_mut(*p).expect("present");
+    }
+    let map = cur
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("config path `{key}` parent is not an object"))?;
+    let default = nav(defaults, &parts);
+    if !map.contains_key(*leaf) && default.is_none() {
+        bail!("unknown config key: `{key}`");
+    }
+    // Same rule as `set`: a whole section is not a key. `unset notify` would
+    // otherwise silently wipe every notification setting at once.
+    if map.get(*leaf).is_some_and(Value::is_object)
+        || default.as_ref().is_some_and(Value::is_object)
+    {
+        bail!("cannot unset section `{key}`: unset its fields one by one");
+    }
+    match default {
+        Some(v) => {
+            map.insert(leaf.to_string(), v);
+        }
+        None => {
+            map.remove(*leaf);
+        }
+    }
     Ok(())
 }
 

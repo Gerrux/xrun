@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -8,35 +9,35 @@ use serde_yaml::Value as Yaml;
 use xrun_core::{Run, RunId, Store, StoredMetric};
 
 use crate::cli::DiffArgs;
+use crate::commands::common::{open_store, resolve_run};
 
 pub fn run(args: &DiffArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
-    let id_a: RunId = args
-        .a
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.a))?;
-    let id_b: RunId = args
-        .b
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.b))?;
+    let store = open_store(db_path)?;
+    let run_a = resolve_run(&store, &args.a)?;
+    let run_b = resolve_run(&store, &args.b)?;
+    let (id_a, id_b) = (run_a.id.clone(), run_b.id.clone());
 
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    // Validate before touching the filesystem so a typo fails fast.
+    let overrides = parse_direction_overrides(&args.direction)?;
 
-    let run_a = store
-        .get_run(&id_a)
-        .context("failed to query run a")?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {}", args.a))?;
-    let run_b = store
-        .get_run(&id_b)
-        .context("failed to query run b")?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {}", args.b))?;
-
-    let manifest_diff = if args.metrics_only {
-        Vec::new()
+    // The manifest diff needs both manifests (hard error if missing); the
+    // metrics section only borrows early_stop from them, so a missing file
+    // there just drops to the name heuristic.
+    let (yaml_a, yaml_b) = if args.manifest_only || !args.metrics_only {
+        (
+            Some(load_manifest_yaml(runs_dir, &run_a)?),
+            Some(load_manifest_yaml(runs_dir, &run_b)?),
+        )
     } else {
-        let yaml_a = load_manifest_yaml(runs_dir, &run_a)?;
-        let yaml_b = load_manifest_yaml(runs_dir, &run_b)?;
-        compute_manifest_diff(&yaml_a, &yaml_b)
+        (
+            load_manifest_yaml(runs_dir, &run_a).ok(),
+            load_manifest_yaml(runs_dir, &run_b).ok(),
+        )
+    };
+
+    let manifest_diff = match (&yaml_a, &yaml_b) {
+        (Some(a), Some(b)) if !args.metrics_only => compute_manifest_diff(a, b),
+        _ => Vec::new(),
     };
 
     let metrics_diff = if args.manifest_only {
@@ -46,7 +47,15 @@ pub fn run(args: &DiffArgs, db_path: &Path, runs_dir: &Path) -> Result<()> {
             .keys
             .as_deref()
             .map(|s| s.split(',').map(str::trim).map(str::to_string).collect());
-        compute_metrics_diff(&store, &id_a, &id_b, key_filter.as_deref())?
+        let manifests = [yaml_a.as_ref(), yaml_b.as_ref()];
+        compute_metrics_diff(
+            &store,
+            &id_a,
+            &id_b,
+            key_filter.as_deref(),
+            &overrides,
+            &manifests,
+        )?
     };
 
     if args.json {
@@ -191,7 +200,8 @@ fn yaml_to_json(v: &Yaml) -> serde_json::Value {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MetricDiffEntry {
     pub key: String,
-    /// "min" if the key looks loss-like, otherwise "max".
+    /// "min" or "max": `--direction` override, else the manifest's
+    /// `policy.early_stop.mode`, else guessed from the key name.
     pub direction: &'static str,
     pub a_last: Option<f64>,
     pub a_best: Option<f64>,
@@ -206,6 +216,8 @@ fn compute_metrics_diff(
     id_a: &RunId,
     id_b: &RunId,
     filter: Option<&[String]>,
+    overrides: &HashMap<String, &'static str>,
+    manifests: &[Option<&Yaml>],
 ) -> Result<Vec<MetricDiffEntry>> {
     let metrics_a = store
         .list_metrics(id_a, filter)
@@ -223,9 +235,14 @@ fn compute_metrics_diff(
     keys.sort();
     keys.dedup();
 
+    // A typo in KEY would otherwise leave the heuristic in charge, silently.
+    for k in unknown_direction_keys(overrides, &keys) {
+        eprintln!("warning: --direction '{k}' matches no compared metric of either run; ignored");
+    }
+
     let mut out = Vec::with_capacity(keys.len());
     for key in keys {
-        let direction = best_direction(&key);
+        let direction = resolve_direction(&key, overrides, manifests);
         let (a_last, a_best) = aggregate(&metrics_a, &key, direction);
         let (b_last, b_best) = aggregate(&metrics_b, &key, direction);
         let delta_best = match (a_best, b_best) {
@@ -245,18 +262,131 @@ fn compute_metrics_diff(
     Ok(out)
 }
 
-/// Heuristic: keys containing "loss", "err", or "error" minimise; everything
-/// else maximises. Good enough for `val_loss` / `val_f1` / `accuracy` / `mae`.
-/// `mae` and `mse` are intentionally treated as max-better here (rare and
-/// users who care can pick keys explicitly); we only special-case the obvious
-/// loss-like names.
+/// `--direction` keys that name no metric in `keys`, sorted.
+fn unknown_direction_keys(
+    overrides: &HashMap<String, &'static str>,
+    keys: &[String],
+) -> Vec<String> {
+    let mut unknown: Vec<String> = overrides
+        .keys()
+        .filter(|k| !keys.contains(k))
+        .cloned()
+        .collect();
+    unknown.sort();
+    unknown
+}
+
+/// Name-only fallback for "which value is best". Keep identical to
+/// `metric_direction` in python/xrun_tui/src/xrun_tui/utils.py.
+///
+/// The key is split on non-alphanumerics and on ASCII camelCase boundaries
+/// (`valError` → `val`, `error`; an ALL-CAPS run before a capitalised word
+/// splits too: `FIDScore` → `fid`, `score`), and each token is checked (raw
+/// substring matching would flag `overall` or `kernel`-style words):
+/// - `loss` anywhere in a token (`val_loss`, `mseloss`, `lossy`), except
+///   `lossless`;
+/// - `err` / `perplexity` as a token prefix (`error`, `errors`, `rel_err`);
+/// - `mae mse rmse ppl wer cer fid nll eer bpb bpc` only as a whole token
+///   (optionally plural), so `cert`, `fidelity`, `werner` stay
+///   higher-is-better.
+///
+/// Everything else maximises.
 pub fn best_direction(key: &str) -> &'static str {
-    let k = key.to_ascii_lowercase();
-    if k.contains("loss") || k.contains("err") {
+    const EXACT: [&str; 11] = [
+        "mae", "mse", "rmse", "ppl", "wer", "cer", "fid", "nll", "eer", "bpb", "bpc",
+    ];
+    // camelCase boundary becomes a separator: lower/digit then upper, or the
+    // last capital of an upper run that precedes a lowercase letter.
+    let chars: Vec<char> = key.chars().collect();
+    let mut split = String::with_capacity(key.len() + 4);
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            let p = chars[i - 1];
+            let after_lower = p.is_ascii_lowercase() || p.is_ascii_digit();
+            let ends_caps_run =
+                p.is_ascii_uppercase() && chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase());
+            if after_lower || ends_caps_run {
+                split.push('_');
+            }
+        }
+        split.push(c);
+    }
+    let k = split.to_lowercase();
+    let low = k
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .any(|t| {
+            t.replace("lossless", "").contains("loss")
+                || t.starts_with("err")
+                || t.starts_with("perplexity")
+                || EXACT
+                    .iter()
+                    .any(|w| t == *w || t.strip_suffix('s') == Some(w))
+        });
+    if low {
         "min"
     } else {
         "max"
     }
+}
+
+/// Direction declared by a manifest's `policy.early_stop` when it targets
+/// `key`. Mode defaults to max, like `EarlyStopMode`.
+fn early_stop_direction(manifest: &Yaml, key: &str) -> Option<&'static str> {
+    let es = manifest.get("policy")?.get("early_stop")?;
+    if es.get("metric")?.as_str()? != key {
+        return None;
+    }
+    match es.get("mode").and_then(Yaml::as_str) {
+        Some("min") => Some("min"),
+        _ => Some("max"),
+    }
+}
+
+/// override → early_stop of run A, then run B → name heuristic.
+fn resolve_direction(
+    key: &str,
+    overrides: &HashMap<String, &'static str>,
+    manifests: &[Option<&Yaml>],
+) -> &'static str {
+    if let Some(d) = overrides.get(key) {
+        return d;
+    }
+    manifests
+        .iter()
+        .flatten()
+        .find_map(|m| early_stop_direction(m, key))
+        .unwrap_or_else(|| best_direction(key))
+}
+
+/// Parse `--direction KEY=min|max` values into a map.
+fn parse_direction_overrides(raw: &[String]) -> Result<HashMap<String, &'static str>> {
+    let mut out = HashMap::new();
+    for item in raw {
+        let item = item.trim();
+        let (key, val) = item.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("invalid --direction '{item}': expected KEY=min or KEY=max")
+        })?;
+        let key = key.trim();
+        if key.is_empty() {
+            anyhow::bail!("invalid --direction '{item}': empty metric key (expected KEY=min|max)");
+        }
+        let dir = match val.trim().to_ascii_lowercase().as_str() {
+            "min" => "min",
+            "max" => "max",
+            other => anyhow::bail!(
+                "invalid --direction '{item}': value '{other}' is not one of: min, max"
+            ),
+        };
+        // A repeat with the same value is harmless; a contradicting one is
+        // a typo, and "last one wins" would hide it.
+        if let Some(prev) = out.insert(key.to_string(), dir) {
+            if prev != dir {
+                anyhow::bail!("conflicting --direction for '{key}': both {prev} and {dir} given");
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn aggregate(metrics: &[StoredMetric], key: &str, direction: &str) -> (Option<f64>, Option<f64>) {
@@ -507,5 +637,164 @@ mod tests {
         assert_eq!(best_direction("rel_err"), "min");
         assert_eq!(best_direction("val_f1"), "max");
         assert_eq!(best_direction("accuracy"), "max");
+    }
+
+    #[test]
+    fn best_direction_extended_names() {
+        for k in [
+            "mae",
+            "val_rmse",
+            "test/mse",
+            "perplexity",
+            "val_ppl",
+            "wer",
+            "cer",
+            "fid",
+            "val_MAE",
+            "errors",
+            "mseloss",
+            "train.Loss",
+            "top5_error",
+        ] {
+            assert_eq!(best_direction(k), "min", "{k}");
+        }
+        for k in [
+            "accuracy",
+            "f1",
+            "val_f1",
+            "reward",
+            "auc",
+            "iou",
+            "bleu",
+            "overall",
+            "merge_rate",
+            "kernel_score",
+            "fidelity",
+            "certainty",
+            "terminal_reward",
+        ] {
+            assert_eq!(best_direction(k), "max", "{k}");
+        }
+    }
+
+    /// Shared with python/xrun_tui/tests/test_metric_direction.py
+    /// (`PARITY`): both sides must classify every key the same way.
+    const PARITY: [(&str, &str); 38] = [
+        ("val_loss", "min"),
+        ("train.Loss", "min"),
+        ("mseloss", "min"),
+        ("error", "min"),
+        ("top5_error", "min"),
+        ("errors", "min"),
+        ("mae", "min"),
+        ("MAE", "min"),
+        ("rmse", "min"),
+        ("mse", "min"),
+        ("perplexity", "min"),
+        ("ppl", "min"),
+        ("wer", "min"),
+        ("cer", "min"),
+        ("fid", "min"),
+        ("valLoss", "min"),
+        ("valError", "min"),
+        ("valMAE", "min"),
+        ("top5Error", "min"),
+        ("FIDScore", "min"),
+        ("nll", "min"),
+        ("eer", "min"),
+        ("bpb", "min"),
+        ("bpc", "min"),
+        // Known heuristic miss, pinned so both sides miss the same way (use
+        // --direction / early_stop.mode): a weight, not a metric.
+        ("loss_weight", "min"),
+        ("lossless_ratio", "max"),
+        ("losslessRatio", "max"),
+        ("accuracy", "max"),
+        ("val_f1", "max"),
+        ("reward", "max"),
+        ("fidelity", "max"),
+        ("certainty", "max"),
+        ("overall", "max"),
+        ("merge_rate", "max"),
+        ("kernel_score", "max"),
+        ("terminal_reward", "max"),
+        ("valFidelity", "max"),
+        ("mAP", "max"),
+    ];
+
+    #[test]
+    fn best_direction_parity_table() {
+        for (k, want) in PARITY {
+            assert_eq!(best_direction(k), want, "{k}");
+        }
+    }
+
+    #[test]
+    fn unknown_direction_keys_are_reported_sorted() {
+        let o = overrides(&["zzz=min", "val_loss=max", "aaa=max"]);
+        let keys = vec!["val_loss".to_string(), "acc".to_string()];
+        assert_eq!(unknown_direction_keys(&o, &keys), vec!["aaa", "zzz"]);
+        assert!(unknown_direction_keys(&overrides(&["acc=max"]), &keys).is_empty());
+    }
+
+    #[test]
+    fn direction_flag_conflicting_repeat_is_an_error() {
+        let o = overrides(&["a=min", "a=MIN"]);
+        assert_eq!(o["a"], "min");
+        let err = parse_direction_overrides(&["a=min".to_string(), "a=max".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("conflicting --direction for 'a'"), "{err}");
+    }
+
+    fn overrides(items: &[&str]) -> HashMap<String, &'static str> {
+        let raw: Vec<String> = items.iter().map(|s| s.to_string()).collect();
+        parse_direction_overrides(&raw).unwrap()
+    }
+
+    #[test]
+    fn direction_override_beats_early_stop_beats_heuristic() {
+        let es_max = yaml("policy:\n  early_stop:\n    metric: val_loss\n    patience: 3\n");
+        let es_min =
+            yaml("policy:\n  early_stop:\n    metric: score\n    patience: 3\n    mode: min\n");
+        let none = yaml("name: x\n");
+
+        // heuristic only
+        assert_eq!(
+            resolve_direction("val_loss", &HashMap::new(), &[Some(&none)]),
+            "min"
+        );
+        // early_stop (default mode max) beats the name heuristic
+        assert_eq!(
+            resolve_direction("val_loss", &HashMap::new(), &[Some(&es_max)]),
+            "max"
+        );
+        // early_stop min beats heuristic max; B is consulted when A has none
+        assert_eq!(
+            resolve_direction("score", &HashMap::new(), &[Some(&none), Some(&es_min)]),
+            "min"
+        );
+        // early_stop for a different metric is ignored
+        assert_eq!(
+            resolve_direction("val_loss", &HashMap::new(), &[Some(&es_min)]),
+            "min"
+        );
+        // explicit override beats everything
+        let o = overrides(&["score=max", "val_loss=max"]);
+        assert_eq!(resolve_direction("score", &o, &[Some(&es_min)]), "max");
+        assert_eq!(resolve_direction("val_loss", &o, &[Some(&none)]), "max");
+    }
+
+    #[test]
+    fn direction_flag_accepts_values_and_rejects_bad_ones() {
+        let o = overrides(&["a=min", " b = MAX "]);
+        assert_eq!(o["a"], "min");
+        assert_eq!(o["b"], "max");
+        for bad in ["nokey", "a=up", "=min", "a="] {
+            let err = parse_direction_overrides(&[bad.to_string()]).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("--direction"), "{msg}");
+            assert!(msg.contains("min") && msg.contains("max"), "{msg}");
+        }
     }
 }

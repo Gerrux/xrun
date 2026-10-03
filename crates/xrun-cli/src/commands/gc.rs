@@ -14,16 +14,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use xrun_core::{
-    config::credentials::VastCredentials, vendor::InstanceHandle, Credentials, Store, VendorAdapter,
-};
+use xrun_core::{vendor::InstanceHandle, Store, VendorAdapter};
 use xrun_vast::VastAdapter;
 
 use crate::cli::GcArgs;
+use crate::commands::common::{open_store, resolve_vast_credentials};
 
 pub fn run(args: &GcArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let store = open_store(db_path)?;
 
     // gc currently reconciles only vast instances. Local PIDs are reaped via
     // `xrun stop` / `xrun fix-status`; including them here would mark every
@@ -124,18 +122,4 @@ pub fn run(args: &GcArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
 
     println!("done");
     Ok(())
-}
-
-fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.vast.api_key.is_some() {
-            return creds.vast;
-        }
-    }
-    if let Ok(Some(token)) = Credentials::import_vast_native() {
-        return VastCredentials {
-            api_key: Some(token),
-        };
-    }
-    VastCredentials::default()
 }

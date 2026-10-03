@@ -8,24 +8,16 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use xrun_core::{manifest::Manifest, paths, Credentials, RunId, Store};
+use xrun_core::{manifest::Manifest, paths, Credentials};
 use xrun_kaggle::{snapshot, KaggleAdapter};
 
 use crate::cli::{LaunchArgs, RerunArgs};
+use crate::commands::common::{open_store, resolve_run};
 use crate::commands::{launch, patch};
 
 pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
-    let parsed: RunId = args
-        .id
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.id))?;
-
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
-    let run = store
-        .get_run(&parsed)
-        .context("failed to query run")?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {}", args.id))?;
+    let store = open_store(db_path)?;
+    let run = resolve_run(&store, &args.id)?;
     drop(store);
 
     // The original manifest was copied into runs/<id>/manifest.yaml at launch

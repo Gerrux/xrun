@@ -8,13 +8,13 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use xrun_core::{vendor::InstanceHandle, RunId, Store};
+use xrun_core::{vendor::InstanceHandle, Store};
 
 use crate::cli::ShellArgs;
+use crate::commands::common::{open_store, resolve_run, select_run, RunSelection};
 
 pub fn run(args: &ShellArgs, db_path: &Path) -> Result<()> {
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let store = open_store(db_path)?;
 
     let handle = resolve_handle(&store, args.id.as_deref())?;
     let host = handle
@@ -53,27 +53,20 @@ fn resolve_handle(store: &Store, id: Option<&str>) -> Result<InstanceHandle> {
     let instance_id = match id {
         Some(s) if s.chars().all(|c| c.is_ascii_digit()) => s.to_string(),
         Some(s) => {
-            // ULID — resolve via run.
-            let rid: RunId = s
-                .parse()
-                .with_context(|| format!("invalid id (not a vast id or ULID): {s}"))?;
-            let run = store
-                .get_run(&rid)?
-                .ok_or_else(|| anyhow::anyhow!("run not found: {s}"))?;
+            // Run id (full, prefix or tail) — resolve via the run.
+            let run = resolve_run(store, s)?;
             run.instance_id
                 .ok_or_else(|| anyhow::anyhow!("run {s} has no instance yet"))?
         }
-        None => {
-            let active = store.list_active_runs()?;
-            match active.len() {
-                0 => anyhow::bail!("no active runs; pass an id"),
-                1 => active[0]
-                    .instance_id
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("active run has no instance yet"))?,
-                _ => anyhow::bail!("multiple active runs; pass a run id or vast id"),
+        None => match select_run(store, None)? {
+            RunSelection::Run(run) => run
+                .instance_id
+                .ok_or_else(|| anyhow::anyhow!("active run has no instance yet"))?,
+            RunSelection::NoActive => anyhow::bail!("no active runs; pass an id"),
+            RunSelection::Multiple(_) => {
+                anyhow::bail!("multiple active runs; pass a run id or vast id")
             }
-        }
+        },
     };
 
     let instance = store

@@ -6,20 +6,12 @@ use anyhow::{bail, Context, Result};
 use xrun_core::{GlobalConfig, RunId, Store};
 
 use crate::cli::MetricsArgs;
+use crate::commands::common::{open_store, resolve_run};
 
 pub fn run(args: &MetricsArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
-    let id: RunId = args
-        .id
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.id))?;
-
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
-
-    let run = store
-        .get_run(&id)
-        .context("failed to query run")?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {}", args.id))?;
+    let store = open_store(db_path)?;
+    let run = resolve_run(&store, &args.id)?;
+    let id = run.id.clone();
 
     // --mlflow-url: print the URL to this run in MLflow UI
     if args.mlflow_url {
@@ -56,7 +48,7 @@ pub fn run(args: &MetricsArgs, db_path: &Path, config_dir: &Path) -> Result<()> 
             .context("failed to list metric keys")?;
 
         if all_keys.is_empty() {
-            bail!("no metrics for run {} — nothing to plot", args.id);
+            bail!("no metrics for run {} — nothing to plot", run.id);
         }
 
         let keys_to_plot: Vec<String> = match &filter_keys {
@@ -125,7 +117,7 @@ pub fn run(args: &MetricsArgs, db_path: &Path, config_dir: &Path) -> Result<()> 
                 serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
             );
         } else if keys.is_empty() {
-            println!("no metrics for run {}", args.id);
+            println!("no metrics for run {}", run.id);
         } else {
             println!("Available metric keys:");
             for (k, c) in &keys {

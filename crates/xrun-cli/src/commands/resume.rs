@@ -20,17 +20,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use xrun_core::{
-    config::credentials::{KaggleCredentials, VastCredentials},
-    store::{Run, RunId, RunStatus},
+    store::{Run, RunStatus},
     vendor::InstanceHandle,
-    Credentials, Store, VendorAdapter,
+    Store, VendorAdapter,
 };
-use xrun_kaggle::KaggleAdapter;
-use xrun_local::{process::process_alive, LocalAdapter};
-use xrun_ssh::SshAdapter;
-use xrun_vast::VastAdapter;
+use xrun_local::process::process_alive;
 
 use crate::cli::ResumeArgs;
+use crate::commands::common::{build_adapter, open_store, resolve_run, vendor_or_vast, AdapterCtx};
 use crate::commands::launch::spawn_daemon;
 
 #[derive(Debug, Serialize)]
@@ -62,17 +59,10 @@ pub struct Report {
 }
 
 pub fn run(args: &ResumeArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+    let store = open_store(db_path)?;
 
     let runs = if let Some(ref id_str) = args.id {
-        let run_id: RunId = id_str
-            .parse()
-            .with_context(|| format!("invalid run ID: {id_str}"))?;
-        let run = store
-            .get_run(&run_id)?
-            .ok_or_else(|| anyhow::anyhow!("run not found: {id_str}"))?;
-        vec![run]
+        vec![resolve_run(&store, id_str)?]
     } else {
         store
             .list_active_runs()?
@@ -307,103 +297,9 @@ fn build_vendor(
     runs_dir: &Path,
     config_dir: &Path,
 ) -> Result<Option<Box<dyn VendorAdapter>>> {
-    let run_id = &run.id;
-    let v: Box<dyn VendorAdapter> = match run.vendor.as_str() {
-        "kaggle" => {
-            let creds = resolve_kaggle_credentials(config_dir);
-            let data_dir = db_path.parent().unwrap_or(db_path);
-            let adapter = KaggleAdapter::new()
-                .with_store_path(data_dir.to_path_buf())
-                .with_credentials(creds);
-            adapter.set_run_id(run_id);
-            Box::new(adapter)
-        }
-        "local" => {
-            let adapter_store = Store::open(db_path)?;
-            let adapter =
-                LocalAdapter::with_store_and_runs_dir(adapter_store, runs_dir.to_path_buf());
-            adapter.set_run_id(run_id);
-            Box::new(adapter)
-        }
-        "ssh" => {
-            let manifest_path = runs_dir.join(run_id.to_string()).join("manifest.yaml");
-            let yaml = match std::fs::read_to_string(&manifest_path) {
-                Ok(y) => y,
-                Err(_) => return Ok(None),
-            };
-            let m: xrun_core::manifest::Manifest = match serde_yaml::from_str(&yaml) {
-                Ok(m) => m,
-                Err(_) => return Ok(None),
-            };
-            let ssh_spec = match m.ssh.as_ref() {
-                Some(s) => s,
-                None => return Ok(None),
-            };
-            let creds = Credentials::load(config_dir).unwrap_or_default();
-            let host_creds = match creds.ssh_hosts.get(&ssh_spec.host_alias) {
-                Some(h) => h,
-                None => return Ok(None),
-            };
-            let conn = match SshAdapter::resolve_conn(&ssh_spec.host_alias, host_creds) {
-                Ok(c) => c,
-                Err(_) => return Ok(None),
-            };
-            let workdir_root = ssh_spec
-                .workdir
-                .clone()
-                .or_else(|| host_creds.default_workdir.clone())
-                .unwrap_or_else(|| "/tmp/xrun".to_string());
-            let adapter_store = Store::open(db_path)?;
-            let adapter = SshAdapter::new(adapter_store, conn, workdir_root);
-            adapter.set_run_id(run_id);
-            Box::new(adapter)
-        }
-        _ => {
-            let creds = resolve_vast_credentials(config_dir);
-            let adapter_store = Store::open(db_path)?;
-            let adapter = VastAdapter::new(creds, adapter_store);
-            adapter.set_run_id(run_id);
-            Box::new(adapter)
-        }
-    };
-    Ok(Some(v))
-}
-
-fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.vast.api_key.is_some() {
-            return creds.vast;
-        }
-    }
-    if let Ok(Some(token)) = Credentials::import_vast_native() {
-        return VastCredentials {
-            api_key: Some(token),
-        };
-    }
-    VastCredentials::default()
-}
-
-fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.kaggle.token.is_some()
-            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
-        {
-            return creds.kaggle;
-        }
-    }
-    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
-        return KaggleCredentials {
-            token: None,
-            username: Some(username),
-            key: Some(key),
-        };
-    }
-    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
-        return KaggleCredentials {
-            token: Some(token),
-            username: None,
-            key: None,
-        };
-    }
-    KaggleCredentials::default()
+    let ctx = AdapterCtx::new("resume", db_path, runs_dir, config_dir, &run.id);
+    // An unrecognised vendor string has always been treated as vast here.
+    // Any construction failure (ssh manifest / creds missing, store busy)
+    // means "cannot reconstruct", reported as a skip by the caller.
+    Ok(build_adapter(vendor_or_vast(&run.vendor), &ctx).ok())
 }

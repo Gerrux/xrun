@@ -58,6 +58,10 @@ Exit 0 при `status=done`, 1 при `failed`, 2 при cancellation, 130 пр�
 --json                      машинно-читаемо
 ```
 
+### `<run-id>` — как указать ран
+
+Везде, где команда принимает `<run-id>` (`show`, `logs`, `events`, `metrics`, `pull`, `stop`, `rerun`, `diff`, `resume`, `fix-status`, `shell`), подходит полный ULID или его уникальный префикс либо суффикс длиной от 4 символов, без учёта регистра. Если совпадений несколько, команда перечислит кандидатов (id и имя) и попросит добавить символов; если ни одного — `run not found: <id> (see xrun ls)`. Исключение — `shell`: аргумент из одних цифр считается id инстанса vast, поэтому цифровой хвост ULID там не сработает — дайте префикс или больше символов.
+
 ### `xrun show <run-id>`
 Полная карточка run: манифест, события, последние метрики, артефакты, ссылки.
 
@@ -104,11 +108,26 @@ stdout/stderr.
 
 ### `xrun diff <run-a> <run-b> [flags]`
 Сравнение двух запусков side-by-side: различающиеся поля манифеста и метрики
-(last + best per key). Best-направление выбирается по имени ключа: `loss`/`err`
-→ min, всё остальное → max.
+(last + best per key). Best-направление (min/max) для каждого ключа выбирается
+по порядку:
+
+1. `--direction KEY=min|max` — явное указание пользователя;
+2. `policy.early_stop` манифеста (сначала run a, затем run b), если его `metric`
+   равен ключу: берётся `mode` (по умолчанию max);
+3. имя ключа: min, если в нём есть токен `loss` (кроме `lossless`), `err*`,
+   `perplexity*`, `mae`, `mse`, `rmse`, `ppl`, `wer`, `cer`, `fid`, `nll`, `eer`,
+   `bpb`, `bpc` (ключ режется по не-буквенно-цифровым символам и по границе
+   camelCase — `valError` как `val_error`, `FIDScore` как `fid_score`; короткие
+   слова — только целым токеном), иначе max.
 
 ```
 --keys k1,k2,...    отфильтровать ключи метрик (по умолчанию объединение)
+--direction K=min|max  направление для ключа; повторяемый или через запятую
+                       (--direction mae=min,score=max); иное значение или
+                       противоречивый повтор ключа (a=min,a=max) — ошибка;
+                       ключ, которого нет ни у одного из runs, игнорируется
+                       с предупреждением в stderr (stdout/JSON и exit code
+                       не меняются)
 --manifest-only     только манифест-секция
 --metrics-only      только метрики-секция
 --json              машинно-читаемый вывод
@@ -229,10 +248,35 @@ xrun doctor --manifest exp/a.yaml --manifest exp/b.yaml --json
 xrun config init                    создать дефолтные файлы
 xrun config set vast.api_key ...    точечный set; пути: <section>.<field>,
                                     ssh.<alias>.<field>, vendors.<name>.<field>
+xrun config set <key> --stdin       значение читается из stdin (один хвостовой
+                                    \n / \r\n срезается), а не из argv — так
+                                    секреты не попадают в список процессов;
+                                    нужно ровно одно: VALUE или --stdin
+xrun config unset <key>             сбросить ключ; печатает `<key>: <unset>`,
+                                    повторный вызов — не ошибка
 xrun config show                    текущая конфигурация (без секретов)
 xrun config probe --vendor <name>   валидация переданных через
                                     XRUN_PROBE_* env vars кредов без записи на
                                     диск; используется визардом
+```
+
+Что делает `unset`:
+
+- ключи кредов (`vast.api_key`, `kaggle.*`, `mlflow.*`, `wandb.api_key`,
+  `ntfy.*`, `telegram.*`, `webhook.url`) — поле очищается в `credentials.toml`;
+- `ssh.<alias>` — удаляет хост целиком, `ssh.<alias>.<field>` — очищает одно поле;
+- `vendors.<name>.<field>` — возвращает значение по умолчанию
+  (`vendors.<name>.extra.<k>` — удаляет запись из `extra`);
+- любой другой ключ `config.toml` — возвращается к значению по умолчанию;
+  неизвестный ключ — ошибка `unknown config key`; секция целиком
+  (`notify`, `budget`) не сбрасывается — только по полям.
+
+Пустое значение для ключа кредов (`config set vast.api_key ""` или пустой
+stdin при `--stdin`) отклоняется: очистка — только через `unset`.
+
+```bash
+printf '%s' "$KEY" | xrun config set vast.api_key --stdin
+xrun config unset vast.api_key
 ```
 
 Per-vendor дефолты живут в `[vendors.<name>]` секции `config.toml`:

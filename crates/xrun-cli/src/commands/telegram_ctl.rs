@@ -25,6 +25,8 @@ use xrun_notify::{
     messages, Priority,
 };
 
+use crate::commands::common::match_runs;
+
 /// Parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -60,16 +62,10 @@ pub fn parse(text: &str) -> Option<Command> {
     })
 }
 
-/// Resolve a full id or an unambiguous tail against running runs.
+/// Resolve a full id or an unambiguous prefix / tail against running runs.
 pub fn resolve_run<'a>(runs: &'a [Run], id: &str) -> Result<&'a Run, String> {
     let id = id.trim();
-    let hits: Vec<&Run> = runs
-        .iter()
-        .filter(|r| {
-            let full = r.id.to_string();
-            full == id || (id.len() >= 4 && full.ends_with(id))
-        })
-        .collect();
+    let hits = match_runs(runs, id);
     match hits.len() {
         1 => Ok(hits[0]),
         0 => Err(format!("no running run matches `{id}` (see /status)")),

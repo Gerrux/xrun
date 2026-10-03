@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use xrun_core::{
     budget,
-    config::credentials::{KaggleCredentials, VastCredentials},
     manifest::{Manifest, Vendor},
     store::{InstanceCaps, RunId, RunStatus},
     vendor::InstanceHandle,
@@ -22,53 +21,9 @@ use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::LaunchArgs;
+use crate::commands::common::{resolve_kaggle_credentials, resolve_vast_credentials};
 use crate::commands::confirm::{confirm_billable_or_exit, ConfirmEstimate};
 use crate::commands::patch;
-
-fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.kaggle.token.is_some()
-            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
-        {
-            return creds.kaggle;
-        }
-    }
-    // Fall back to native kaggle.json
-    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
-        return KaggleCredentials {
-            token: None,
-            username: Some(username),
-            key: Some(key),
-        };
-    }
-    // Fall back to access_token file
-    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
-        return KaggleCredentials {
-            token: Some(token),
-            username: None,
-            key: None,
-        };
-    }
-    KaggleCredentials::default()
-}
-
-/// Resolve `vast.api_key` from xrun's config, falling back to the legacy
-/// `~/.config/vastai/vast_api_key` file. Returns `None` if neither is set —
-/// callers can still proceed for `--dry-run` / `validate` paths that don't
-/// touch the network.
-fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.vast.api_key.is_some() {
-            return creds.vast;
-        }
-    }
-    if let Ok(Some(token)) = Credentials::import_vast_native() {
-        return VastCredentials {
-            api_key: Some(token),
-        };
-    }
-    VastCredentials::default()
-}
 
 #[derive(Debug, serde::Serialize)]
 pub struct LaunchResult {

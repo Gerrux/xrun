@@ -10,6 +10,7 @@ use xrun_core::{manifest::Manifest, Store};
 use xrun_kaggle::KaggleAdapter;
 
 use crate::cli::DoctorArgs;
+use crate::commands::common::resolve_kaggle_credentials;
 
 struct Check {
     name: &'static str,
@@ -769,34 +770,6 @@ fn requires_checks(manifest: &Manifest, checks: &mut Vec<Check>) {
             detail,
         });
     }
-}
-
-fn resolve_kaggle_credentials(
-    config_dir: &Path,
-) -> xrun_core::config::credentials::KaggleCredentials {
-    use xrun_core::Credentials;
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.kaggle.token.is_some()
-            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
-        {
-            return creds.kaggle;
-        }
-    }
-    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
-        return xrun_core::config::credentials::KaggleCredentials {
-            token: None,
-            username: Some(username),
-            key: Some(key),
-        };
-    }
-    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
-        return xrun_core::config::credentials::KaggleCredentials {
-            token: Some(token),
-            username: None,
-            key: None,
-        };
-    }
-    xrun_core::config::credentials::KaggleCredentials::default()
 }
 
 fn binary_available(name: &str) -> bool {

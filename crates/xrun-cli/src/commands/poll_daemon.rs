@@ -4,7 +4,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use xrun_core::{
-    config::credentials::{KaggleCredentials, VastCredentials},
     manifest::Manifest,
     store::{RunId, RunStatus},
     vendor::InstanceHandle,
@@ -17,6 +16,7 @@ use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 use crate::cli::PollDaemonArgs;
+use crate::commands::common::{resolve_kaggle_credentials, resolve_vast_credentials};
 
 /// Load the saved manifest for `run_id` and build a `MetricSinksConfig`.
 /// Returns `None` only when the manifest file is unreadable / unparsable —
@@ -37,45 +37,6 @@ fn load_sinks_config(
         global,
         &run_name,
     ))
-}
-
-pub(crate) fn resolve_vast_credentials(config_dir: &Path) -> VastCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.vast.api_key.is_some() {
-            return creds.vast;
-        }
-    }
-    if let Ok(Some(token)) = Credentials::import_vast_native() {
-        return VastCredentials {
-            api_key: Some(token),
-        };
-    }
-    VastCredentials::default()
-}
-
-fn resolve_kaggle_credentials(config_dir: &Path) -> KaggleCredentials {
-    if let Ok(creds) = Credentials::load(config_dir) {
-        if creds.kaggle.token.is_some()
-            || (creds.kaggle.username.is_some() && creds.kaggle.key.is_some())
-        {
-            return creds.kaggle;
-        }
-    }
-    if let Ok(Some((username, key))) = Credentials::import_kaggle_native() {
-        return KaggleCredentials {
-            token: None,
-            username: Some(username),
-            key: Some(key),
-        };
-    }
-    if let Ok(Some(token)) = Credentials::import_kaggle_access_token() {
-        return KaggleCredentials {
-            token: Some(token),
-            username: None,
-            key: None,
-        };
-    }
-    KaggleCredentials::default()
 }
 
 /// Run the poller daemon for an existing run.

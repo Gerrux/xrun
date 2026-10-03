@@ -4,23 +4,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use xrun_core::{RunId, RunStatus, Store, StoredEvent};
+use xrun_core::{RunStatus, StoredEvent};
 
 use crate::cli::EventsArgs;
+use crate::commands::common::{open_store, resolve_run};
 
 pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
-    let id: RunId = args
-        .id
-        .parse()
-        .with_context(|| format!("invalid run ID: {}", args.id))?;
-
-    let store = Store::open(db_path)
-        .with_context(|| format!("failed to open store at {}", db_path.display()))?;
-
-    let run = store
-        .get_run(&id)
-        .context("failed to query run")?
-        .ok_or_else(|| anyhow::anyhow!("run not found: {}", args.id))?;
+    let store = open_store(db_path)?;
+    let run = resolve_run(&store, &args.id)?;
+    let id = run.id.clone();
 
     let events = store
         .list_events(&run.id)
@@ -36,7 +28,7 @@ pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
 
     if !args.follow {
         if events.is_empty() {
-            println!("no events for run {}", args.id);
+            println!("no events for run {}", run.id);
         } else {
             print_header();
             for e in &events {
@@ -83,7 +75,7 @@ pub fn run(args: &EventsArgs, db_path: &Path) -> Result<()> {
             for e in &final_events {
                 emit_event(e, args.json)?;
             }
-            eprintln!("run {} {}", args.id, current.status.as_str());
+            eprintln!("run {} {}", run.id, current.status.as_str());
             break;
         }
     }
