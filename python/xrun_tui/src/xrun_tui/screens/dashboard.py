@@ -10,6 +10,7 @@ from textual.binding import Binding
 from textual.containers import Grid, Vertical
 from xrun_tui.live import LiveScreen
 from textual.widgets import DataTable, Footer, Static
+from textual.widgets.data_table import CellDoesNotExist, RowDoesNotExist
 from xrun_tui.widgets.status_bar import StatusBar
 from xrun_tui.widgets.title_bar import TitleBar
 
@@ -47,6 +48,27 @@ _NAME_MAX = 50
 _SCROLLBAR = 2   # room kept for the vertical scrollbar
 _ACTIVE_FIXED = (1, 10, 8, 14, 10, 8, 26)   # dot id vendor status when cost metric
 _RECENT_FIXED = (1, 10, 8, 14, 10, 8)       # dot id vendor status when cost
+
+
+def _cursor_key(t: DataTable) -> str | None:
+    """Run id under the cursor, or None for an empty table."""
+    try:
+        return t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+    except CellDoesNotExist:
+        return None
+
+
+def _restore_cursor(t: DataTable, key: str | None) -> None:
+    """Put the cursor back on run *key* after a refill (rows are keyed by id).
+
+    Every 5 s tick clears and refills the tables; without this the cursor
+    jumped to the first row while the user was moving through the list."""
+    if key is None:
+        return
+    try:
+        t.move_cursor(row=t.get_row_index(key), animate=False)
+    except RowDoesNotExist:
+        pass  # the run left this table (finished / aged out)
 
 
 def name_width(avail: int, fixed: tuple[int, ...]) -> int:
@@ -483,6 +505,7 @@ class DashboardScreen(LiveScreen):
         if self._toggle_empty(sel, bool(runs)):
             t.clear()
             return
+        keep = _cursor_key(t)
         self._set_columns(
             t, _ACTIVE_FIXED,
             (" ", "ID", "Name", "Vendor", "Status", "When", "Cost", "Metric"),
@@ -507,6 +530,7 @@ class DashboardScreen(LiveScreen):
                 spark_cell,
                 key=r["id"],
             )
+        _restore_cursor(t, keep)
 
     def _toggle_empty(self, sel: str, has_rows: bool) -> bool:
         """Show the table when it has rows, a centred message otherwise.
@@ -521,6 +545,7 @@ class DashboardScreen(LiveScreen):
         if self._toggle_empty(sel, bool(runs)):
             t.clear()
             return
+        keep = _cursor_key(t)
         self._set_columns(
             t, _RECENT_FIXED,
             (" ", "ID", "Name", "Vendor", "Status", "When", "Cost"),
@@ -539,6 +564,7 @@ class DashboardScreen(LiveScreen):
                 Text(cost(r), style="#e0af68"),
                 key=r["id"],
             )
+        _restore_cursor(t, keep)
 
     # ── KPI cards ────────────────────────────────────────────────────────────
 

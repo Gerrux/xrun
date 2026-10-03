@@ -162,6 +162,36 @@ def test_table_returns_when_rows_appear_and_fits_the_width() -> None:
     asyncio.run(scenario())
 
 
+def test_refresh_keeps_the_cursor_on_the_same_run() -> None:
+    async def scenario() -> None:
+        db = _FakeDB([_run(i, "done") for i in range(6)])
+        app = _Host(db)
+        async with app.run_test(size=(140, 42)) as pilot:
+            screen = await _mount_dashboard(app, pilot)
+            t = screen.query_one("#dash-recent", DataTable)
+
+            def under_cursor() -> str:
+                return t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+
+            t.move_cursor(row=3, animate=False)
+            picked = under_cursor()
+
+            # The 5 s tick refills the table; a new run lands on top.
+            db.runs_data = [_run(99, "done")] + db.runs_data
+            await screen._refresh()
+            await pilot.pause(0.2)
+            assert under_cursor() == picked
+            assert t.cursor_row == 4
+
+            # The run is gone: no crash, the cursor lands on some other row.
+            db.runs_data = [r for r in db.runs_data if r["id"] != picked]
+            await screen._refresh()
+            await pilot.pause(0.2)
+            assert under_cursor() != picked
+
+    asyncio.run(scenario())
+
+
 # ── Status bar ─────────────────────────────────────────────────────────────
 
 class _SizedBar(StatusBar):
