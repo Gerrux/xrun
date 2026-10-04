@@ -896,14 +896,21 @@ run:
         let rid: RunId = ulid::Ulid::new().to_string().parse().unwrap();
         let env = a.env_prefix(&rid, "/tmp/xrun/abc");
         assert!(env.starts_with("export ") && env.ends_with(" && "), "{env}");
-        let script = format!("{env}true && printenv XRUN_RUN_DIR PYTHONUNBUFFERED");
-        let Ok(out) = std::process::Command::new("bash")
+        // No usable bash: none on PATH, or the Windows WSL stub without a
+        // distro, which prints a UTF-16 notice instead of running anything.
+        let probe = std::process::Command::new("bash")
+            .args(["-c", "echo ok"])
+            .output();
+        if !matches!(probe, Ok(ref o) if o.stdout == b"ok\n") {
+            return;
+        }
+        // One name per printenv: BSD printenv (macOS) ignores the rest.
+        let script = format!("{env}true && printenv XRUN_RUN_DIR && printenv PYTHONUNBUFFERED");
+        let out = std::process::Command::new("bash")
             .args(["-c", &script])
             .env_remove("PYTHONUNBUFFERED")
             .output()
-        else {
-            return; // no bash on PATH
-        };
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "/tmp/xrun/abc\n1\n");
     }
 

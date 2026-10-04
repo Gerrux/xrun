@@ -148,8 +148,16 @@ pub fn apply_keep_last(files: &mut Vec<PathBuf>, keep_last: u32) {
 mod glob_tests {
     use super::*;
 
-    /// Run the remote glob command locally under bash; `None` = no bash.
+    /// Run the remote glob command locally under bash; `None` = no usable
+    /// bash (none on PATH, or the Windows WSL stub without a distro).
     fn run_glob(dir: &Path, glob: &str) -> Option<Vec<String>> {
+        let probe = std::process::Command::new("bash")
+            .args(["-c", "echo ok"])
+            .output()
+            .ok()?;
+        if probe.stdout != b"ok\n" {
+            return None;
+        }
         let dir_s = dir.display().to_string().replace('\\', "/");
         let cmd = glob_command(&format!("{dir_s}/{glob}"));
         let out = std::process::Command::new("bash")
