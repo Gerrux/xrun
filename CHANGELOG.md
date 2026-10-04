@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.10.0] - 2026-10-05
+
+Release integrity and update notices: every release from now on ships
+`SHA256SUMS` and the installers refuse an unverified archive; `xrun
+watchdog` tells you when a new release is out.
+
 ### Added
 
 - Releases ship `SHA256SUMS`; `install.sh` / `install.ps1` verify the
