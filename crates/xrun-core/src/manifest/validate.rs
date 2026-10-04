@@ -1,11 +1,33 @@
 #![deny(unsafe_code)]
 
-use super::types::{Manifest, Vendor};
+use super::types::{Manifest, Vendor, ON_DONE_VALUES, PULL_ON_VALUES};
 use crate::error::ManifestError;
 
 pub fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
     validate_name(&manifest.name)?;
     validate_vendor_sections(manifest)?;
+    if let Some(v) = manifest.policy.as_ref().and_then(|p| p.on_done.as_deref()) {
+        if !ON_DONE_VALUES.contains(&v) {
+            return Err(ManifestError::Validation(format!(
+                "policy.on_done must be one of {}: {:?}",
+                ON_DONE_VALUES.join(" | "),
+                v
+            )));
+        }
+    }
+    if let Some(v) = manifest
+        .artifacts
+        .as_ref()
+        .and_then(|a| a.pull_on.as_deref())
+    {
+        if !PULL_ON_VALUES.contains(&v) {
+            return Err(ManifestError::Validation(format!(
+                "artifacts.pull_on must be one of {}: {:?}",
+                PULL_ON_VALUES.join(" | "),
+                v
+            )));
+        }
+    }
     let dst_is_host_native = matches!(manifest.vendor, Vendor::Local);
     if let Some(data) = &manifest.data {
         for source in data {

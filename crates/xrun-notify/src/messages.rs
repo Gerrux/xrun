@@ -53,7 +53,15 @@ pub fn fmt_duration(secs: i64) -> String {
     }
 }
 
-pub fn run_done(run: &RunRef, duration_secs: Option<i64>, cost_usd: Option<f64>) -> Notification {
+/// `artifacts_dir`: set when the poller already pulled the artifacts, so the
+/// push points at them instead of suggesting `xrun pull` (the instance may be
+/// gone by now).
+pub fn run_done(
+    run: &RunRef,
+    duration_secs: Option<i64>,
+    cost_usd: Option<f64>,
+    artifacts_dir: Option<&str>,
+) -> Notification {
     let mut parts = Vec::new();
     if let Some(d) = duration_secs {
         parts.push(format!("took {}", fmt_duration(d)));
@@ -64,7 +72,10 @@ pub fn run_done(run: &RunRef, duration_secs: Option<i64>, cost_usd: Option<f64>)
         format!("run.done:{}", run.id),
         format!("✅ {} done", run.label()),
     )
-    .body(format!("{}\nxrun pull {}", parts.join(", "), run.id))
+    .body(match artifacts_dir {
+        Some(dir) => format!("{}\nartifacts: {dir}", parts.join(", ")),
+        None => format!("{}\nxrun pull {}", parts.join(", "), run.id),
+    })
     .run(&run.id)
     .tag("white_check_mark")
 }
@@ -367,12 +378,19 @@ mod tests {
 
     #[test]
     fn done_mentions_cost_and_pull() {
-        let n = run_done(&run(), Some(3725), Some(1.234));
+        let n = run_done(&run(), Some(3725), Some(1.234), None);
         assert!(n.title.contains("resnet_v2"));
         assert!(n.body.contains("1h02m"));
         assert!(n.body.contains("$1.23"));
         assert!(n.body.contains("xrun pull"));
         assert_eq!(n.kind, Kind::RunDone);
+    }
+
+    #[test]
+    fn done_points_at_local_artifacts_when_already_pulled() {
+        let n = run_done(&run(), None, None, Some("/runs/x/artifacts"));
+        assert!(n.body.contains("artifacts: /runs/x/artifacts"));
+        assert!(!n.body.contains("xrun pull"));
     }
 
     #[test]

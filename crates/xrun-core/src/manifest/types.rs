@@ -206,6 +206,151 @@ pub struct Artifacts {
     pub pull_on: Option<String>,
 }
 
+/// Allowed values of `policy.on_done`.
+pub const ON_DONE_VALUES: &[&str] = &["stop_instance", "keep"];
+/// Allowed values of `artifacts.pull_on`.
+pub const PULL_ON_VALUES: &[&str] = &["done"];
+
+/// What the poller does when a run finishes naturally (`done`), resolved
+/// from `policy.on_done` + `artifacts.{patterns,pull_on}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DonePolicy {
+    /// Destroy the instance after a successful finish (default).
+    pub stop_instance: bool,
+    /// Remote globs to pull into `runs/<id>/artifacts` before destroying.
+    /// Empty = no auto-pull.
+    pub pull_patterns: Vec<String>,
+    /// `policy.on_done` was written in the manifest. Without it a run that
+    /// reused an instance (`--reuse-instance`) behaves as `keep`.
+    pub explicit_on_done: bool,
+    /// Directory relative patterns are anchored at (vast: `run.workdir`).
+    pub anchor_dir: Option<String>,
+    /// Safety-net pattern pulled when the instance is about to be destroyed
+    /// and no `artifacts.patterns` were given: what `xrun pull --ckpt best`
+    /// would fetch. `None` where files are already local (local, ssh,
+    /// kaggle's whole-output pull).
+    pub guard_pattern: Option<String>,
+    /// Natural `done` really calls `vendor.destroy`. False for local/ssh,
+    /// where destroy kills the (possibly recycled) PID and saves nothing: the
+    /// instance row is only marked destroyed.
+    pub kill_remote: bool,
+}
+
+impl Default for DonePolicy {
+    fn default() -> Self {
+        Self {
+            stop_instance: true,
+            pull_patterns: Vec::new(),
+            explicit_on_done: false,
+            anchor_dir: None,
+            guard_pattern: None,
+            kill_remote: true,
+        }
+    }
+}
+
+/// Map `xrun pull --ckpt` to a remote glob. Kaggle ignores it (whole output).
+pub fn ckpt_to_remote_pattern(ckpt: &str, artifacts: bool) -> String {
+    if artifacts {
+        return "**/*".to_string();
+    }
+    match ckpt {
+        "all" => "**/*".to_string(),
+        "best" => "**/best*".to_string(),
+        "latest" => "**/*.pt".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// vast globs over ssh from `$HOME`, but training ran in `run.workdir`
+/// (default `/workspace`): anchor relative patterns there.
+pub fn anchor_vast_pattern(workdir: Option<&str>, pattern: &str) -> String {
+    if pattern.starts_with('/') {
+        return pattern.to_string();
+    }
+    let workdir = workdir.unwrap_or("/workspace").trim_end_matches('/');
+    format!("{workdir}/{pattern}")
+}
+
+impl DonePolicy {
+    /// Resolve from a manifest. Values are validated at parse time; an
+    /// unknown `on_done` here (manifest built by hand) falls back to the
+    /// default (`stop_instance`) so a typo can never leave an instance billing.
+    pub fn from_manifest(manifest: &Manifest) -> Self {
+        let stop_instance = !matches!(
+            manifest.policy.as_ref().and_then(|p| p.on_done.as_deref()),
+            Some("keep")
+        );
+        let mut pull_patterns: Vec<String> = manifest
+            .artifacts
+            .as_ref()
+            .filter(|a| matches!(a.pull_on.as_deref(), None | Some("done")))
+            .and_then(|a| a.patterns.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| !p.trim().is_empty())
+            .collect();
+        let mut anchor_dir = None;
+        let mut guard_pattern = None;
+        let mut kill_remote = true;
+        match manifest.vendor {
+            // The vast adapter globs over ssh from the login dir ($HOME), but
+            // the training ran in `cd <run.workdir>` (default `/workspace`,
+            // see xrun-vast `build_launch_command`). Anchor relative patterns
+            // there, or every `checkpoints/best*.pt` misses.
+            Vendor::Vast => {
+                let workdir = manifest.run.workdir.as_deref();
+                for p in &mut pull_patterns {
+                    *p = anchor_vast_pattern(workdir, p);
+                }
+                anchor_dir = Some(
+                    workdir
+                        .unwrap_or("/workspace")
+                        .trim_end_matches('/')
+                        .to_string(),
+                );
+                guard_pattern = Some(anchor_vast_pattern(
+                    workdir,
+                    &ckpt_to_remote_pattern("best", false),
+                ));
+            }
+            // Files already live on this host; destroy would only kill a
+            // PID that may be recycled by now.
+            Vendor::Local => {
+                pull_patterns.clear();
+                kill_remote = false;
+            }
+            Vendor::Ssh => kill_remote = false,
+            // Kaggle's `pull` ignores the pattern and downloads the whole
+            // kernel output (and re-ingests its events.jsonl): one call, not
+            // one per pattern.
+            Vendor::Kaggle if !pull_patterns.is_empty() => {
+                pull_patterns = vec!["**/*".to_string()];
+            }
+            _ => {}
+        }
+        Self {
+            stop_instance,
+            pull_patterns,
+            explicit_on_done: manifest
+                .policy
+                .as_ref()
+                .is_some_and(|p| p.on_done.is_some()),
+            anchor_dir,
+            guard_pattern,
+            kill_remote,
+        }
+    }
+
+    /// Anchor a pattern at `anchor_dir` (no-op without one).
+    pub fn anchor(&self, pattern: &str) -> String {
+        match &self.anchor_dir {
+            Some(dir) => anchor_vast_pattern(Some(dir), pattern),
+            None => pattern.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MlflowSpec {
     pub experiment: Option<String>,

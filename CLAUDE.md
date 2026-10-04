@@ -220,6 +220,11 @@ cargo fmt --check
 - `--detach` спавнит фоновый `__poll-daemon` — он пишет события/метрики в SQLite
 - Budget guards: `--max-cost`, `--max-hours`, `--idle-timeout` в `xrun launch`
 - Poll-daemon сам гасит инстанс при превышении caps (auto-destroy)
+- На штатном `done` поллер забирает `artifacts.patterns` и гасит инстанс
+  (`policy.on_done: stop_instance`, по умолчанию; `keep` — не гасить; на
+  `--reuse-instance` без явного `on_done` — `keep`). На vast без `patterns`
+  сначала тянется `**/best*`; упавший pull оставляет инстанс живым.
+  local/ssh инстанс только помечается уничтоженным, без `destroy`
 - Push-уведомления шлёт poll-daemon (`run.done/failed`, `budget.warn` на 50/80 %
   от `--max-cost`, NaN/loss-spike, auto-destroy, cleanup failed). Каналы:
   Для человека: TUI `g n` (карточки, генерация топика, Detect chat id,

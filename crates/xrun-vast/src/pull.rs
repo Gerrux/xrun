@@ -32,6 +32,16 @@ pub fn has_wildcard(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
 }
 
+/// Remote command that prints the regular files matching `glob`, one per line.
+/// `globstar` makes `**` recurse (bash; harmlessly ignored by other shells,
+/// where `**` degrades to `*`); directories are skipped because scp is not
+/// recursive. Always exits 0 — an empty result is reported by the caller.
+pub fn glob_command(glob: &str) -> String {
+    format!(
+        "shopt -s globstar 2>/dev/null; for f in {glob}; do [ -f \"$f\" ] && echo \"$f\"; done; true"
+    )
+}
+
 /// Parse `ls -1` stdout into a list of trimmed, non-empty path strings.
 pub fn parse_ls_output(bytes: &[u8]) -> Vec<String> {
     let s = std::str::from_utf8(bytes).unwrap_or("");
@@ -79,9 +89,16 @@ pub async fn pull_files(
     std::fs::create_dir_all(into)?;
 
     let remote_paths: Vec<String> = if has_wildcard(remote_glob) {
-        let ls_cmd = format!("ls -1 {}", remote_glob);
-        let ls_out = ssh_exec(host, port, &ls_cmd).await?;
-        parse_ls_output(&ls_out)
+        let ls_out = ssh_exec(host, port, &glob_command(remote_glob)).await?;
+        let paths = parse_ls_output(&ls_out);
+        if paths.is_empty() {
+            // Callers (the poller's on-done pull) rely on this being an
+            // error: nothing matched means nothing was saved.
+            return Err(VastError::ParseError(format!(
+                "no files match `{remote_glob}` on the instance"
+            )));
+        }
+        paths
     } else {
         vec![remote_glob.to_string()]
     };
@@ -124,5 +141,58 @@ pub fn apply_keep_last(files: &mut Vec<PathBuf>, keep_last: u32) {
     let to_delete = files.len() - keep_last as usize;
     for path in files.drain(..to_delete) {
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod glob_tests {
+    use super::*;
+
+    /// Run the remote glob command locally under bash; `None` = no bash.
+    fn run_glob(dir: &Path, glob: &str) -> Option<Vec<String>> {
+        let dir_s = dir.display().to_string().replace('\\', "/");
+        let cmd = glob_command(&format!("{dir_s}/{glob}"));
+        let out = std::process::Command::new("bash")
+            .args(["-c", &cmd])
+            .output()
+            .ok()?;
+        let mut v: Vec<String> = parse_ls_output(&out.stdout)
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(&format!("{dir_s}/"))
+                    .unwrap_or(&p)
+                    .to_string()
+            })
+            .collect();
+        v.sort();
+        Some(v)
+    }
+
+    #[test]
+    fn globstar_matches_top_level_and_nested_files_but_not_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("ckpt/deep")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("best_dir")).unwrap();
+        for f in [
+            "best.pt",
+            "ckpt/best_ep3.pt",
+            "ckpt/deep/best_x.pt",
+            "last.pt",
+        ] {
+            std::fs::write(tmp.path().join(f), b"w").unwrap();
+        }
+        let Some(got) = run_glob(tmp.path(), "**/best*") else {
+            return;
+        };
+        assert_eq!(got, ["best.pt", "ckpt/best_ep3.pt", "ckpt/deep/best_x.pt"]);
+    }
+
+    #[test]
+    fn no_match_yields_empty_list() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let Some(got) = run_glob(tmp.path(), "**/best*") else {
+            return;
+        };
+        assert!(got.is_empty());
     }
 }

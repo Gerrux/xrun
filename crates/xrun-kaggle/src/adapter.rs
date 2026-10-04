@@ -310,6 +310,75 @@ where
     }
 }
 
+impl KaggleAdapter {
+    /// Record `destroyed_at` for the instance row. Best-effort and
+    /// idempotent: without a store path (or on a DB error) it only warns.
+    fn mark_instance_destroyed(&self, h: &InstanceHandle) {
+        let Some(db_path) = self.db_path() else {
+            return;
+        };
+        match Store::open(&db_path) {
+            Ok(mut store) => {
+                if let Err(e) = store.update_instance_destroyed(&h.id, Utc::now()) {
+                    tracing::warn!("kaggle destroy: could not mark instance destroyed: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("kaggle destroy: could not open store: {e}"),
+        }
+    }
+
+    fn cancel_kernel_remote(&self, h: &InstanceHandle) -> Result<(), VendorError> {
+        // §4: Cancel the running kernel via the Kaggle REST API.
+        //
+        // Kaggle CLI 1.8.x removed `kaggle kernels cancel` entirely (and
+        // Kaggle's own PR #967 to add it back was closed un-merged), so we
+        // POST directly to /api/v1/kernels/cancel-session/{id}. The two-step
+        // dance (resolve session id → cancel) is unavoidable: `cancel-session`
+        // takes the integer session id, not the slug.
+        let slug = h.id.strip_prefix("kaggle:").unwrap_or(&h.id);
+
+        let auth = match http::auth_from_credentials(&self.credentials) {
+            Some(a) => a,
+            None => {
+                tracing::warn!(
+                    "kaggle destroy: no credentials configured — cannot cancel kernel '{slug}'. \
+                     Stop the kernel via https://www.kaggle.com/code or run \
+                     `xrun config set kaggle.username/.key`."
+                );
+                return Ok(());
+            }
+        };
+
+        let client = match KaggleApiClient::new(auth) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("kaggle destroy: HTTP client init failed: {e}");
+                return Ok(());
+            }
+        };
+
+        match client.cancel_kernel(slug) {
+            Ok(CancelOutcome::Cancelled(id)) => {
+                tracing::info!("kaggle kernel '{slug}' cancelled (session {id})");
+            }
+            Ok(CancelOutcome::NoActiveSession) => {
+                tracing::info!("kaggle kernel '{slug}' already finished — nothing to cancel");
+            }
+            Err(e) => {
+                // Don't fail the stop: the run is marked Cancelled in the
+                // local DB either way. A surfaced warn is more useful than
+                // an opaque exit 1.
+                tracing::warn!(
+                    "could not cancel kaggle kernel '{slug}' via REST: {e}\n\
+                     The kernel will auto-terminate after its session limit (≤12 h). \
+                     Local run marked as stopped."
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Default for KaggleAdapter {
     fn default() -> Self {
         Self::new()
@@ -743,54 +812,14 @@ impl VendorAdapter for KaggleAdapter {
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {
-        // §4: Cancel the running kernel via the Kaggle REST API.
-        //
-        // Kaggle CLI 1.8.x removed `kaggle kernels cancel` entirely (and
-        // Kaggle's own PR #967 to add it back was closed un-merged), so we
-        // POST directly to /api/v1/kernels/cancel-session/{id}. The two-step
-        // dance (resolve session id → cancel) is unavoidable: `cancel-session`
-        // takes the integer session id, not the slug.
-        let slug = h.id.strip_prefix("kaggle:").unwrap_or(&h.id);
-
-        let auth = match http::auth_from_credentials(&self.credentials) {
-            Some(a) => a,
-            None => {
-                tracing::warn!(
-                    "kaggle destroy: no credentials configured — cannot cancel kernel '{slug}'. \
-                     Stop the kernel via https://www.kaggle.com/code or run \
-                     `xrun config set kaggle.username/.key`."
-                );
-                return Ok(());
-            }
-        };
-
-        let client = match KaggleApiClient::new(auth) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("kaggle destroy: HTTP client init failed: {e}");
-                return Ok(());
-            }
-        };
-
-        match client.cancel_kernel(slug) {
-            Ok(CancelOutcome::Cancelled(id)) => {
-                tracing::info!("kaggle kernel '{slug}' cancelled (session {id})");
-            }
-            Ok(CancelOutcome::NoActiveSession) => {
-                tracing::info!("kaggle kernel '{slug}' already finished — nothing to cancel");
-            }
-            Err(e) => {
-                // Don't fail the stop: the run is marked Cancelled in the
-                // local DB either way. A surfaced warn is more useful than
-                // an opaque exit 1.
-                tracing::warn!(
-                    "could not cancel kaggle kernel '{slug}' via REST: {e}\n\
-                     The kernel will auto-terminate after its session limit (≤12 h). \
-                     Local run marked as stopped."
-                );
-            }
+        let result = self.cancel_kernel_remote(h);
+        // The kernel is either cancelled or already finished: either way the
+        // instance row must stop counting as active (otherwise `xrun
+        // watchdog` / `gc` report it as a billable orphan forever).
+        if result.is_ok() {
+            self.mark_instance_destroyed(h);
         }
-        Ok(())
+        result
     }
 
     // §5: vendor_status() — confirm credentials and return account name
@@ -1492,6 +1521,50 @@ mod terminal_detection_tests {
     fn start_and_progress_are_not_terminal() {
         assert_eq!(detect_terminal_event(&ev("train", "start")), None);
         assert_eq!(detect_terminal_event(&ev("epoch", "progress")), None);
+    }
+}
+
+#[cfg(test)]
+mod destroy_tests {
+    use super::*;
+
+    fn handle() -> InstanceHandle {
+        InstanceHandle {
+            id: "kaggle:alice/demo".into(),
+            vendor: "kaggle".into(),
+            ssh_host: None,
+            ssh_port: None,
+            ssh_user: String::new(),
+        }
+    }
+
+    /// A finished kernel has nothing to cancel, but the instance row must
+    /// still stop counting as active.
+    #[test]
+    fn destroy_marks_instance_destroyed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Store::open(&tmp.path().join("runs.db")).unwrap();
+        store
+            .insert_instance("kaggle:alice/demo", "kaggle", None, None, None, Utc::now())
+            .unwrap();
+        assert!(store
+            .get_instance("kaggle:alice/demo")
+            .unwrap()
+            .unwrap()
+            .destroyed_at
+            .is_none());
+
+        // No credentials -> no REST call, `destroy` returns Ok.
+        let adapter = KaggleAdapter::new().with_store_path(tmp.path().to_path_buf());
+        adapter.destroy(&handle()).unwrap();
+
+        let inst = store.get_instance("kaggle:alice/demo").unwrap().unwrap();
+        assert!(inst.destroyed_at.is_some());
+    }
+
+    #[test]
+    fn destroy_without_store_path_still_succeeds() {
+        KaggleAdapter::new().destroy(&handle()).unwrap();
     }
 }
 

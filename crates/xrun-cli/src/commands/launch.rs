@@ -417,6 +417,23 @@ fn do_launch_with_budget(
     if let Err(e) = store.update_run_instance_id(&run_id, &handle.id) {
         tracing::warn!("could not link run to instance: {e}");
     }
+    if reused_instance {
+        // Read by the poller (also after a daemon respawn): a reused
+        // instance is kept at `done` unless `policy.on_done` says otherwise.
+        let _ = store.append_event(
+            &run_id,
+            xrun_core::store::NewEvent {
+                ts: Utc::now(),
+                stage: "instance.reused".into(),
+                status: "ok".into(),
+                msg: Some(format!(
+                    "reusing instance {} (kept at done unless policy.on_done is set)",
+                    handle.id
+                )),
+                payload_json: None,
+            },
+        );
+    }
 
     // Upload data sources
     let sources = manifest.data.as_deref().unwrap_or(&[]).to_vec();
@@ -506,6 +523,7 @@ fn do_launch_with_budget(
     if let Some(es) = manifest.policy.as_ref().and_then(|p| p.early_stop.clone()) {
         poller = poller.with_early_stop(es);
     }
+    poller = poller.with_done_policy(xrun_core::manifest::DonePolicy::from_manifest(manifest));
     poller = poller
         .with_notifier(crate::commands::notify_cmd::build_notifier_logged(
             &config_dir,
@@ -736,6 +754,17 @@ pub(crate) fn early_stop_from_manifest(
     let content = std::fs::read_to_string(manifest_path).ok()?;
     let manifest: Manifest = serde_yaml::from_str(&content).ok()?;
     manifest.policy.and_then(|p| p.early_stop)
+}
+
+/// `policy.on_done` + `artifacts.*` from the frozen manifest copy in the run
+/// dir. A missing/unparsable file yields the default (destroy on done, no
+/// auto-pull) — the safe choice for billing.
+pub(crate) fn done_policy_from_manifest(manifest_path: &Path) -> xrun_core::manifest::DonePolicy {
+    std::fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|c| serde_yaml::from_str::<Manifest>(&c).ok())
+        .map(|m| xrun_core::manifest::DonePolicy::from_manifest(&m))
+        .unwrap_or_default()
 }
 
 pub(crate) fn local_poller_config(run_dir: &Path) -> PollerConfig {

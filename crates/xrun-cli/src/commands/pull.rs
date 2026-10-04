@@ -57,7 +57,12 @@ pub fn run(args: &PullArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
     ctx.ssh = SshSource::EnvThenSavedManifest;
     let adapter = build_adapter(&run.vendor, &ctx)?;
 
-    let remote = ckpt_to_remote_pattern(&args.ckpt, args.artifacts);
+    let mut remote = ckpt_to_remote_pattern(&args.ckpt, args.artifacts);
+    if run.vendor == "vast" {
+        // vast globs from $HOME; training ran in the manifest's workdir.
+        let workdir = saved_run_workdir(&run_dir_of(runs_dir, &run));
+        remote = xrun_core::manifest::anchor_vast_pattern(workdir.as_deref(), &remote);
+    }
 
     adapter
         .pull(&handle, &remote, &into)
@@ -68,19 +73,19 @@ pub fn run(args: &PullArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
     Ok(())
 }
 
-/// Map `--ckpt` selection to a remote glob hint. Kaggle's adapter ignores
-/// this argument (the kernel API only exposes a "download all output" call),
-/// but vast/ssh use it to scope rsync.
-fn ckpt_to_remote_pattern(ckpt: &str, artifacts: bool) -> String {
-    if artifacts {
-        return "**/*".to_string();
-    }
-    match ckpt {
-        "all" => "**/*".to_string(),
-        "best" => "**/best*".to_string(),
-        "latest" => "**/*.pt".to_string(),
-        other => other.to_string(),
-    }
+// Kaggle's adapter ignores the pattern (the kernel API only exposes a
+// "download all output" call), but vast/ssh use it to scope the transfer.
+use xrun_core::manifest::ckpt_to_remote_pattern;
+
+fn run_dir_of(runs_dir: &Path, run: &Run) -> PathBuf {
+    runs_dir.join(run.id.to_string())
+}
+
+/// `run.workdir` from the run's saved manifest copy (`None` = default).
+fn saved_run_workdir(run_dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(run_dir.join("manifest.yaml")).ok()?;
+    let manifest: xrun_core::manifest::Manifest = serde_yaml::from_str(&content).ok()?;
+    manifest.run.workdir
 }
 
 /// List what landed in the destination dir, biased toward the requested
@@ -163,4 +168,21 @@ fn synthesize_handle(run: &Run, instance_id: &str) -> Result<InstanceHandle> {
         ssh_port: None,
         ssh_user: "xrun".to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_workdir_is_read_from_manifest_copy() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(saved_run_workdir(tmp.path()), None);
+        std::fs::write(
+            tmp.path().join("manifest.yaml"),
+            "name: x\nvendor: local\nrun:\n  cmd: python t.py\n  workdir: /srv/app\n",
+        )
+        .unwrap();
+        assert_eq!(saved_run_workdir(tmp.path()).as_deref(), Some("/srv/app"));
+    }
 }

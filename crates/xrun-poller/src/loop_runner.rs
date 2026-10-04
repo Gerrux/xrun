@@ -13,7 +13,7 @@ use xrun_core::{
     budget,
     config::BudgetConfig,
     error::VendorError,
-    manifest::{EarlyStop, EarlyStopMode},
+    manifest::{DonePolicy, EarlyStop, EarlyStopMode},
     store::{NewEvent, NewMetric, RunId, RunStatus, Store},
     vendor::{InstanceHandle, VendorAdapter},
     Credentials, DataUpdate, EventStatus, GlobalConfig, StoreError,
@@ -198,6 +198,11 @@ pub struct Poller {
     anomalies: AnomalyDetector,
     /// `policy.early_stop` from the manifest, plus its running state.
     early_stop: Option<EarlyStopState>,
+    /// What to do on natural `done` (`policy.on_done`, `artifacts.*`).
+    done_policy: DonePolicy,
+    /// Local artifacts dir after a fully successful auto-pull; the `run.done`
+    /// push points there instead of at `xrun pull`.
+    done_artifacts_dir: Option<String>,
 }
 
 /// Running state for metric-based early stopping.
@@ -301,6 +306,156 @@ impl Poller {
         }
         unreachable!()
     }
+    /// Natural completion (`done`): pull artifacts (`artifacts.patterns`),
+    /// then destroy the instance (`policy.on_done`, default `stop_instance`).
+    ///
+    /// Never fails the run. If any pull fails the instance is KEPT so
+    /// `xrun pull` can still retry (a billable one gets an `instance.orphan`
+    /// push now, and the watchdog keeps reporting it). If the destroy itself fails after its retries,
+    /// `destroy_instance` has already recorded `instance.cleanup_failed` and
+    /// pushed a notification; the run is still marked `done` — the training
+    /// finished, and leaving it `running` would hide that while the poller
+    /// is gone anyway. The instance stays active for `xrun gc` / watchdog.
+    fn finish_done(&mut self) {
+        // Destroy errors are already logged + notified; the run still ends Done.
+        let _ = self.finish(None);
+    }
+
+    /// Did a previous launch record that this run reused an instance?
+    fn instance_reused(&self) -> bool {
+        self.store
+            .list_events(&self.run_id)
+            .map(|evs| evs.iter().any(|e| e.stage == "instance.reused"))
+            .unwrap_or(false)
+    }
+
+    /// Shared tail of every successful finish.
+    ///
+    /// `early_stop_pattern` = `Some(..)` means a metric early-stop (training
+    /// is still alive, so the instance is always killed, even for local/ssh
+    /// and regardless of `on_done`); `None` means natural `done`.
+    ///
+    /// Order: pull → destroy. Any failed pull keeps the instance (see
+    /// `finish_done`). On natural done the instance is destroyed only for
+    /// `stop_instance`, and a run that reused an instance without an explicit
+    /// `on_done` behaves as `keep`. local/ssh are only marked destroyed.
+    fn finish(&mut self, early_stop_pattern: Option<Option<String>>) -> Result<(), PollerError> {
+        let early = early_stop_pattern.is_some();
+        let stop_instance = early
+            || (self.done_policy.stop_instance
+                && (self.done_policy.explicit_on_done || !self.instance_reused()));
+
+        let mut patterns: Vec<String> = Vec::new();
+        let covers_all = self.done_policy.pull_patterns.iter().any(|p| p == "**/*");
+        if let Some(Some(p)) = &early_stop_pattern {
+            if !covers_all {
+                patterns.push(self.done_policy.anchor(p));
+            }
+        }
+        for p in &self.done_policy.pull_patterns {
+            if !patterns.contains(p) {
+                patterns.push(p.clone());
+            }
+        }
+        // Data-loss guard: about to destroy a remote instance with nothing
+        // configured to pull -> fetch what `xrun pull --ckpt best` would.
+        if !early && patterns.is_empty() && stop_instance && self.done_policy.kill_remote {
+            if let Some(g) = &self.done_policy.guard_pattern {
+                patterns.push(g.clone());
+            }
+        }
+
+        let mut pull_failed = false;
+        if !patterns.is_empty() {
+            let into = self
+                .runs_dir
+                .join(self.run_id.to_string())
+                .join("artifacts");
+            let _ = std::fs::create_dir_all(&into);
+            for pattern in patterns {
+                // A long pull must not look like a hung poller to the watchdog.
+                let _ = self.store.update_run_heartbeat(&self.run_id, Utc::now());
+                let (status, msg) = match self.vendor.pull(&self.handle, &pattern, &into) {
+                    Ok(()) => ("ok", format!("pulled `{pattern}` into {}", into.display())),
+                    Err(e) => {
+                        pull_failed = true;
+                        tracing::warn!("on_done: pull `{pattern}` failed: {e}");
+                        ("fail", format!("pull `{pattern}` failed: {e}"))
+                    }
+                };
+                let _ = self.store.update_run_heartbeat(&self.run_id, Utc::now());
+                let _ = self.store.append_event(
+                    &self.run_id,
+                    NewEvent {
+                        ts: Utc::now(),
+                        stage: "artifacts.pull".into(),
+                        status: status.into(),
+                        msg: Some(msg),
+                        payload_json: None,
+                    },
+                );
+            }
+            if !pull_failed {
+                self.done_artifacts_dir = Some(into.display().to_string());
+            }
+        }
+        if !stop_instance {
+            return Ok(());
+        }
+        if pull_failed {
+            let _ = self.store.append_event(
+                &self.run_id,
+                NewEvent {
+                    ts: Utc::now(),
+                    stage: "instance.kept".into(),
+                    status: "fail".into(),
+                    msg: Some(
+                        "artifact pull failed; instance NOT destroyed so `xrun pull` can \
+                         retry. Run `xrun gc` / `xrun stop` afterwards to stop billing"
+                            .into(),
+                    ),
+                    payload_json: None,
+                },
+            );
+            // The poller exits right after this, so without a push the only
+            // signal would be the watchdog — which the user may never have
+            // scheduled. Same dedupe key as the watchdog's orphan report.
+            if let Ok(Some(inst)) = self.store.get_instance(&self.handle.id) {
+                if inst.price_per_hour.unwrap_or(0.0) > 0.0 {
+                    let age = inst
+                        .created_at
+                        .map(|c| (Utc::now() - c).num_seconds())
+                        .unwrap_or(0);
+                    let run_id = self.run_id.to_string();
+                    self.notify(messages::instance_orphan(
+                        &inst.id,
+                        &inst.vendor,
+                        Some(&run_id),
+                        inst.accumulated_cost,
+                        age,
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        if !early && !self.done_policy.kill_remote {
+            // local/ssh: no billing to stop, and `destroy` would signal the
+            // PID from run.pid, which may be a recycled one by now.
+            let _ = self
+                .store
+                .update_instance_destroyed(&self.handle.id, Utc::now());
+            return Ok(());
+        }
+        self.destroy_instance()
+    }
+
+    /// `policy.on_done` + `artifacts.*` resolved from the manifest. Without
+    /// this call the default applies: destroy on done, no auto-pull.
+    pub fn with_done_policy(mut self, policy: DonePolicy) -> Self {
+        self.done_policy = policy;
+        self
+    }
+
     pub fn new(
         run_id: RunId,
         store: Store,
@@ -327,6 +482,8 @@ impl Poller {
             cost_warned: HashSet::new(),
             anomalies: AnomalyDetector::new(),
             early_stop: None,
+            done_policy: DonePolicy::default(),
+            done_artifacts_dir: None,
         }
     }
 
@@ -488,7 +645,13 @@ impl Poller {
                     .flatten()
                     .and_then(|r| r.started_at)
                     .map(|s| (Utc::now() - s).num_seconds());
-                self.notify(messages::run_done(&run_ref, duration, cost));
+                let artifacts = self.done_artifacts_dir.clone();
+                self.notify(messages::run_done(
+                    &run_ref,
+                    duration,
+                    cost,
+                    artifacts.as_deref(),
+                ));
             }
             RunStatus::Failed => {
                 let reason = reason.unwrap_or("see xrun events for the failing stage");
@@ -943,16 +1106,13 @@ impl Poller {
                     .pull_pattern
                     .clone()
                     .unwrap_or_else(|| "**/best*".to_string());
-                let run_dir = self.runs_dir.join(self.run_id.to_string());
-                let mut pulled: Option<String> = None;
-                if spec.pull {
-                    let into = run_dir.join("artifacts");
-                    let _ = std::fs::create_dir_all(&into);
-                    match self.vendor.pull(&self.handle, &pattern, &into) {
-                        Ok(()) => pulled = Some(into.display().to_string()),
-                        Err(e) => tracing::warn!("early-stop: pull `{pattern}` failed: {e}"),
-                    }
-                }
+                // Same finish path as a natural done: pull (the early-stop
+                // pattern + `artifacts.patterns`), then destroy — unless a
+                // pull failed, which keeps the instance. Training is still
+                // alive here, so the instance is killed whatever `on_done` says.
+                self.done_artifacts_dir = None;
+                let finished = self.finish(Some(spec.pull.then_some(pattern)));
+                let pulled: Option<String> = self.done_artifacts_dir.clone();
                 let payload = serde_json::json!({
                     "metric": spec.metric,
                     "best": best,
@@ -975,7 +1135,7 @@ impl Poller {
                         payload_json: Some(payload),
                     },
                 );
-                self.destroy_instance()?;
+                finished?;
                 self.store
                     .update_run_status(&self.run_id, RunStatus::Done)?;
                 self.send_update(DataUpdate::RunStatusChanged(
@@ -1038,6 +1198,8 @@ impl Poller {
             if let Some(status) = terminal_after_drain {
                 if destroy_after_drain {
                     self.destroy_instance()?;
+                } else if matches!(status, RunStatus::Done) {
+                    self.finish_done();
                 }
                 self.store.update_run_status(&self.run_id, status.clone())?;
                 self.send_update(DataUpdate::RunStatusChanged(
@@ -1280,6 +1442,9 @@ impl Poller {
                     ));
                 }
                 if let Some(terminal) = completion.terminal_status {
+                    if matches!(terminal, RunStatus::Done) {
+                        self.finish_done();
+                    }
                     self.store
                         .update_run_status(&self.run_id, terminal.clone())?;
                     self.send_update(DataUpdate::RunStatusChanged(

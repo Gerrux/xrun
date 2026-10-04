@@ -210,6 +210,10 @@ pub(crate) fn resume_one(
                 let mut w = Store::open(db_path)?;
                 w.update_run_status(run_id, terminal.clone())?;
                 let _ = w.update_run_poller_pid(run_id, None);
+                // The kernel has finished: nothing left to cancel, so the
+                // instance row must stop counting as active (same as the
+                // poller's finish path).
+                let _ = w.update_instance_destroyed(&instance_id, chrono::Utc::now());
             }
             return Ok(Report {
                 run_id: run_id.to_string(),

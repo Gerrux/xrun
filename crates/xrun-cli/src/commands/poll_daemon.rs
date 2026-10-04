@@ -189,6 +189,9 @@ pub fn run(
     if let Some(es) = crate::commands::launch::early_stop_from_manifest(&manifest_path) {
         poller = poller.with_early_stop(es);
     }
+    poller = poller.with_done_policy(crate::commands::launch::done_policy_from_manifest(
+        &manifest_path,
+    ));
 
     // Push notifications: built from config + credentials on disk, and
     // hot-reloaded when either file changes — a channel set up in the TUI
