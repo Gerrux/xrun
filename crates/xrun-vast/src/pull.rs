@@ -149,10 +149,11 @@ mod glob_tests {
     use super::*;
 
     /// Run the remote glob command locally under bash; `None` = no usable
-    /// bash (none on PATH, or the Windows WSL stub without a distro).
+    /// bash: none on PATH, the Windows WSL stub without a distro, or bash
+    /// 3.2 without globstar (macOS /bin/bash; vast images run bash 4+).
     fn run_glob(dir: &Path, glob: &str) -> Option<Vec<String>> {
         let probe = std::process::Command::new("bash")
-            .args(["-c", "echo ok"])
+            .args(["-c", "shopt -s globstar && echo ok"])
             .output()
             .ok()?;
         if probe.stdout != b"ok\n" {
