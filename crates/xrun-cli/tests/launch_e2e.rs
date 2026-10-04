@@ -173,27 +173,36 @@ fn caps_for_non_billable_vendor_come_from_manifest_and_cli_only() {
     );
 }
 
-/// ssh and kaggle report no activity to the poller, so an idle cap there
-/// would kill every run N minutes after launch: it is dropped (manifest and
-/// CLI alike), while the lifetime cap is still persisted.
+/// Kaggle reports no activity to the poller, so an idle cap there would kill
+/// every run N minutes after launch: it is dropped (manifest and CLI alike),
+/// while the lifetime cap is still persisted. ssh is observed (the poller
+/// tails the remote run dir): its idle cap is kept.
 #[test]
-fn ssh_and_kaggle_get_lifetime_cap_but_no_idle_cap() {
+fn kaggle_gets_lifetime_cap_but_no_idle_cap_ssh_keeps_idle() {
     let ssh = "name: s\nvendor: ssh\nssh:\n  host_alias: box\nrun:\n  cmd: python t.py\n\
                policy:\n  on_idle_minutes: 3\n";
     let kaggle =
         "name: k\nvendor: kaggle\nkaggle:\n  kernel_slug: me/k\nrun:\n  cmd: python t.py\n\
                   policy:\n  on_idle_minutes: 4\n";
-    for yaml in [ssh, kaggle] {
-        let inst = launch_and_get_instance(yaml, |a| {
-            a.max_hours = Some(2.0);
-        });
-        assert_eq!(inst.idle_timeout_secs, None, "{yaml}");
-        assert_eq!(inst.max_lifetime_secs, Some(7200), "{yaml}");
-        let inst = launch_and_get_instance(yaml, |a| {
-            a.idle_timeout = Some(5.0);
-        });
-        assert_eq!(inst.idle_timeout_secs, None, "{yaml}");
-    }
+    let inst = launch_and_get_instance(kaggle, |a| {
+        a.max_hours = Some(2.0);
+    });
+    assert_eq!(inst.idle_timeout_secs, None);
+    assert_eq!(inst.max_lifetime_secs, Some(7200));
+    let inst = launch_and_get_instance(kaggle, |a| {
+        a.idle_timeout = Some(5.0);
+    });
+    assert_eq!(inst.idle_timeout_secs, None);
+
+    let inst = launch_and_get_instance(ssh, |a| {
+        a.max_hours = Some(2.0);
+    });
+    assert_eq!(inst.idle_timeout_secs, Some(180));
+    assert_eq!(inst.max_lifetime_secs, Some(7200));
+    let inst = launch_and_get_instance(ssh, |a| {
+        a.idle_timeout = Some(5.0);
+    });
+    assert_eq!(inst.idle_timeout_secs, Some(300));
 }
 
 /// A reused instance carries the previous run's `last_active_at`; the idle

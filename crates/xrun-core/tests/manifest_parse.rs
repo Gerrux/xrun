@@ -253,6 +253,60 @@ fn done_policy_per_vendor_guard_anchor_and_kill() {
 }
 
 #[test]
+fn done_policy_anchors_ssh_patterns_at_run_workdir_only_when_set() {
+    use xrun_core::manifest::DonePolicy;
+    let ssh = |run_extra: &str| {
+        Manifest::from_yaml_str(&format!(
+            "name: s\nvendor: ssh\nssh:\n  host_alias: box\nrun:\n  cmd: python t.py\n{run_extra}\
+             artifacts:\n  patterns: [\"ckpt/best*.pt\", \"/abs/x.log\"]\n"
+        ))
+        .unwrap()
+    };
+    let p = DonePolicy::from_manifest(&ssh("  workdir: /home/u/proj/\n"));
+    assert_eq!(
+        p.pull_patterns,
+        ["/home/u/proj/ckpt/best*.pt", "/abs/x.log"]
+    );
+    assert_eq!(p.anchor_dir.as_deref(), Some("/home/u/proj"));
+    assert_eq!(p.anchor("**/best*"), "/home/u/proj/**/best*");
+    assert!(!p.kill_remote);
+
+    let p = DonePolicy::from_manifest(&ssh(""));
+    assert_eq!(p.pull_patterns, ["ckpt/best*.pt", "/abs/x.log"]);
+    assert!(
+        p.anchor_dir.is_none(),
+        "default: the adapter anchors at run_dir"
+    );
+
+    // Relative / `~` workdir: the adapter `cd`s there from the remote home,
+    // so anchor home-relative (`~/…`), never under the per-run dir.
+    for wd in ["proj", "~/proj/"] {
+        let p = DonePolicy::from_manifest(&ssh(&format!("  workdir: {wd}\n")));
+        assert_eq!(
+            p.pull_patterns,
+            ["~/proj/ckpt/best*.pt", "/abs/x.log"],
+            "{wd}"
+        );
+        assert_eq!(p.anchor("**/best*"), "~/proj/**/best*", "{wd}");
+    }
+}
+
+#[test]
+fn ssh_workdir_anchor_is_absolute_or_home_relative() {
+    use xrun_core::manifest::ssh_workdir_anchor;
+    assert_eq!(ssh_workdir_anchor(None), None);
+    assert_eq!(ssh_workdir_anchor(Some("  ")), None);
+    assert_eq!(
+        ssh_workdir_anchor(Some("/srv/p/")).as_deref(),
+        Some("/srv/p")
+    );
+    assert_eq!(ssh_workdir_anchor(Some("/")).as_deref(), Some("/"));
+    assert_eq!(ssh_workdir_anchor(Some("p")).as_deref(), Some("~/p"));
+    assert_eq!(ssh_workdir_anchor(Some("~/p")).as_deref(), Some("~/p"));
+    assert_eq!(ssh_workdir_anchor(Some("~")).as_deref(), Some("~"));
+}
+
+#[test]
 fn on_stage_failed_accepts_documented_values_and_rejects_others() {
     for v in ["stop_instance", "keep", "reprovision"] {
         Manifest::from_yaml_str(&local_manifest(&format!(

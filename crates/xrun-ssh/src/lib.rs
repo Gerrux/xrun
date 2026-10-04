@@ -11,5 +11,7 @@ pub mod cmd;
 pub mod error;
 pub mod ssh;
 
-pub use adapter::SshAdapter;
+pub use adapter::{
+    remote_run_dir, remote_run_files, resolve_workdir_root, RemoteRunFiles, SshAdapter,
+};
 pub use error::SshError;

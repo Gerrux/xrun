@@ -173,11 +173,10 @@ pub(crate) fn execute(
             })?;
             let conn = SshAdapter::resolve_conn(&ssh_spec.host_alias, host_creds)
                 .with_context(|| "ssh credentials incomplete")?;
-            let workdir_root = ssh_spec
-                .workdir
-                .clone()
-                .or_else(|| host_creds.default_workdir.clone())
-                .unwrap_or_else(|| "/tmp/xrun".to_string());
+            let workdir_root = xrun_ssh::resolve_workdir_root(
+                ssh_spec.workdir.as_deref(),
+                host_creds.default_workdir.as_deref(),
+            );
             Box::new(SshAdapter::new(adapter_store, conn, workdir_root))
         }
     };
@@ -307,11 +306,11 @@ pub(crate) fn explicit_caps(args: &LaunchArgs, manifest: &Manifest) -> InstanceC
             }
         }
     }
-    // The idle timer needs to see activity. ssh (the poller tails the vast
-    // paths, not the remote run dir) and kaggle (live telemetry is ingested
-    // past the poller; none at all without MLflow) never report any, so an
-    // idle cap there is a kill timer from launch. Lifetime / cost still apply.
-    if caps.idle_timeout_secs.is_some() && matches!(manifest.vendor, Vendor::Ssh | Vendor::Kaggle) {
+    // The idle timer needs to see activity. ssh is observed (the poller tails
+    // the remote run dir), so its idle cap stays. Kaggle's live telemetry is
+    // ingested past the poller (none at all without MLflow), so an idle cap
+    // there is a kill timer from launch. Lifetime / cost still apply.
+    if caps.idle_timeout_secs.is_some() && matches!(manifest.vendor, Vendor::Kaggle) {
         eprintln!(
             "warning: idle timeout ignored for vendor {}: xrun cannot observe \
              activity there yet (use --max-hours for a hard stop)",
@@ -579,9 +578,14 @@ fn do_launch_with_budget(
     )
     .with_budget(budget_cfg);
 
+    let ssh_root = if vendor_str == "ssh" {
+        ssh_workdir_root(manifest, &config_dir)
+    } else {
+        String::new()
+    };
+    let run_id_str = run_id.to_string();
     poller = poller.with_config(poller_config(
-        vendor_str == "local",
-        &run_dir,
+        PollerFiles::for_vendor(vendor_str, &run_dir, &ssh_root, &run_id_str),
         FailPolicy::from_manifest_value(
             manifest
                 .policy
@@ -838,18 +842,72 @@ pub(crate) fn done_policy_from_manifest(manifest_path: &Path) -> xrun_core::mani
 
 /// Full poller config: local runs read their files from the run dir, and
 /// every vendor gets `policy.on_stage_failed`.
-pub(crate) fn poller_config(
-    is_local: bool,
-    run_dir: &Path,
-    on_stage_failed: FailPolicy,
-) -> PollerConfig {
-    let mut cfg = if is_local {
-        local_poller_config(run_dir)
-    } else {
-        PollerConfig::default()
+pub(crate) fn poller_config(files: PollerFiles<'_>, on_stage_failed: FailPolicy) -> PollerConfig {
+    let mut cfg = match files {
+        PollerFiles::Local(run_dir) => local_poller_config(run_dir),
+        PollerFiles::Ssh {
+            workdir_root,
+            run_id,
+        } => ssh_poller_config(workdir_root, run_id),
+        PollerFiles::Default => PollerConfig::default(),
     };
     cfg.on_stage_failed = on_stage_failed;
     cfg
+}
+
+/// Where the poller finds a run's events / metrics / stdout.
+pub(crate) enum PollerFiles<'a> {
+    /// Instance-side `/workspace/run/…` (vast, kaggle).
+    Default,
+    /// Per-run dir on the host filesystem.
+    Local(&'a Path),
+    /// `<workdir_root>/<run_id>/…` on the ssh host.
+    Ssh {
+        workdir_root: &'a str,
+        run_id: &'a str,
+    },
+}
+
+impl<'a> PollerFiles<'a> {
+    /// `ssh_root` is only consulted for `vendor == "ssh"`.
+    pub(crate) fn for_vendor(
+        vendor: &str,
+        run_dir: &'a Path,
+        ssh_root: &'a str,
+        run_id: &'a str,
+    ) -> Self {
+        match vendor {
+            "local" => PollerFiles::Local(run_dir),
+            "ssh" => PollerFiles::Ssh {
+                workdir_root: ssh_root,
+                run_id,
+            },
+            _ => PollerFiles::Default,
+        }
+    }
+}
+
+/// Remote workdir root of an ssh manifest, resolved like the adapter does
+/// (`ssh.workdir` → host `default_workdir` → `/tmp/xrun`).
+pub(crate) fn ssh_workdir_root(manifest: &Manifest, config_dir: &Path) -> String {
+    let creds = Credentials::load(config_dir).unwrap_or_default();
+    let spec = manifest.ssh.as_ref();
+    let host_default = spec
+        .and_then(|s| creds.ssh_hosts.get(&s.host_alias))
+        .and_then(|h| h.default_workdir.as_deref());
+    xrun_ssh::resolve_workdir_root(spec.and_then(|s| s.workdir.as_deref()), host_default)
+}
+
+/// Poller config for an ssh run: the files live in the remote run dir that
+/// `SshAdapter` launches the training in (`XRUN_RUN_DIR`), not `/workspace/run`.
+pub(crate) fn ssh_poller_config(workdir_root: &str, run_id: &str) -> PollerConfig {
+    let files = xrun_ssh::remote_run_files(workdir_root, run_id);
+    PollerConfig {
+        events_file: files.events,
+        metrics_file: files.metrics,
+        stdout_file: files.stdout,
+        ..Default::default()
+    }
 }
 
 /// `policy.on_stage_failed` from the frozen manifest copy in the run dir.
@@ -891,11 +949,86 @@ mod tests {
         .unwrap();
         std::fs::write(&path, serde_yaml::to_string(&m).unwrap()).unwrap();
         assert_eq!(fail_policy_from_manifest(&path), FailPolicy::Keep);
-        let cfg = poller_config(false, tmp.path(), fail_policy_from_manifest(&path));
+        let cfg = poller_config(PollerFiles::Default, fail_policy_from_manifest(&path));
         assert_eq!(cfg.on_stage_failed, FailPolicy::Keep);
         assert_eq!(
             fail_policy_from_manifest(&tmp.path().join("missing.yaml")),
             FailPolicy::StopInstance
         );
+    }
+
+    #[test]
+    fn ssh_poller_config_points_at_the_remote_run_dir_and_keeps_fail_policy() {
+        let cfg = poller_config(
+            PollerFiles::for_vendor("ssh", Path::new("C:\\runs\\x"), "/data/xrun/", "R1"),
+            FailPolicy::Keep,
+        );
+        assert_eq!(cfg.events_file, "/data/xrun/R1/events.jsonl");
+        assert_eq!(cfg.metrics_file, "/data/xrun/R1/metrics.jsonl");
+        assert_eq!(cfg.stdout_file, "/data/xrun/R1/stdout.log");
+        assert_eq!(cfg.on_stage_failed, FailPolicy::Keep);
+
+        let default_root = poller_config(
+            PollerFiles::for_vendor("ssh", Path::new("."), "/tmp/xrun", "R2"),
+            FailPolicy::StopInstance,
+        );
+        assert_eq!(default_root.events_file, "/tmp/xrun/R2/events.jsonl");
+
+        // Other vendors are untouched.
+        let vast = poller_config(
+            PollerFiles::for_vendor("vast", Path::new("."), "", "R3"),
+            FailPolicy::StopInstance,
+        );
+        assert_eq!(vast.events_file, PollerConfig::default().events_file);
+        let local = poller_config(
+            PollerFiles::for_vendor("local", Path::new("rd"), "", "R4"),
+            FailPolicy::StopInstance,
+        );
+        assert!(local.events_file.contains("rd"));
+    }
+
+    #[test]
+    fn ssh_workdir_root_follows_manifest_then_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let with = Manifest::from_yaml_str(
+            "name: s\nvendor: ssh\nssh:\n  host_alias: box\n  workdir: /srv/x\nrun:\n  cmd: t\n",
+        )
+        .unwrap();
+        assert_eq!(ssh_workdir_root(&with, tmp.path()), "/srv/x");
+        let without = Manifest::from_yaml_str(
+            "name: s\nvendor: ssh\nssh:\n  host_alias: box\nrun:\n  cmd: t\n",
+        )
+        .unwrap();
+        assert_eq!(ssh_workdir_root(&without, tmp.path()), "/tmp/xrun");
+    }
+
+    #[test]
+    fn ssh_keeps_the_idle_cap_kaggle_drops_it() {
+        let args = LaunchArgs {
+            manifest: std::path::PathBuf::from("m.yaml"),
+            dry_run: false,
+            allow_duplicate: false,
+            name: None,
+            json: false,
+            detach: false,
+            max_cost: None,
+            max_hours: None,
+            idle_timeout: Some(10.0),
+            yes: false,
+            reuse_instance: None,
+            upload_only: false,
+            overrides: Vec::new(),
+            trace: false,
+        };
+        let ssh = Manifest::from_yaml_str(
+            "name: s\nvendor: ssh\nssh:\n  host_alias: box\nrun:\n  cmd: t\n",
+        )
+        .unwrap();
+        assert_eq!(explicit_caps(&args, &ssh).idle_timeout_secs, Some(600));
+        let kaggle = Manifest::from_yaml_str(include_str!(
+            "../../../xrun-core/tests/data/kaggle_minimal.yaml"
+        ))
+        .unwrap();
+        assert_eq!(explicit_caps(&args, &kaggle).idle_timeout_secs, None);
     }
 }

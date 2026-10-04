@@ -274,6 +274,22 @@ pub fn anchor_vast_pattern(workdir: Option<&str>, pattern: &str) -> String {
     format!("{workdir}/{pattern}")
 }
 
+/// Anchor for an ssh run's relative artifact patterns: the dir the adapter
+/// `cd`s into for training (`run.workdir`). Absolute → as is; relative or
+/// `~`-prefixed → `~/…`, which the ssh adapter resolves against the remote
+/// home (where a relative `cd` lands). `None` when unset: the adapter then
+/// anchors relative patterns at the per-run dir, the default training cwd.
+pub fn ssh_workdir_anchor(workdir: Option<&str>) -> Option<String> {
+    let w = workdir.map(str::trim).filter(|w| !w.is_empty())?;
+    let w = if w.starts_with('/') || w == "~" || w.starts_with("~/") {
+        w.to_string()
+    } else {
+        format!("~/{w}")
+    };
+    let trimmed = w.trim_end_matches('/');
+    Some(if trimmed.is_empty() { "/" } else { trimmed }.to_string())
+}
+
 impl DonePolicy {
     /// Resolve from a manifest. Values are validated at parse time; an
     /// unknown `on_done` here (manifest built by hand) falls back to the
@@ -322,7 +338,18 @@ impl DonePolicy {
                 pull_patterns.clear();
                 kill_remote = false;
             }
-            Vendor::Ssh => kill_remote = false,
+            // The training ran in `cd <run.workdir>` when it is set (else in
+            // the per-run dir, where the adapter anchors relative patterns
+            // itself): anchor there, or `checkpoints/best*.pt` misses.
+            Vendor::Ssh => {
+                kill_remote = false;
+                if let Some(dir) = ssh_workdir_anchor(manifest.run.workdir.as_deref()) {
+                    for p in &mut pull_patterns {
+                        *p = anchor_vast_pattern(Some(&dir), p);
+                    }
+                    anchor_dir = Some(dir);
+                }
+            }
             // Kaggle's `pull` ignores the pattern and downloads the whole
             // kernel output (and re-ingests its events.jsonl): one call, not
             // one per pattern.

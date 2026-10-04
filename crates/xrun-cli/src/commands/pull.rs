@@ -62,6 +62,13 @@ pub fn run(args: &PullArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         // vast globs from $HOME; training ran in the manifest's workdir.
         let workdir = saved_run_workdir(&run_dir_of(runs_dir, &run));
         remote = xrun_core::manifest::anchor_vast_pattern(workdir.as_deref(), &remote);
+    } else if run.vendor == "ssh" {
+        // ssh training ran in `run.workdir` when set; without it the adapter
+        // anchors relative patterns at the per-run dir itself.
+        let workdir = saved_run_workdir(&run_dir_of(runs_dir, &run));
+        if let Some(dir) = xrun_core::manifest::ssh_workdir_anchor(workdir.as_deref()) {
+            remote = xrun_core::manifest::anchor_vast_pattern(Some(&dir), &remote);
+        }
     }
 
     adapter

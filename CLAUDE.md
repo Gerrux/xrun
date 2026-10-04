@@ -221,7 +221,8 @@ cargo fmt --check
 - Budget guards: `--max-cost`, `--max-hours`, `--idle-timeout` в `xrun launch`
   (и `policy.on_idle_minutes`); для local/ssh/kaggle действуют только явно
   заданные, глобальные `[budget]`-дефолты — лишь для vast; idle-таймаут на
-  ssh/kaggle игнорируется (поллер не видит там активности)
+  kaggle игнорируется (поллер не видит там активности), на ssh работает
+  (events/metrics/stdout читаются из `<workdir>/<run_id>/` на хосте)
 - Poll-daemon сам гасит инстанс при превышении caps (auto-destroy)
 - На штатном `done` поллер забирает `artifacts.patterns` и гасит инстанс
   (`policy.on_done: stop_instance`, по умолчанию; `keep` — не гасить; на

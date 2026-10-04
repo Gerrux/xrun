@@ -17,6 +17,72 @@ use crate::cmd::{self, SshConn};
 use crate::error::SshError;
 use crate::ssh::{remote_file_size, remote_tail, rsync, ssh_exec};
 
+/// Remote workdir root: manifest `ssh.workdir`, else the host's
+/// `default_workdir`, else `/tmp/xrun`. The single place every caller
+/// (launch, poll-daemon) resolves it, so they cannot drift from the adapter.
+pub fn resolve_workdir_root(spec_workdir: Option<&str>, host_default: Option<&str>) -> String {
+    spec_workdir
+        .or(host_default)
+        .map(home_relative)
+        .unwrap_or_else(|| "/tmp/xrun".to_string())
+}
+
+/// A remote dir as the ssh commands see it. Every `ssh <host> -- cmd` and
+/// every rsync `host:path` starts in the remote `$HOME`, but paths are
+/// single-quoted, so a literal `~/x` would become `$HOME/~/x`. Map `~` /
+/// `~/x` to the home-relative `.` / `x`; absolute and relative paths pass
+/// through (relative is already home-relative).
+pub fn home_relative(path: &str) -> String {
+    let p = path.trim();
+    if p == "~" {
+        return ".".to_string();
+    }
+    match p.strip_prefix("~/") {
+        Some(rest) => {
+            let rest = rest.trim_start_matches('/');
+            if rest.is_empty() {
+                ".".to_string()
+            } else {
+                rest.to_string()
+            }
+        }
+        None => p.to_string(),
+    }
+}
+
+/// Shell word for a remote path that stays correct after a `cd`: absolute
+/// paths are quoted as is, home-relative ones get an explicit `"$HOME"/`.
+fn absolute_shell_path(path: &str) -> String {
+    if path.starts_with('/') {
+        cmd::shell_quote(path)
+    } else {
+        format!("\"$HOME\"/{}", cmd::shell_quote(path))
+    }
+}
+
+/// Per-run remote directory `<workdir_root>/<run_id>` (POSIX, forward slashes).
+pub fn remote_run_dir(workdir_root: &str, run_id: &str) -> String {
+    format!("{}/{run_id}", workdir_root.trim_end_matches('/'))
+}
+
+/// Remote files the run writes under its run dir: `XRUN_RUN_DIR/events.jsonl`
+/// and `metrics.jsonl` (xrun_hook) and `stdout.log` (`remote_launch_script`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRunFiles {
+    pub events: String,
+    pub metrics: String,
+    pub stdout: String,
+}
+
+pub fn remote_run_files(workdir_root: &str, run_id: &str) -> RemoteRunFiles {
+    let dir = remote_run_dir(workdir_root, run_id);
+    RemoteRunFiles {
+        events: format!("{dir}/events.jsonl"),
+        metrics: format!("{dir}/metrics.jsonl"),
+        stdout: format!("{dir}/stdout.log"),
+    }
+}
+
 /// SSH adapter — runs the manifest on a long-lived remote machine reachable
 /// over SSH. Always-on hardware: `provision`/`destroy` only manage per-run
 /// state, never the box itself.
@@ -80,7 +146,7 @@ impl SshAdapter {
     }
 
     fn run_dir(&self, run_id: &RunId) -> String {
-        format!("{}/{}", self.workdir_root.trim_end_matches('/'), run_id)
+        remote_run_dir(&self.workdir_root, &run_id.to_string())
     }
 
     fn instance_id(&self, run_id: &RunId) -> String {
@@ -309,7 +375,7 @@ impl VendorAdapter for SshAdapter {
         let run_id = self.run_id()?;
         let run_dir = self.run_dir(&run_id);
 
-        let workdir = run_spec.workdir.clone().unwrap_or_else(|| run_dir.clone());
+        let workdir = training_dir(run_spec, &run_dir);
 
         ssh_exec(
             &self.conn,
@@ -383,13 +449,7 @@ impl VendorAdapter for SshAdapter {
     fn pull(&self, _h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError> {
         let run_id = self.run_id()?;
         let workdir = self.run_dir(&run_id);
-        // Resolve the pattern remote-side. If it's relative, anchor at the
-        // run dir; if absolute, pass through as-is.
-        let pattern = if remote.starts_with('/') {
-            remote.to_string()
-        } else {
-            format!("{workdir}/{remote}")
-        };
+        let pattern = pull_pattern(&workdir, remote);
         std::fs::create_dir_all(into)
             .map_err(|e| VendorError::Other(format!("create local pull dir: {e}")))?;
         let argv = cmd::rsync_download_argv(&self.conn, &pattern, &into.display().to_string());
@@ -476,7 +536,9 @@ impl SshAdapter {
     fn env_prefix(&self, run_id: &RunId, run_dir: &str) -> String {
         let mut parts = vec![
             format!("XRUN_RUN_ID={}", cmd::shell_quote(&run_id.to_string())),
-            format!("XRUN_RUN_DIR={}", cmd::shell_quote(run_dir)),
+            // The command runs after `cd <workdir>`: a home-relative run dir
+            // would land the hook's events.jsonl under the workdir instead.
+            format!("XRUN_RUN_DIR={}", absolute_shell_path(run_dir)),
         ];
         if let Some(gpu) = self.gpu_hint.borrow().as_deref() {
             match gpu {
@@ -506,6 +568,29 @@ trait SshErrorExt {
 impl SshErrorExt for SshError {
     fn into_vendor(self) -> VendorError {
         self.into()
+    }
+}
+
+/// The training cwd: `run.workdir` (`~` resolved against the remote home)
+/// when set, else the per-run dir.
+fn training_dir(run_spec: &RunSpec, run_dir: &str) -> String {
+    run_spec
+        .workdir
+        .as_deref()
+        .filter(|w| !w.trim().is_empty())
+        .map(home_relative)
+        .unwrap_or_else(|| run_dir.to_string())
+}
+
+/// Remote source for a pull: absolute patterns as is, `~/x` against the
+/// remote home (rsync's own start dir), anything else under the run dir.
+fn pull_pattern(run_dir: &str, remote: &str) -> String {
+    if remote.starts_with('/') {
+        remote.to_string()
+    } else if remote == "~" || remote.starts_with("~/") {
+        home_relative(remote)
+    } else {
+        format!("{run_dir}/{remote}")
     }
 }
 
@@ -619,6 +704,33 @@ run:
     }
 
     #[test]
+    fn workdir_root_resolution_order() {
+        assert_eq!(resolve_workdir_root(Some("/a"), Some("/b")), "/a");
+        assert_eq!(resolve_workdir_root(None, Some("/b")), "/b");
+        assert_eq!(resolve_workdir_root(None, None), "/tmp/xrun");
+    }
+
+    #[test]
+    fn remote_run_files_match_the_adapter_run_dir() {
+        let (_td, s) = fresh_store();
+        let a = SshAdapter::new(s, fake_conn(), "/data/xrun/".into());
+        let rid = RunId::new();
+        let f = remote_run_files("/data/xrun/", &rid.to_string());
+        assert_eq!(
+            f.events,
+            format!("{}/events.jsonl", a.run_dir(&rid)),
+            "trailing slash must not double up"
+        );
+        assert_eq!(f.events, format!("/data/xrun/{rid}/events.jsonl"));
+        assert_eq!(f.metrics, format!("/data/xrun/{rid}/metrics.jsonl"));
+        assert_eq!(f.stdout, format!("/data/xrun/{rid}/stdout.log"));
+        assert_eq!(
+            remote_run_files("/tmp/xrun", "R").events,
+            "/tmp/xrun/R/events.jsonl"
+        );
+    }
+
+    #[test]
     fn validate_accepts_ssh_manifest() {
         let (_td, s) = fresh_store();
         let a = SshAdapter::new(s, fake_conn(), "/tmp/xrun".into());
@@ -701,5 +813,54 @@ run:
         *a.gpu_hint.borrow_mut() = Some("cuda:0".to_string());
         let env = a.env_prefix(&rid, "/tmp/xrun/abc");
         assert!(env.contains("CUDA_VISIBLE_DEVICES='0'"));
+    }
+
+    #[test]
+    fn home_relative_run_dir_stays_absolute_after_the_cd() {
+        // `~/xrun` from credentials: the ssh commands (mkdir/wc/tail/kill)
+        // see `xrun/<id>` from $HOME; the training runs after `cd <workdir>`,
+        // so XRUN_RUN_DIR must not be relative or events.jsonl lands under
+        // the workdir, where the poller never looks.
+        let root = resolve_workdir_root(None, Some("~/xrun/"));
+        assert_eq!(root, "xrun/");
+        let dir = remote_run_dir(&root, "R");
+        assert_eq!(dir, "xrun/R");
+        assert_eq!(remote_run_files(&root, "R").events, "xrun/R/events.jsonl");
+
+        let (_td, s) = fresh_store();
+        let a = SshAdapter::new(s, fake_conn(), root);
+        let rid: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let env = a.env_prefix(&rid, &dir);
+        assert!(env.contains("XRUN_RUN_DIR=\"$HOME\"/'xrun/R' "), "{env}");
+        let env = a.env_prefix(&rid, "/tmp/xrun/R");
+        assert!(env.contains("XRUN_RUN_DIR='/tmp/xrun/R' "), "{env}");
+    }
+
+    #[test]
+    fn tilde_and_relative_paths_resolve_against_the_remote_home() {
+        assert_eq!(home_relative("~"), ".");
+        assert_eq!(home_relative("~/"), ".");
+        assert_eq!(home_relative("~/proj"), "proj");
+        assert_eq!(home_relative("proj"), "proj");
+        assert_eq!(home_relative("/abs/p"), "/abs/p");
+        assert_eq!(resolve_workdir_root(Some("~"), None), ".");
+        assert_eq!(remote_run_dir(".", "R"), "./R");
+
+        let spec = |w: Option<&str>| RunSpec {
+            workdir: w.map(str::to_string),
+            ..ssh_manifest("").run
+        };
+        assert_eq!(training_dir(&spec(Some("~/proj")), "/t/R"), "proj");
+        assert_eq!(training_dir(&spec(Some("proj")), "/t/R"), "proj");
+        assert_eq!(training_dir(&spec(Some("/srv/p")), "/t/R"), "/srv/p");
+        assert_eq!(training_dir(&spec(Some(" ")), "/t/R"), "/t/R");
+        assert_eq!(training_dir(&spec(None), "/t/R"), "/t/R");
+
+        // `~/…` pull patterns (what DonePolicy emits for a relative
+        // `run.workdir`) are home-relative; plain relative ones stay under
+        // the run dir.
+        assert_eq!(pull_pattern("/t/R", "~/proj/ckpt/*.pt"), "proj/ckpt/*.pt");
+        assert_eq!(pull_pattern("/t/R", "ckpt/*.pt"), "/t/R/ckpt/*.pt");
+        assert_eq!(pull_pattern("/t/R", "/abs/x"), "/abs/x");
     }
 }

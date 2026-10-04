@@ -136,11 +136,10 @@ pub fn run(
                 )
             })?;
             let conn = SshAdapter::resolve_conn(&ssh_spec.host_alias, host_creds)?;
-            let workdir_root = ssh_spec
-                .workdir
-                .clone()
-                .or_else(|| host_creds.default_workdir.clone())
-                .unwrap_or_else(|| "/tmp/xrun".to_string());
+            let workdir_root = xrun_ssh::resolve_workdir_root(
+                ssh_spec.workdir.as_deref(),
+                host_creds.default_workdir.as_deref(),
+            );
             let adapter_store = Store::open(db_path).with_context(|| {
                 format!("failed to open adapter store at {}", db_path.display())
             })?;
@@ -175,9 +174,23 @@ pub fn run(
         let run_dir = runs_dir.join(run_id.to_string());
         let on_failed =
             crate::commands::launch::fail_policy_from_manifest(&run_dir.join("manifest.yaml"));
+        let ssh_root = if run.vendor == "ssh" {
+            serde_yaml::from_str::<xrun_core::manifest::Manifest>(
+                &std::fs::read_to_string(run_dir.join("manifest.yaml")).unwrap_or_default(),
+            )
+            .map(|m| crate::commands::launch::ssh_workdir_root(&m, config_dir))
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let run_id_str = run_id.to_string();
         poller = poller.with_config(crate::commands::launch::poller_config(
-            run.vendor == "local",
-            &run_dir,
+            crate::commands::launch::PollerFiles::for_vendor(
+                &run.vendor,
+                &run_dir,
+                &ssh_root,
+                &run_id_str,
+            ),
             on_failed,
         ));
     }

@@ -1218,7 +1218,16 @@ impl Poller {
                         );
                     }
                     if !matches!(self.config.on_stage_failed, FailPolicy::Keep) {
-                        destroy_after_drain = true;
+                        if self.done_policy.kill_remote {
+                            destroy_after_drain = true;
+                        } else {
+                            // local/ssh: the process is already gone, nothing
+                            // bills, and `destroy` would signal the PID from
+                            // run.pid — possibly recycled by now (cf. `finish`).
+                            let _ = self
+                                .store
+                                .update_instance_destroyed(&self.handle.id, Utc::now());
+                        }
                     }
                 }
             }

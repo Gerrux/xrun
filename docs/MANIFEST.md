@@ -181,7 +181,10 @@ default_workdir = "/home/ubuntu/xrun-runs"   # optional fallback
   обычные Unix-инструменты. Windows-серверы пока не поддерживаются.
 - **`workdir`.** Дефолт `/tmp/xrun`, перезатирается `ssh.workdir` в манифесте,
   и тот в свою очередь — `default_workdir` из creds. Per-run subdir
-  `<workdir>/<run-id>/` создаётся автоматически в `provision()`.
+  `<workdir>/<run-id>/` создаётся автоматически в `provision()`. `~/…` и
+  относительные пути (`ssh.workdir`, `default_workdir`, `run.workdir`)
+  отсчитываются от домашнего каталога пользователя на хосте. Относительные
+  `artifacts.patterns` ищутся в `run.workdir`, а без него — в `<workdir>/<run-id>/`.
 - **xrun_hook на удалёнке.** Установи `pip install xrun-hook` на сервере или
   включи в `data:` как для vast. `XRUN_RUN_DIR=<run-dir>` подставляется в env.
 - **destroy только убивает PID,** не машину. Идемпотентно: повторный `xrun

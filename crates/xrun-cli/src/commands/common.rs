@@ -355,9 +355,10 @@ fn build_ssh_adapter(ctx: &AdapterCtx<'_>) -> Result<Box<dyn VendorAdapter>> {
         anyhow::anyhow!("{cmd}: ssh alias '{alias}' missing from credentials.toml")
     })?;
     let conn = SshAdapter::resolve_conn(&alias, host_creds)?;
-    let workdir_root = manifest_workdir
-        .or_else(|| host_creds.default_workdir.clone())
-        .unwrap_or_else(|| "/tmp/xrun".to_string());
+    let workdir_root = xrun_ssh::resolve_workdir_root(
+        manifest_workdir.as_deref(),
+        host_creds.default_workdir.as_deref(),
+    );
     Ok(Box::new(SshAdapter::new(
         open_adapter_store(ctx)?,
         conn,

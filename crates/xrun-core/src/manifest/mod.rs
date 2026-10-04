@@ -4,6 +4,7 @@ pub mod hash;
 pub mod types;
 pub mod validate;
 
+pub use types::ssh_workdir_anchor;
 pub use types::{
     anchor_vast_pattern, ckpt_to_remote_pattern, Artifacts, CheckpointPull, Checkpoints,
     DataCompress, DataMode, DataSource, DonePolicy, EarlyStop, EarlyStopMode, GpuSpec, KaggleSpec,
