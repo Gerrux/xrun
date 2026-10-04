@@ -208,6 +208,8 @@ pub struct Artifacts {
 
 /// Allowed values of `policy.on_done`.
 pub const ON_DONE_VALUES: &[&str] = &["stop_instance", "keep"];
+/// Allowed values of `policy.on_stage_failed`.
+pub const ON_STAGE_FAILED_VALUES: &[&str] = &["stop_instance", "keep", "reprovision"];
 /// Allowed values of `artifacts.pull_on`.
 pub const PULL_ON_VALUES: &[&str] = &["done"];
 

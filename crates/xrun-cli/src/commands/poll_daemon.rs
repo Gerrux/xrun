@@ -171,9 +171,15 @@ pub fn run(
     )
     .with_budget(budget_cfg);
 
-    if run.vendor == "local" {
+    {
         let run_dir = runs_dir.join(run_id.to_string());
-        poller = poller.with_config(crate::commands::launch::local_poller_config(&run_dir));
+        let on_failed =
+            crate::commands::launch::fail_policy_from_manifest(&run_dir.join("manifest.yaml"));
+        poller = poller.with_config(crate::commands::launch::poller_config(
+            run.vendor == "local",
+            &run_dir,
+            on_failed,
+        ));
     }
 
     // Wire metric-sink fan-out from the saved manifest. Daemons re-read

@@ -71,8 +71,12 @@ mlflow:
 
 # Поведение xrun
 policy:
-  on_stage_failed: stop_instance     # stop_instance | keep | reprovision
-  on_idle_minutes: 30                # auto-stop если нет stdout > N min
+  on_stage_failed: stop_instance     # при status=fail: stop_instance (по умолчанию) гасит инстанс;
+                                     # keep — ран всё равно Failed, но инстанс остаётся для отладки;
+                                     # reprovision принимается, но пока ведёт себя как stop_instance
+  on_idle_minutes: 30                # авто-стоп, если > N мин нет вывода (stdout, events, metrics);
+                                     # vast и local, на ssh/kaggle игнорируется (активность не видна);
+                                     # `--idle-timeout` в CLI приоритетнее, 0 — выключено
   on_done: stop_instance             # stop_instance (default) | keep
   early_stop:                        # остановить, когда метрика вышла на плато
     metric: val_f1                   # ключ из xrun_hook.metric(...)

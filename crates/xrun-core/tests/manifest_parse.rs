@@ -253,6 +253,21 @@ fn done_policy_per_vendor_guard_anchor_and_kill() {
 }
 
 #[test]
+fn on_stage_failed_accepts_documented_values_and_rejects_others() {
+    for v in ["stop_instance", "keep", "reprovision"] {
+        Manifest::from_yaml_str(&local_manifest(&format!(
+            "policy:\n  on_stage_failed: {v}\n"
+        )))
+        .unwrap_or_else(|e| panic!("{v}: {e}"));
+    }
+    let err = Manifest::from_yaml_str(&local_manifest("policy:\n  on_stage_failed: ignore\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("policy.on_stage_failed"), "{err}");
+    assert!(err.contains("stop_instance | keep | reprovision"), "{err}");
+}
+
+#[test]
 fn on_done_rejects_unknown_value() {
     let err = Manifest::from_yaml_str(&local_manifest("policy:\n  on_done: destroy\n"))
         .unwrap_err()

@@ -15,7 +15,7 @@ use xrun_kaggle::KaggleAdapter;
 use xrun_local::LocalAdapter;
 use xrun_poller::{
     metric_fanout::{MetricSinksConfig, MlflowSubConfig, WandbSubConfig},
-    CancellationToken, Poller, PollerConfig,
+    CancellationToken, FailPolicy, Poller, PollerConfig,
 };
 use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
@@ -278,6 +278,50 @@ fn caps_from_args_and_config(args: &LaunchArgs, cfg: &xrun_core::BudgetConfig) -
     caps
 }
 
+/// Caps for non-billable vendors (local, ssh, kaggle): only what the user
+/// asked for — CLI flags, and the manifest's `policy.on_idle_minutes` for the
+/// idle timeout (CLI wins; local only, see below). The global `[budget]`
+/// defaults are about money and must not start killing long local trainings.
+pub(crate) fn explicit_caps(args: &LaunchArgs, manifest: &Manifest) -> InstanceCaps {
+    let mut caps = InstanceCaps::default();
+    if let Some(c) = args.max_cost.filter(|c| *c > 0.0) {
+        caps.max_cost_usd = Some(c);
+    }
+    if let Some(h) = args.max_hours.filter(|h| *h > 0.0) {
+        caps.max_lifetime_secs = Some((h * 3600.0) as i64);
+    }
+    match args.idle_timeout {
+        Some(m) => {
+            if m > 0.0 {
+                caps.idle_timeout_secs = Some((m * 60.0) as i64);
+            }
+        }
+        None => {
+            if let Some(m) = manifest
+                .policy
+                .as_ref()
+                .and_then(|p| p.on_idle_minutes)
+                .filter(|m| *m > 0)
+            {
+                caps.idle_timeout_secs = Some(m as i64 * 60);
+            }
+        }
+    }
+    // The idle timer needs to see activity. ssh (the poller tails the vast
+    // paths, not the remote run dir) and kaggle (live telemetry is ingested
+    // past the poller; none at all without MLflow) never report any, so an
+    // idle cap there is a kill timer from launch. Lifetime / cost still apply.
+    if caps.idle_timeout_secs.is_some() && matches!(manifest.vendor, Vendor::Ssh | Vendor::Kaggle) {
+        eprintln!(
+            "warning: idle timeout ignored for vendor {}: xrun cannot observe \
+             activity there yet (use --max-hours for a hard stop)",
+            manifest.vendor.as_str()
+        );
+        caps.idle_timeout_secs = None;
+    }
+    caps
+}
+
 /// Launch with a caller-provided vendor adapter (for testing).
 pub fn run_with_vendor(
     args: &LaunchArgs,
@@ -417,7 +461,25 @@ fn do_launch_with_budget(
     if let Err(e) = store.update_run_instance_id(&run_id, &handle.id) {
         tracing::warn!("could not link run to instance: {e}");
     }
+    if manifest.vendor != Vendor::Vast {
+        // Only vast persists caps at provision. Everything else gets them
+        // here, from explicit sources only (see `explicit_caps`).
+        let caps = explicit_caps(args, manifest);
+        if let Err(e) = store.update_instance_caps(&handle.id, &caps) {
+            tracing::warn!("could not persist instance caps: {e}");
+        }
+    }
     if reused_instance {
+        // The idle timer counts from `last_active_at`, which still holds the
+        // previous run's last output (or nothing → `created_at`): without a
+        // fresh anchor an idle cap would fire on this run's first tick.
+        if let Ok(Some(inst)) = store.get_instance(&handle.id) {
+            if let Err(e) =
+                store.update_instance_usage(&handle.id, inst.accumulated_cost, Some(Utc::now()))
+            {
+                tracing::warn!("could not reset idle anchor of reused instance: {e}");
+            }
+        }
         // Read by the poller (also after a daemon respawn): a reused
         // instance is kept at `done` unless `policy.on_done` says otherwise.
         let _ = store.append_event(
@@ -517,9 +579,16 @@ fn do_launch_with_budget(
     )
     .with_budget(budget_cfg);
 
-    if vendor_str == "local" {
-        poller = poller.with_config(local_poller_config(&run_dir));
-    }
+    poller = poller.with_config(poller_config(
+        vendor_str == "local",
+        &run_dir,
+        FailPolicy::from_manifest_value(
+            manifest
+                .policy
+                .as_ref()
+                .and_then(|p| p.on_stage_failed.as_deref()),
+        ),
+    ));
     if let Some(es) = manifest.policy.as_ref().and_then(|p| p.early_stop.clone()) {
         poller = poller.with_early_stop(es);
     }
@@ -767,11 +836,66 @@ pub(crate) fn done_policy_from_manifest(manifest_path: &Path) -> xrun_core::mani
         .unwrap_or_default()
 }
 
+/// Full poller config: local runs read their files from the run dir, and
+/// every vendor gets `policy.on_stage_failed`.
+pub(crate) fn poller_config(
+    is_local: bool,
+    run_dir: &Path,
+    on_stage_failed: FailPolicy,
+) -> PollerConfig {
+    let mut cfg = if is_local {
+        local_poller_config(run_dir)
+    } else {
+        PollerConfig::default()
+    };
+    cfg.on_stage_failed = on_stage_failed;
+    cfg
+}
+
+/// `policy.on_stage_failed` from the frozen manifest copy in the run dir.
+/// Missing/unparsable file → the default (`stop_instance`).
+pub(crate) fn fail_policy_from_manifest(manifest_path: &Path) -> FailPolicy {
+    let manifest = std::fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|c| serde_yaml::from_str::<Manifest>(&c).ok());
+    FailPolicy::from_manifest_value(
+        manifest
+            .as_ref()
+            .and_then(|m| m.policy.as_ref())
+            .and_then(|p| p.on_stage_failed.as_deref()),
+    )
+}
+
 pub(crate) fn local_poller_config(run_dir: &Path) -> PollerConfig {
     PollerConfig {
         events_file: run_dir.join("events.jsonl").display().to_string(),
         metrics_file: run_dir.join("metrics.jsonl").display().to_string(),
         stdout_file: run_dir.join("stdout.log").display().to_string(),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The poll-daemon (detach, resume, watchdog respawn) reads the policy
+    /// from the frozen copy `launch` writes with `serde_yaml::to_string`.
+    #[test]
+    fn fail_policy_survives_the_frozen_manifest_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.yaml");
+        let m = Manifest::from_yaml_str(
+            "name: l\nvendor: local\nrun:\n  cmd: python t.py\npolicy:\n  on_stage_failed: keep\n",
+        )
+        .unwrap();
+        std::fs::write(&path, serde_yaml::to_string(&m).unwrap()).unwrap();
+        assert_eq!(fail_policy_from_manifest(&path), FailPolicy::Keep);
+        let cfg = poller_config(false, tmp.path(), fail_policy_from_manifest(&path));
+        assert_eq!(cfg.on_stage_failed, FailPolicy::Keep);
+        assert_eq!(
+            fail_policy_from_manifest(&tmp.path().join("missing.yaml")),
+            FailPolicy::StopInstance
+        );
     }
 }

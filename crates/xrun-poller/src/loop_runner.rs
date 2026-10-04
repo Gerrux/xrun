@@ -90,6 +90,18 @@ pub enum FailPolicy {
     Reprovision,
 }
 
+impl FailPolicy {
+    /// From `policy.on_stage_failed` (validated at manifest parse time);
+    /// `None` and unknown values mean the default, `stop_instance`.
+    pub fn from_manifest_value(v: Option<&str>) -> Self {
+        match v {
+            Some("keep") => Self::Keep,
+            Some("reprovision") => Self::Reprovision,
+            _ => Self::StopInstance,
+        }
+    }
+}
+
 /// Configuration for the polling loop.
 pub struct PollerConfig {
     /// Seconds between polls when recent progress was observed.
@@ -98,9 +110,6 @@ pub struct PollerConfig {
     pub interval_idle_secs: u64,
     /// Seconds without byte progress before switching to the idle interval.
     pub idle_threshold_secs: u64,
-    /// Trigger a failure event if no progress occurs for this many minutes.
-    /// `None` disables the idle timeout.
-    pub on_idle_minutes: Option<u64>,
     /// Path to the events JSONL file on the remote instance.
     pub events_file: String,
     /// Path to the metrics JSONL file on the remote instance.
@@ -117,7 +126,6 @@ impl Default for PollerConfig {
             interval_active_secs: 5,
             interval_idle_secs: 30,
             idle_threshold_secs: 60,
-            on_idle_minutes: None,
             events_file: "/workspace/run/events.jsonl".to_string(),
             metrics_file: "/workspace/run/metrics.jsonl".to_string(),
             stdout_file: "/workspace/run/stdout.log".to_string(),
@@ -783,6 +791,21 @@ impl Poller {
         // to prevent unbounded growth on a stream with no newlines.
         let mut stdout_line_buf: Vec<u8> = Vec::new();
         const MAX_STDOUT_LINE: usize = 64 * 1024;
+        // Local runs write stdout straight into `<runs>/<id>/stdout.log`, the
+        // same file the snapshot below appends to: appending what was just
+        // read would make it grow every tick, forever.
+        let stdout_log_path = self
+            .runs_dir
+            .join(self.run_id.to_string())
+            .join("stdout.log");
+        let stdout_is_snapshot = {
+            let src = Path::new(&self.config.stdout_file);
+            src == stdout_log_path
+                || matches!(
+                    (src.canonicalize(), stdout_log_path.canonicalize()),
+                    (Ok(a), Ok(b)) if a == b
+                )
+        };
 
         loop {
             let mut progress_this_tick = false;
@@ -908,14 +931,19 @@ impl Poller {
                         terminal_after_drain = Some(RunStatus::Done);
                     }
 
-                    if failed && !matches!(self.config.on_stage_failed, FailPolicy::Keep) {
+                    if failed {
+                        // `keep` still ends the run as Failed (a run whose
+                        // script died before `train_start` has no PID probe
+                        // and would stay `running` forever); it only skips
+                        // destroying the instance so it can be inspected.
                         if matches!(self.config.on_stage_failed, FailPolicy::Reprovision) {
                             tracing::warn!(
                                 "reprovision not supported in v0.1; treating as stop_instance"
                             );
                         }
                         terminal_after_drain = Some(RunStatus::Failed);
-                        destroy_after_drain = true;
+                        destroy_after_drain =
+                            !matches!(self.config.on_stage_failed, FailPolicy::Keep);
                     }
                 }
                 Ok(_) => {}
@@ -1006,19 +1034,22 @@ impl Poller {
                 .tail(&self.handle, &self.config.stdout_file, offset_s)
             {
                 Ok(bytes) if !bytes.is_empty() => {
-                    let log_path = self
-                        .runs_dir
-                        .join(self.run_id.to_string())
-                        .join("stdout.log");
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&log_path)
-                    {
-                        let _ = f.write_all(&bytes);
+                    if !stdout_is_snapshot {
+                        use std::io::Write;
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&stdout_log_path)
+                        {
+                            let _ = f.write_all(&bytes);
+                        }
                     }
                     offset_s += bytes.len() as u64;
+                    // Any new output is activity for the idle cap ("no output
+                    // for N minutes"), metric line or not. The poll cadence
+                    // (`last_progress`) is left alone so a chatty log does not
+                    // switch remote vendors to the fast interval.
+                    progress_this_tick = true;
 
                     // Best-effort: extract `key=value` / JSONL metrics from
                     // structured stdout. Canonical path is xrun_hook →
@@ -1083,11 +1114,10 @@ impl Poller {
                 Ok(_) => {}
                 Err(VendorError::Truncated) => {
                     // Remote log was truncated (pre-emption restart): start over.
-                    if let Ok(()) = std::fs::remove_file(
-                        self.runs_dir
-                            .join(self.run_id.to_string())
-                            .join("stdout.log"),
-                    ) {}
+                    // Never delete the source itself (local runs).
+                    if !stdout_is_snapshot {
+                        let _ = std::fs::remove_file(&stdout_log_path);
+                    }
                     offset_s = 0;
                     stdout_line_buf.clear();
                 }
@@ -1282,12 +1312,23 @@ impl Poller {
                                     }
                                     let run_ref = self.run_ref();
                                     let instance_id = self.handle.id.clone();
-                                    self.notify(messages::budget_auto_destroyed(
-                                        &run_ref,
-                                        &instance_id,
-                                        reason.as_str(),
-                                        acc,
-                                    ));
+                                    if reason == budget::DestroyReason::IdleTimeout {
+                                        // "raise --max-cost" is the wrong advice
+                                        // for an idle stop: say what happened.
+                                        let idle_secs =
+                                            budget::idle_anchor(&updated, self.train_started_at)
+                                                .map(|a| (now_wall - a).num_seconds().max(0) as u64)
+                                                .unwrap_or(0);
+                                        let cost = self.cost_so_far();
+                                        self.notify(messages::run_idle(&run_ref, idle_secs, cost));
+                                    } else {
+                                        self.notify(messages::budget_auto_destroyed(
+                                            &run_ref,
+                                            &instance_id,
+                                            reason.as_str(),
+                                            acc,
+                                        ));
+                                    }
                                     return Ok(RunStatus::Failed);
                                 }
                             }
@@ -1389,36 +1430,10 @@ impl Poller {
                 }
             }
 
-            // --- idle detection ---
+            // Idle timeout is a hard cap (`instances.idle_timeout_secs`,
+            // `policy.on_idle_minutes` / `--idle-timeout`) evaluated above in
+            // `budget::evaluate_caps`; this is only the poll-interval clock.
             let elapsed = last_progress.elapsed().as_secs();
-            if let Some(idle_minutes) = self.config.on_idle_minutes {
-                if elapsed > idle_minutes * 60 {
-                    let _ = self.store.append_event(
-                        &self.run_id,
-                        NewEvent {
-                            ts: Utc::now(),
-                            stage: "idle".to_string(),
-                            status: "fail".to_string(),
-                            msg: Some(format!("no progress for {elapsed}s")),
-                            payload_json: None,
-                        },
-                    );
-                    self.destroy_instance()?;
-                    self.store
-                        .update_run_status(&self.run_id, RunStatus::Failed)?;
-                    self.send_update(DataUpdate::RunStatusChanged(
-                        self.run_id.clone(),
-                        RunStatus::Failed,
-                    ));
-                    if let Some(ref mirror) = mlflow {
-                        mirror.finish(&RunStatus::Failed);
-                    }
-                    let run_ref = self.run_ref();
-                    let cost = self.cost_so_far();
-                    self.notify(messages::run_idle(&run_ref, elapsed, cost));
-                    return Ok(RunStatus::Failed);
-                }
-            }
 
             // --- vendor completion poll (Kaggle and similar non-streaming vendors) ---
             let run_dir = self.runs_dir.join(self.run_id.to_string());

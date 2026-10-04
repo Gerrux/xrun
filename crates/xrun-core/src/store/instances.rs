@@ -114,6 +114,27 @@ impl Store {
         Ok(())
     }
 
+    /// Overwrite the hard caps of an existing instance row. Used for vendors
+    /// whose adapter inserts the row without caps (local, ssh, kaggle) and
+    /// for runs that reuse an instance.
+    pub fn update_instance_caps(
+        &mut self,
+        id: &str,
+        caps: &InstanceCaps,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE instances SET max_lifetime_secs = ?1, max_cost_usd = ?2, \
+             idle_timeout_secs = ?3 WHERE id = ?4",
+            params![
+                caps.max_lifetime_secs,
+                caps.max_cost_usd,
+                caps.idle_timeout_secs,
+                id
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn update_instance_destroyed(
         &mut self,
         id: &str,

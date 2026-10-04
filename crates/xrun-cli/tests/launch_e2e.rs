@@ -111,3 +111,156 @@ fn launch_e2e_mock_vendor_failed_run() {
         "run status should be failed"
     );
 }
+
+fn done_events() -> Vec<u8> {
+    join_lines(&[event_line("train_start", "ok"), event_line("done", "ok")])
+}
+
+/// Run a launch against the mock and return the (single) instance row.
+fn launch_and_get_instance(
+    yaml: &str,
+    tweak: impl FnOnce(&mut LaunchArgs),
+) -> xrun_core::store::Instance {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("runs.db");
+    let manifest_path = tmp.path().join("m.yaml");
+    std::fs::write(&manifest_path, yaml).unwrap();
+    let mut args = make_args(manifest_path);
+    tweak(&mut args);
+    let mock = MockVastAdapter::new(vec![done_events()], vec![]);
+    run_with_vendor(&args, &db_path, &tmp.path().join("runs"), Box::new(mock)).unwrap();
+    let store = Store::open(&db_path).unwrap();
+    let mut rows = store.list_instances().unwrap();
+    assert_eq!(rows.len(), 1);
+    rows.remove(0)
+}
+
+const LOCAL_YAML: &str = "name: l\nvendor: local\nrun:\n  cmd: python t.py\n";
+
+#[test]
+fn caps_for_non_billable_vendor_come_from_manifest_and_cli_only() {
+    // Manifest idle only; no `[budget]` default ($10 cost, 8h) leaks in.
+    let inst = launch_and_get_instance(
+        &format!("{LOCAL_YAML}policy:\n  on_idle_minutes: 7\n"),
+        |_| {},
+    );
+    assert_eq!(inst.idle_timeout_secs, Some(420));
+    assert_eq!(inst.max_cost_usd, None);
+    assert_eq!(inst.max_lifetime_secs, None);
+
+    // CLI flags win over the manifest and add the other caps.
+    let inst = launch_and_get_instance(
+        &format!("{LOCAL_YAML}policy:\n  on_idle_minutes: 7\n"),
+        |a| {
+            a.idle_timeout = Some(2.0);
+            a.max_hours = Some(1.5);
+            a.max_cost = Some(3.0);
+        },
+    );
+    assert_eq!(inst.idle_timeout_secs, Some(120));
+    assert_eq!(inst.max_lifetime_secs, Some(5400));
+    assert_eq!(inst.max_cost_usd, Some(3.0));
+
+    // Nothing asked for -> no caps at all.
+    let inst = launch_and_get_instance(LOCAL_YAML, |_| {});
+    assert_eq!(
+        (
+            inst.idle_timeout_secs,
+            inst.max_cost_usd,
+            inst.max_lifetime_secs
+        ),
+        (None, None, None)
+    );
+}
+
+/// ssh and kaggle report no activity to the poller, so an idle cap there
+/// would kill every run N minutes after launch: it is dropped (manifest and
+/// CLI alike), while the lifetime cap is still persisted.
+#[test]
+fn ssh_and_kaggle_get_lifetime_cap_but_no_idle_cap() {
+    let ssh = "name: s\nvendor: ssh\nssh:\n  host_alias: box\nrun:\n  cmd: python t.py\n\
+               policy:\n  on_idle_minutes: 3\n";
+    let kaggle =
+        "name: k\nvendor: kaggle\nkaggle:\n  kernel_slug: me/k\nrun:\n  cmd: python t.py\n\
+                  policy:\n  on_idle_minutes: 4\n";
+    for yaml in [ssh, kaggle] {
+        let inst = launch_and_get_instance(yaml, |a| {
+            a.max_hours = Some(2.0);
+        });
+        assert_eq!(inst.idle_timeout_secs, None, "{yaml}");
+        assert_eq!(inst.max_lifetime_secs, Some(7200), "{yaml}");
+        let inst = launch_and_get_instance(yaml, |a| {
+            a.idle_timeout = Some(5.0);
+        });
+        assert_eq!(inst.idle_timeout_secs, None, "{yaml}");
+    }
+}
+
+/// A reused instance carries the previous run's `last_active_at`; the idle
+/// anchor must restart at this launch or the cap fires on the first tick.
+#[test]
+fn reused_instance_restarts_the_idle_anchor() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("runs.db");
+    let runs_dir = tmp.path().join("runs");
+    let manifest_path = tmp.path().join("m.yaml");
+    std::fs::write(
+        &manifest_path,
+        format!("{LOCAL_YAML}policy:\n  on_idle_minutes: 30\n"),
+    )
+    .unwrap();
+
+    // First launch: provision + upload only, instance kept alive.
+    let mut args = make_args(manifest_path.clone());
+    args.upload_only = true;
+    run_with_vendor(
+        &args,
+        &db_path,
+        &runs_dir,
+        Box::new(MockVastAdapter::new(vec![], vec![])),
+    )
+    .unwrap();
+    let first_run = {
+        let mut store = Store::open(&db_path).unwrap();
+        let inst = store.list_instances().unwrap().remove(0);
+        store
+            .update_instance_usage(&inst.id, 0.0, Some(Utc::now() - chrono::Duration::hours(2)))
+            .unwrap();
+        store
+            .list_runs(&ListFilter::default())
+            .unwrap()
+            .remove(0)
+            .id
+            .to_string()
+    };
+
+    // Second launch reuses it. Tick 1 sees nothing (no events, no stdout),
+    // tick 2 sees `done`: a stale anchor would trip the 30 min cap on tick 1.
+    let mut args = make_args(manifest_path);
+    args.reuse_instance = Some(first_run);
+    let mock = MockVastAdapter::new(vec![vec![], vec![], done_events()], vec![]);
+    run_with_vendor(&args, &db_path, &runs_dir, Box::new(mock))
+        .expect("reused run must not be idle-killed on its first tick");
+    let inst = Store::open(&db_path)
+        .unwrap()
+        .list_instances()
+        .unwrap()
+        .remove(0);
+    assert!(inst.auto_destroyed_reason.is_none());
+}
+
+/// vast keeps its own path (the adapter persists caps at provision, with the
+/// global defaults); the new generic persist step must not touch it.
+#[test]
+fn vast_rows_are_not_touched_by_the_generic_caps_step() {
+    let mut yaml = String::new();
+    write_manifest_string(&mut yaml);
+    let inst = launch_and_get_instance(&yaml, |a| {
+        a.max_hours = Some(2.0);
+    });
+    assert_eq!(inst.max_lifetime_secs, None);
+}
+
+fn write_manifest_string(out: &mut String) {
+    out.push_str("name: e2e-test\nvendor: vast\nvast:\n  image: pytorch/pytorch:latest\n  gpu:\n    type: RTX4090\n    count: 1\nrun:\n  cmd: python train.py\n");
+}

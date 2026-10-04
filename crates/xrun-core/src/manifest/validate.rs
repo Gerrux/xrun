@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use super::types::{Manifest, Vendor, ON_DONE_VALUES, PULL_ON_VALUES};
+use super::types::{Manifest, Vendor, ON_DONE_VALUES, ON_STAGE_FAILED_VALUES, PULL_ON_VALUES};
 use crate::error::ManifestError;
 
 pub fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
@@ -11,6 +11,19 @@ pub fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::Validation(format!(
                 "policy.on_done must be one of {}: {:?}",
                 ON_DONE_VALUES.join(" | "),
+                v
+            )));
+        }
+    }
+    if let Some(v) = manifest
+        .policy
+        .as_ref()
+        .and_then(|p| p.on_stage_failed.as_deref())
+    {
+        if !ON_STAGE_FAILED_VALUES.contains(&v) {
+            return Err(ManifestError::Validation(format!(
+                "policy.on_stage_failed must be one of {}: {:?}",
+                ON_STAGE_FAILED_VALUES.join(" | "),
                 v
             )));
         }

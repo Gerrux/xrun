@@ -743,3 +743,104 @@ fn early_stop_destroys_even_for_local_and_keep() {
     run_early_stop(&tmp, &run_id, early_stop_vendor(&calls), p);
     assert_eq!(calls.log(), ["pull:**/best*", "destroy"]);
 }
+
+fn fail_event() -> Vec<u8> {
+    let ts = Utc::now().to_rfc3339();
+    format!("{{\"ts\":\"{ts}\",\"stage\":\"setup\",\"status\":\"fail\"}}\n").into_bytes()
+}
+
+fn run_failing(
+    tmp: &TempDir,
+    run_id: &RunId,
+    vendor: MockVendor,
+    on_stage_failed: xrun_poller::FailPolicy,
+) -> RunStatus {
+    let store = Store::open(&tmp.path().join("runs.db")).unwrap();
+    Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(vendor),
+        handle(),
+        tmp.path().join("runs"),
+    )
+    .with_config(PollerConfig {
+        interval_active_secs: 0,
+        interval_idle_secs: 0,
+        on_stage_failed,
+        ..Default::default()
+    })
+    .run(CancellationToken::new())
+    .unwrap()
+}
+
+#[test]
+fn failed_stage_keep_ends_run_failed_without_destroy() {
+    use xrun_poller::FailPolicy;
+    let tmp = TempDir::new().unwrap();
+    let run_id = setup(&tmp);
+    let calls = Calls::default();
+    let mut vendor = MockVendor::new(&calls);
+    vendor.events = RefCell::new(vec![fail_event()].into());
+    let status = run_failing(&tmp, &run_id, vendor, FailPolicy::Keep);
+    assert_eq!(status, RunStatus::Failed, "never left `running`");
+    assert_eq!(run_status(&tmp, &run_id), RunStatus::Failed);
+    assert!(calls.log().is_empty(), "keep: no destroy");
+}
+
+#[test]
+fn failed_stage_stop_instance_and_reprovision_destroy() {
+    use xrun_poller::FailPolicy;
+    for policy in [FailPolicy::StopInstance, FailPolicy::Reprovision] {
+        let tmp = TempDir::new().unwrap();
+        let run_id = setup(&tmp);
+        let calls = Calls::default();
+        let mut vendor = MockVendor::new(&calls);
+        vendor.events = RefCell::new(vec![fail_event()].into());
+        let status = run_failing(&tmp, &run_id, vendor, policy);
+        assert_eq!(status, RunStatus::Failed);
+        assert_eq!(calls.log(), ["destroy"]);
+    }
+}
+
+/// Caps are enforced for any vendor (here: a free, local-style instance whose
+/// row carries only an idle cap): destroy, run Failed, `run.idle` push.
+#[test]
+fn idle_cap_stops_a_silent_local_style_run() {
+    let tmp = TempDir::new().unwrap();
+    let run_id = setup(&tmp);
+    {
+        let mut store = Store::open(&tmp.path().join("runs.db")).unwrap();
+        store
+            .insert_instance_with_caps(
+                "inst-1",
+                "local",
+                Some(&run_id),
+                None,
+                None,
+                Utc::now() - Duration::hours(1),
+                &xrun_core::store::InstanceCaps {
+                    idle_timeout_secs: Some(300),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let calls = Calls::default();
+    let mut vendor = MockVendor::new(&calls);
+    vendor.events = RefCell::new(VecDeque::new());
+    let cap = Capture::default();
+    let status = run_notified(&tmp, &run_id, vendor, DonePolicy::default(), &cap);
+    assert_eq!(status, RunStatus::Failed);
+    assert_eq!(calls.log(), ["destroy"]);
+    let inst = Store::open(&tmp.path().join("runs.db"))
+        .unwrap()
+        .get_instance("inst-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(inst.auto_destroyed_reason.as_deref(), Some("idle_timeout"));
+    let kinds: Vec<Kind> = cap.0.lock().unwrap().iter().map(|n| n.kind).collect();
+    assert_eq!(kinds, [Kind::RunIdle]);
+    assert!(events(&tmp, &run_id)
+        .iter()
+        .any(|e| e.0 == "instance.auto_destroyed"));
+}
