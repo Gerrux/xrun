@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use clap::{Args, Subcommand};
 use serde::Serialize;
-use xrun_core::{store::RunStatus, GlobalConfig, Run, Store, VendorAdapter};
+use xrun_core::{config::UpdateAuto, store::RunStatus, GlobalConfig, Run, Store, VendorAdapter};
 use xrun_local::process::process_alive;
 use xrun_notify::{
     messages::{self, RunRef},
@@ -34,6 +34,7 @@ use xrun_notify::{
 
 use crate::commands::notify_cmd::build_notifier;
 use crate::commands::resume::{resume_one, Outcome};
+use crate::commands::update;
 
 #[derive(Args)]
 pub struct WatchdogArgs {
@@ -116,7 +117,21 @@ pub struct Report {
     pub orphans: Vec<OrphanReport>,
     /// Telegram commands handled this pass (human-readable log lines).
     pub commands: Vec<String>,
+    /// A newer release, from the daily check (`[update].auto = notify`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<UpdateReport>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateReport {
+    pub current: String,
+    pub latest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Sent this pass. An earlier pass that already delivered it for this
+    /// release leaves this `false`.
+    pub notified: bool,
 }
 
 fn classify(run: &Run, stale: Duration, now: chrono::DateTime<Utc>) -> (PollerState, Option<i64>) {
@@ -175,6 +190,7 @@ pub fn run(args: &WatchdogArgs, db_path: &Path, runs_dir: &Path, config_dir: &Pa
         runs: Vec::new(),
         orphans: Vec::new(),
         commands: Vec::new(),
+        update: None,
         warnings,
     };
 
@@ -325,6 +341,33 @@ pub fn run(args: &WatchdogArgs, db_path: &Path, runs_dir: &Path, config_dir: &Pa
         }
     }
 
+    // New release: one push per release, not per `dedupe_min` window.
+    if !args.dry_run
+        && global.update.auto == UpdateAuto::Notify
+        && std::env::var_os("XRUN_NO_UPDATE_CHECK").is_none()
+    {
+        match update::check_daily(&update::check_state_path(db_path), now) {
+            Ok(Some(info)) => {
+                let n =
+                    messages::update_available(&info.current, &info.latest, info.url.as_deref());
+                let announced = store
+                    .last_notify_sent(&n.dedupe_key)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                let notified = !announced && notifier.send(Some(&mut store), &n).any_ok();
+                report.update = Some(UpdateReport {
+                    current: info.current,
+                    latest: info.latest,
+                    url: info.url,
+                    notified,
+                });
+            }
+            Ok(None) => {}
+            Err(e) => report.warnings.push(format!("update check: {e:#}")),
+        }
+    }
+
     print_report(&report, &notifier, args);
     Ok(())
 }
@@ -425,6 +468,14 @@ fn print_report(report: &Report, notifier: &Notifier, args: &WatchdogArgs) {
     }
     for c in &report.commands {
         println!("  telegram: {c}");
+    }
+    if let Some(u) = &report.update {
+        println!(
+            "  update: xrun {} available (installed {}), run `xrun update`{}",
+            u.latest,
+            u.current,
+            if u.notified { " → notified" } else { "" }
+        );
     }
     if args.dry_run {
         println!("(dry run — nothing respawned or sent)");

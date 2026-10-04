@@ -32,6 +32,60 @@ function Install-Skill {
     Write-Host "Claude Code skill installed -> $SkillDir\SKILL.md"
 }
 
+# Every release after v0.9.0 ships SHA256SUMS, so a missing one there means a
+# broken or tampered download, not an old release. An unparsable version
+# counts as new (fail closed).
+function Test-SumsRequired {
+    param([Parameter(Mandatory = $true)][string]$ReleaseVersion)
+    $core = $ReleaseVersion.TrimStart('v') -replace '-.*$', ''
+    $parsed = $null
+    if (-not [version]::TryParse($core, [ref]$parsed)) { return $true }
+    return $parsed -gt [version]'0.9.0'
+}
+
+function Test-ArchiveChecksum {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$SumsUrl,
+        [Parameter(Mandatory = $true)][string]$ReleaseVersion
+    )
+
+    $sumsText = $null
+    try {
+        $sumsText = (Invoke-WebRequest -Uri $SumsUrl -UseBasicParsing).Content
+        if ($sumsText -is [byte[]]) { $sumsText = [System.Text.Encoding]::UTF8.GetString($sumsText) }
+    } catch {
+        $status = $null
+        if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        if ($status -eq 404) {
+            if (Test-SumsRequired $ReleaseVersion) {
+                throw "Release $ReleaseVersion has no SHA256SUMS; refusing to install unverified."
+            }
+            Write-Warning "release has no SHA256SUMS, skipping verification"
+            return
+        }
+        throw "Could not download SHA256SUMS from ${SumsUrl}: $($_.Exception.Message)"
+    }
+
+    $expected = $null
+    foreach ($line in ($sumsText -split "`r?`n")) {
+        if ($line -match '^\s*([0-9A-Fa-f]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $Name) {
+            $expected = $Matches[1]
+            break
+        }
+    }
+    if (-not $expected) {
+        throw "SHA256SUMS has no entry for $Name; refusing to install."
+    }
+
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash
+    if ($actual -ne $expected) {
+        throw "Checksum mismatch for ${Name}:`n  expected: $($expected.ToLower())`n  actual:   $($actual.ToLower())`nRefusing to install."
+    }
+    Write-Host "Checksum OK ($Name)"
+}
+
 function Test-Python311 {
     param([string]$Exe, [string[]]$PrefixArgs = @())
     try {
@@ -151,6 +205,15 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 Write-Host "Downloading $Url ..."
 Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
+
+try {
+    Test-ArchiveChecksum -Path $ZipPath -Name $Archive `
+        -SumsUrl "https://github.com/$Repo/releases/download/$Version/SHA256SUMS" `
+        -ReleaseVersion $Version
+} catch {
+    Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+    throw
+}
 
 Expand-Archive -Path $ZipPath -DestinationPath $Tmp -Force
 Remove-Item $ZipPath -Force

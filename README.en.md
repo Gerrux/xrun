@@ -95,7 +95,11 @@ pip install -e python/xrun_tui
 
 `xrun` updates itself: on interactive start it checks the releases and asks
 before installing. `xrun update --check` only checks,
-`XRUN_NO_UPDATE_CHECK=1` turns the check off in scripts.
+`XRUN_NO_UPDATE_CHECK=1` turns the check off in scripts. `xrun watchdog`
+(the scheduler entry, and an open TUI) checks once a day and, with push
+notifications set up, sends `update.available` once per new release
+(`xrun config set update.auto off` disables the check).
+The installer verifies the archive against the release's `SHA256SUMS`.
 
 ## First run
 

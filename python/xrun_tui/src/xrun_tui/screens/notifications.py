@@ -30,6 +30,7 @@ _KIND_SEV = {
     "instance.orphan": "error",
     "metric.anomaly": "warning",
     "poller.dead": "error",
+    "update.available": "information",
 }
 
 

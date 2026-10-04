@@ -28,11 +28,12 @@ def bare_app(tmp_path: Path, monkeypatch):
 _SHOWN = {
     "poller": {"interval_active_secs": 30, "interval_idle_secs": 120},
     "defaults": {"vendor": "vast", "exp_dir": "exp/"},
+    "update": {"auto": "off"},
 }
 
 
 def _fake_services(monkeypatch, show_gate: asyncio.Event | None = None,
-                   set_delay: float = 0.0):
+                   set_delay: float = 0.0, shown: dict | None = None):
     from xrun_tui import services
 
     calls: list[tuple[str, ...]] = []
@@ -41,7 +42,7 @@ def _fake_services(monkeypatch, show_gate: asyncio.Event | None = None,
     async def config_show(secrets: bool = False):
         if show_gate is not None:
             await show_gate.wait()
-        return True, _SHOWN, ""
+        return True, _SHOWN if shown is None else shown, ""
 
     async def _write(*call: str):
         in_flight["now"] += 1
@@ -93,6 +94,84 @@ def test_untouched_save_writes_nothing_and_cleared_field_unsets(
                 ("set", "poller.interval_idle_secs", "60"),
                 ("unset", "defaults.exp_dir"),
             ]
+
+    asyncio.run(scenario())
+
+
+def test_update_auto_select_writes_only_a_changed_choice(
+    bare_app, monkeypatch
+) -> None:
+    calls, _ = _fake_services(monkeypatch)
+
+    async def scenario() -> None:
+        from textual.widgets import Select
+
+        from xrun_tui.screens.settings import SettingsScreen
+
+        app = bare_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = SettingsScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            sel = screen.query_one("#input-xrun-update-auto", Select)
+            assert sel.value == "off"
+            assert not screen.form_dirty()
+            await screen._save()
+            assert calls == []
+
+            sel.value = "notify"
+            await pilot.pause()
+            assert screen.form_dirty()
+            await screen._save()
+            assert calls == [("set", "update.auto", "notify")]
+            assert not screen.form_dirty()
+
+    asyncio.run(scenario())
+
+
+def test_update_auto_stays_blank_and_unwritten_without_the_key(
+    bare_app, monkeypatch
+) -> None:
+    # An xrun binary before [update] existed: `config show` has no such key.
+    shown = {k: v for k, v in _SHOWN.items() if k != "update"}
+    calls, _ = _fake_services(monkeypatch, shown=shown)
+
+    async def scenario() -> None:
+        from textual.widgets import Select
+
+        from xrun_tui.screens.settings import SettingsScreen
+
+        app = bare_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = SettingsScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            sel = screen.query_one("#input-xrun-update-auto", Select)
+            assert not isinstance(sel.value, str)  # blank
+            _field(screen, "poller.interval_idle_secs").value = "60"
+            await screen._save()
+            assert calls == [("set", "poller.interval_idle_secs", "60")]
+
+    asyncio.run(scenario())
+
+
+def test_blank_theme_select_is_not_saved_as_a_theme(bare_app, monkeypatch) -> None:
+    _fake_services(monkeypatch)
+
+    async def scenario() -> None:
+        from textual.widgets import Select
+
+        from xrun_tui import config
+        from xrun_tui.screens.settings import SettingsScreen
+
+        app = bare_app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = SettingsScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            screen.query_one("#input-tui-theme", Select).clear()
+            await screen._save()
+            assert "NULL" not in str(config.get_settings().get("theme"))
 
     asyncio.run(scenario())
 

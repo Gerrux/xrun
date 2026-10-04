@@ -329,6 +329,22 @@ pub fn poller_dead(
     .tag("warning")
 }
 
+/// `latest` is the release tag (`v0.9.1`). The dedupe key carries it, so
+/// the caller can tell "already announced this release" from `notify_log`.
+pub fn update_available(current: &str, latest: &str, url: Option<&str>) -> Notification {
+    let mut body = format!("installed {current}. Install with `xrun update`.");
+    if let Some(u) = url {
+        body.push_str(&format!("\n{u}"));
+    }
+    Notification::new(
+        Kind::UpdateAvailable,
+        format!("update.available:{latest}"),
+        format!("⬆️ xrun {latest} is available"),
+    )
+    .body(body)
+    .tag("arrow_up")
+}
+
 pub fn test(channels: &[&str]) -> Notification {
     Notification::new(Kind::Test, "test", "🔔 xrun notifications work")
         .body(format!(

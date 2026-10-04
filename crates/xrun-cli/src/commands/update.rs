@@ -1,17 +1,26 @@
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use clap::Args;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/gerrux/xrun/releases/latest";
+
+/// The installer from the release being installed, not from `master`: the
+/// binary, the TUI and the installer's checksum check all come from one tag.
 #[cfg(not(windows))]
-const UNIX_INSTALLER_URL: &str = "https://raw.githubusercontent.com/gerrux/xrun/master/install.sh";
+fn unix_installer_url(tag: &str) -> String {
+    format!("https://raw.githubusercontent.com/gerrux/xrun/{tag}/install.sh")
+}
+
 #[cfg(windows)]
-const WINDOWS_INSTALLER_URL: &str =
-    "https://raw.githubusercontent.com/gerrux/xrun/master/install.ps1";
+fn windows_installer_url(tag: &str) -> String {
+    format!("https://raw.githubusercontent.com/gerrux/xrun/{tag}/install.ps1")
+}
 
 #[derive(Args)]
 pub struct UpdateArgs {
@@ -104,6 +113,77 @@ fn latest_update_quiet() -> Result<Option<UpdateInfo>> {
     }
 }
 
+/// Last background lookup, next to the DB. The TUI runs `xrun watchdog`
+/// every 60 s; without this it would spend GitHub's 60/h unauthenticated
+/// quota on its own.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CheckState {
+    /// Last successful lookup; the next one is a day later.
+    checked_at: Option<DateTime<Utc>>,
+    /// Last failed lookup; retried an hour later.
+    failed_at: Option<DateTime<Utc>>,
+    latest: Option<String>,
+    url: Option<String>,
+}
+
+pub fn check_state_path(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("update_check.json")
+}
+
+/// Release lookup for `xrun watchdog`: at most one GitHub call a day (an
+/// hour after a failure); in between the stored result is compared with
+/// the running version. `Ok(None)` = up to date or nothing known yet.
+pub fn check_daily(state_path: &Path, now: DateTime<Utc>) -> Result<Option<UpdateInfo>> {
+    check_daily_with(state_path, now, current_version(), fetch_latest_release)
+}
+
+fn check_daily_with(
+    state_path: &Path,
+    now: DateTime<Utc>,
+    current: &str,
+    fetch: impl FnOnce() -> Result<GitHubRelease>,
+) -> Result<Option<UpdateInfo>> {
+    let mut state: CheckState = std::fs::read_to_string(state_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    // A timestamp in the future (clock ran ahead, then got corrected) is
+    // stale, not "fresh for another year".
+    let within = |t: Option<DateTime<Utc>>, window: chrono::Duration| {
+        t.is_some_and(|t| t <= now && now - t < window)
+    };
+    let fresh = within(state.checked_at, chrono::Duration::hours(24));
+    let backing_off = within(state.failed_at, chrono::Duration::hours(1));
+    if !fresh && !backing_off {
+        let fetched = fetch();
+        match &fetched {
+            Ok(release) => {
+                state.checked_at = Some(now);
+                state.failed_at = None;
+                state.latest = Some(release.tag_name.clone());
+                state.url = release.html_url.clone();
+            }
+            Err(_) => state.failed_at = Some(now),
+        }
+        if let Ok(json) = serde_json::to_string(&state) {
+            let _ = std::fs::write(state_path, json);
+        }
+        fetched.context("failed to check latest xrun release")?;
+    }
+    Ok(state.latest.and_then(|tag| {
+        update_info_from_release(
+            current,
+            GitHubRelease {
+                tag_name: tag,
+                html_url: state.url,
+            },
+        )
+    }))
+}
+
 fn fetch_latest_release() -> Result<GitHubRelease> {
     let url = std::env::var("XRUN_UPDATE_CHECK_URL").unwrap_or_else(|_| LATEST_RELEASE_URL.into());
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -174,7 +254,10 @@ fn install_update(version: &str, no_tui: bool) -> Result<()> {
 
 #[cfg(not(windows))]
 fn install_update_unix(version: &str, no_tui: bool) -> Result<()> {
-    let mut script = format!("curl -sSfL {UNIX_INSTALLER_URL} | sh -s -- --version {version}");
+    let mut script = format!(
+        "curl -sSfL {} | sh -s -- --version {version}",
+        unix_installer_url(version)
+    );
     if no_tui {
         script.push_str(" --no-tui");
     }
@@ -195,8 +278,10 @@ fn install_update_unix(version: &str, no_tui: bool) -> Result<()> {
 
 #[cfg(windows)]
 fn install_update_windows(version: &str, no_tui: bool) -> Result<()> {
-    let mut command =
-        format!("& ([scriptblock]::Create((irm '{WINDOWS_INSTALLER_URL}'))) -Version {version}");
+    let mut command = format!(
+        "& ([scriptblock]::Create((irm '{}'))) -Version {version}",
+        windows_installer_url(version)
+    );
     if no_tui {
         command.push_str(" -NoTui");
     }
@@ -266,5 +351,91 @@ mod tests {
             html_url: None,
         };
         assert!(update_info_from_release("0.7.0", same).is_none());
+    }
+
+    fn release(tag: &str) -> Result<GitHubRelease> {
+        Ok(GitHubRelease {
+            tag_name: tag.into(),
+            html_url: Some(format!("https://example.test/{tag}")),
+        })
+    }
+
+    #[test]
+    fn daily_check_calls_github_once_a_day() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("update_check.json");
+        let t0 = Utc::now();
+
+        let info = check_daily_with(&path, t0, "0.9.0", || release("v0.9.1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.latest, "v0.9.1");
+        assert_eq!(info.url.as_deref(), Some("https://example.test/v0.9.1"));
+
+        // Within the day: answered from the file, no fetch.
+        let later = t0 + chrono::Duration::hours(23);
+        let info = check_daily_with(&path, later, "0.9.0", || panic!("fetched")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.1");
+
+        // After updating, the stored release is no longer newer.
+        assert!(
+            check_daily_with(&path, later, "0.9.1", || panic!("fetched"))
+                .unwrap()
+                .is_none()
+        );
+
+        // A day later: fetched again.
+        let next = t0 + chrono::Duration::hours(25);
+        let info = check_daily_with(&path, next, "0.9.0", || release("v0.9.2")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.2");
+    }
+
+    #[test]
+    fn failed_check_retries_after_an_hour_and_keeps_the_last_answer() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("update_check.json");
+        let t0 = Utc::now();
+        check_daily_with(&path, t0, "0.9.0", || release("v0.9.1")).unwrap();
+
+        let t1 = t0 + chrono::Duration::hours(25);
+        let err = check_daily_with(&path, t1, "0.9.0", || bail!("offline"));
+        assert!(err.is_err());
+
+        // Backing off: no fetch, the previous answer still stands.
+        let t2 = t1 + chrono::Duration::minutes(30);
+        let info = check_daily_with(&path, t2, "0.9.0", || panic!("fetched")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.1");
+
+        let t3 = t1 + chrono::Duration::minutes(61);
+        let info = check_daily_with(&path, t3, "0.9.0", || release("v0.9.2")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.2");
+    }
+
+    #[test]
+    fn timestamps_in_the_future_do_not_suppress_the_lookup() {
+        // A clock that ran ahead once (or a copied state file) must not
+        // silence the check until real time catches up.
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("update_check.json");
+        let now = Utc::now();
+        let ahead = now + chrono::Duration::days(365);
+        check_daily_with(&path, ahead, "0.9.0", || release("v0.9.1")).unwrap();
+        let info = check_daily_with(&path, now, "0.9.0", || release("v0.9.2")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.2");
+
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("update_check.json");
+        let _ = check_daily_with(&path, ahead, "0.9.0", || bail!("offline"));
+        let info = check_daily_with(&path, now, "0.9.0", || release("v0.9.2")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.2");
+    }
+
+    #[test]
+    fn corrupt_state_file_is_a_fresh_start() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("update_check.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let info = check_daily_with(&path, Utc::now(), "0.9.0", || release("v0.9.1")).unwrap();
+        assert_eq!(info.unwrap().latest, "v0.9.1");
     }
 }

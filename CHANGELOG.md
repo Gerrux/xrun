@@ -9,6 +9,31 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Releases ship `SHA256SUMS`; `install.sh` / `install.ps1` verify the
+  archive against it before installing and abort on a mismatch. Releases
+  without the file (v0.9.0 and earlier) install with a warning; for any
+  newer release a missing file is an error. The release workflow publishes
+  a release only after every file is attached.
+- `update.available` notification: `xrun watchdog` looks up the latest
+  release at most once a day (an hour after a failed lookup; state in
+  `update_check.json` next to the DB) and pushes once per release through
+  `[notify]`. Nothing is installed. `[update].auto = "off"` or
+  `XRUN_NO_UPDATE_CHECK=1` turns the lookup off.
+- TUI Settings → Updates tab: Notify / Off switch for `update.auto`.
+
+### Changed
+
+- `xrun update` runs the installer from the release's own tag instead of
+  `master`, so the binary, the TUI and the checksum check come from one
+  version.
+
+### Fixed
+
+- TUI Settings: a blank theme picker was saved as the theme `Select.NULL`
+  on current Textual.
+
 ---
 
 ## [0.9.0] - 2026-10-04

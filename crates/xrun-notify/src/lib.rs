@@ -89,6 +89,7 @@ pub enum Kind {
     InstanceOrphan,
     MetricAnomaly,
     PollerDead,
+    UpdateAvailable,
     /// Free-form message from the training script (`xrun_hook.notify`).
     User,
     Test,
@@ -109,6 +110,7 @@ impl Kind {
         Kind::InstanceOrphan,
         Kind::MetricAnomaly,
         Kind::PollerDead,
+        Kind::UpdateAvailable,
         Kind::User,
         Kind::Test,
         Kind::Manual,
@@ -128,6 +130,7 @@ impl Kind {
             Kind::InstanceOrphan => "instance.orphan",
             Kind::MetricAnomaly => "metric.anomaly",
             Kind::PollerDead => "poller.dead",
+            Kind::UpdateAvailable => "update.available",
             Kind::User => "user",
             Kind::Test => "test",
             Kind::Manual => "manual",
@@ -152,6 +155,7 @@ impl Kind {
             Kind::InstanceOrphan => "instance alive in the DB with no run polling it",
             Kind::MetricAnomaly => "NaN/inf in a metric, or a loss spike",
             Kind::PollerDead => "poll-daemon heartbeat stale or PID gone while run is `running`",
+            Kind::UpdateAvailable => "a newer xrun release is out (`[update].auto = notify`)",
             Kind::User => "`xrun_hook.notify(...)` from the training script",
             Kind::Test => "`xrun notify test`",
             Kind::Manual => "`xrun notify send`",
@@ -165,6 +169,7 @@ impl Kind {
             Kind::RunDone | Kind::RunEarlyStopped | Kind::User | Kind::Test | Kind::Manual => {
                 Priority::Default
             }
+            Kind::UpdateAvailable => Priority::Low,
             Kind::RunFailed | Kind::RunIdle | Kind::BudgetWarn | Kind::MetricAnomaly => {
                 Priority::High
             }

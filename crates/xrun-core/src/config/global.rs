@@ -128,6 +128,25 @@ impl Default for NotifyConfig {
     }
 }
 
+/// What the background release check (`xrun watchdog`, once a day) does
+/// when a newer xrun is out. The interactive startup prompt and
+/// `xrun update` are separate and not affected.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateAuto {
+    /// No background check, no network call.
+    Off,
+    /// Push `update.available` once per release through `[notify]`.
+    #[default]
+    Notify,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub auto: UpdateAuto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct UiConfig {
@@ -191,6 +210,7 @@ pub struct GlobalConfig {
     pub ui: UiConfig,
     pub metrics: MetricsConfig,
     pub notify: NotifyConfig,
+    pub update: UpdateConfig,
     /// Per-vendor adapter defaults keyed by `Vendor::as_str()`. Empty entries
     /// behave the same as a missing entry — adapters fall back to their own
     /// hard-coded defaults.

@@ -126,7 +126,7 @@ Picker по `exp/`. Превью манифеста справа. Enter → conf
 
 ### 6. Settings (g s)
 
-Тема, лимит истории, poll interval (active/idle), default vendor и exp dir, бюджетные лимиты. Секция Storage: размер файла, очистка завершённых runs (с подтверждением). Сохраняются только изменённые поля; очищенное поле возвращается к значению по умолчанию.
+Тема, лимит истории, poll interval (active/idle), default vendor и exp dir, бюджетные лимиты. Вкладка Updates: фоновая проверка релизов `update.auto` (Notify — пуш `update.available` раз на релиз через каналы `g n`, Off — без проверки и сетевых запросов; поле пустое, если бинарник xrun — v0.9.0 или раньше). Секция Storage: размер файла, очистка завершённых runs (с подтверждением). Сохраняются только изменённые поля; очищенное поле возвращается к значению по умолчанию.
 
 У каждой настройки один редактор. Ключи вендоров и exclude-countries — в Vendors (`g v`), MLflow / WandB и список sinks — в Sinks (`g m`), каналы уведомлений — в Notifications (`g n`). Все записи идут через `xrun config set` / `xrun config unset`; секреты передаются через stdin (`--stdin`), TUI сам `credentials.toml` не пишет.
 

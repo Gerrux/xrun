@@ -564,6 +564,7 @@ fn watchdog_on_empty_db_reports_zero_runs() {
         .unwrap()
         .env("XRUN_CONFIG_DIR", dir.path())
         .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .env("XRUN_NO_UPDATE_CHECK", "1")
         .args(["watchdog", "--json"])
         .assert()
         .success()
@@ -573,6 +574,7 @@ fn watchdog_on_empty_db_reports_zero_runs() {
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["checked_runs"], 0);
     assert_eq!(v["orphans"].as_array().unwrap().len(), 0);
+    assert!(v.get("update").is_none(), "{v}");
 
     Command::cargo_bin("xrun")
         .unwrap()
@@ -583,6 +585,81 @@ fn watchdog_on_empty_db_reports_zero_runs() {
         .success()
         .stdout(contains("0 running run(s)"))
         .stdout(contains("dry run"));
+}
+
+/// Answers the first request with `body` as JSON, then stops listening.
+fn serve_once(body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+    format!("http://{addr}/releases/latest")
+}
+
+fn watchdog_json(dir: &tempfile::TempDir, check_url: &str) -> serde_json::Value {
+    let out = Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .env("XRUN_DATA_DIR", dir.path().join("data"))
+        .env("XRUN_UPDATE_CHECK_URL", check_url)
+        .env_remove("XRUN_NO_UPDATE_CHECK")
+        .args(["watchdog", "--json", "--no-vendor", "--no-commands"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
+#[test]
+fn watchdog_reports_a_newer_release_from_one_daily_lookup() {
+    let dir = init_dir();
+    let url = serve_once(r#"{"tag_name":"v99.0.0","html_url":"https://example.test/r"}"#);
+    let v = watchdog_json(&dir, &url);
+    assert_eq!(v["update"]["latest"], "v99.0.0", "{v}");
+    assert_eq!(v["update"]["url"], "https://example.test/r");
+    // No channels configured: reported, nothing delivered.
+    assert_eq!(v["update"]["notified"], false);
+
+    // The server answered once and is gone; the second pass is served
+    // from the stored lookup.
+    let v = watchdog_json(&dir, &url);
+    assert_eq!(v["update"]["latest"], "v99.0.0", "{v}");
+    assert!(!v["warnings"].to_string().contains("update check"), "{v}");
+}
+
+#[test]
+fn watchdog_update_check_off_makes_no_lookup() {
+    let dir = init_dir();
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .args(["config", "set", "update.auto", "off"])
+        .assert()
+        .success();
+    // Nothing listens on port 9: a lookup would surface as a warning.
+    let v = watchdog_json(&dir, "http://127.0.0.1:9/releases/latest");
+    assert!(v.get("update").is_none(), "{v}");
+    assert!(!v["warnings"].to_string().contains("update check"), "{v}");
+
+    Command::cargo_bin("xrun")
+        .unwrap()
+        .env("XRUN_CONFIG_DIR", dir.path())
+        .args(["config", "set", "update.auto", "sometimes"])
+        .assert()
+        .failure();
 }
 
 #[test]

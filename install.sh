@@ -61,6 +61,90 @@ fetch_text() {
     fi
 }
 
+sha256_of() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v openssl > /dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | awk '{print $NF}'
+    else
+        echo "sha256sum, shasum or openssl is required to verify the download" >&2
+        return 1
+    fi
+}
+
+# Download SHA256SUMS: 0 = ok, 2 = release has none (HTTP 404), 1 = other failure.
+fetch_sums() {
+    if command -v curl > /dev/null 2>&1; then
+        code="$(curl -sSL -o "$2" -w '%{http_code}' "$1")" || return 1
+        case "$code" in
+            200) return 0 ;;
+            404) return 2 ;;
+            *) echo "SHA256SUMS download failed (HTTP ${code})" >&2; return 1 ;;
+        esac
+    elif command -v wget > /dev/null 2>&1; then
+        out="$(wget -S -qO "$2" "$1" 2>&1)" && return 0
+        # The status line only: a header such as `Content-Length: 404` is not one.
+        if printf '%s\n' "$out" | grep -q 'HTTP/[0-9.]* 404'; then
+            return 2
+        fi
+        echo "SHA256SUMS download failed" >&2
+        return 1
+    else
+        echo "curl or wget is required"; exit 1
+    fi
+}
+
+# sums_required <version>: every release after v0.9.0 ships SHA256SUMS, so a
+# missing one there means a broken or tampered download, not an old release.
+# An unparsable version counts as new (fail closed).
+sums_required() {
+    # POSIX sh has no `local`: prefixed names so callers' variables survive.
+    _sr_v="${1#v}"; _sr_v="${_sr_v%%-*}"
+    _sr_major="${_sr_v%%.*}"; _sr_rest="${_sr_v#*.}"
+    _sr_minor="${_sr_rest%%.*}"; _sr_patch="${_sr_rest#*.}"
+    case "${_sr_major}${_sr_minor}${_sr_patch}" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    [ "$_sr_major" -gt 0 ] || [ "$_sr_minor" -gt 9 ] ||
+        { [ "$_sr_minor" -eq 9 ] && [ "$_sr_patch" -gt 0 ]; }
+}
+
+# verify_archive <file> <name> <url of SHA256SUMS> <version>
+verify_archive() {
+    sums="$1.SHA256SUMS"
+    rc=0
+    fetch_sums "$3" "$sums" || rc=$?
+    if [ "$rc" = "2" ]; then
+        if sums_required "$4"; then
+            echo "Release $4 has no SHA256SUMS; refusing to install unverified."
+            return 1
+        fi
+        echo "Warning: release has no SHA256SUMS, skipping verification" >&2
+        return 0
+    elif [ "$rc" != "0" ]; then
+        echo "Could not download SHA256SUMS from $3"
+        return 1
+    fi
+
+    expected="$(awk -v f="$2" '$2 == f || $2 == "*" f { print $1; exit }' "$sums" | tr 'A-F' 'a-f')"
+    if [ -z "$expected" ]; then
+        echo "SHA256SUMS has no entry for $2; refusing to install."
+        return 1
+    fi
+    actual="$(sha256_of "$1")" || return 1
+    actual="$(echo "$actual" | tr 'A-F' 'a-f')"
+    if [ "$expected" != "$actual" ]; then
+        echo "Checksum mismatch for $2:"
+        echo "  expected: $expected"
+        echo "  actual:   $actual"
+        echo "Refusing to install."
+        return 1
+    fi
+    echo "Checksum OK ($2)"
+}
+
 install_skill() {
     SKILL_DIR="${HOME}/.claude/skills/xrun"
     mkdir -p "$SKILL_DIR"
@@ -183,6 +267,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 download "$URL" "${TMP}/${ARCHIVE}"
+verify_archive "${TMP}/${ARCHIVE}" "$ARCHIVE" \
+    "https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS" "$VERSION" || exit 1
 tar -xzf "${TMP}/${ARCHIVE}" -C "$TMP"
 install -m 755 "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 

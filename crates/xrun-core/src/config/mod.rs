@@ -5,7 +5,8 @@ pub mod global;
 
 pub use credentials::Credentials;
 pub use global::{
-    BudgetConfig, GlobalConfig, MetricsConfig, NotifyConfig, UiConfig, VendorDefaults,
+    BudgetConfig, GlobalConfig, MetricsConfig, NotifyConfig, UiConfig, UpdateAuto, UpdateConfig,
+    VendorDefaults,
 };
 
 use crate::error::ConfigError;

@@ -97,6 +97,12 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Extract changelog for this version
         id: changelog
         run: |
@@ -119,5 +125,13 @@ jobs:
           name: xrun ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.body }}
           files: artifacts/**
-          draft: false
+          # Published by the next step once every file is attached: a visible
+          # release without SHA256SUMS yet makes the installers refuse it.
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

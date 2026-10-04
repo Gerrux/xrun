@@ -351,10 +351,27 @@ xrun update --yes
 
 При интерактивном запуске `xrun` без аргументов и `xrun tui` проверка выполняется
 до открытия TUI. Если доступна новая версия, CLI показывает подтверждение
-`Install update? [y/N]`. После подтверждения запускается installer и процесс
-`xrun` завершается, чтобы новая версия стартовала чисто. На Windows updater
-запускается отдельным PowerShell-процессом, потому что запущенный `xrun.exe`
-нельзя заменить на месте.
+`Install update? [y/N]`. После подтверждения запускается installer того же
+тега, что и ставящийся релиз (не с `master`), и процесс `xrun` завершается,
+чтобы новая версия стартовала чисто. На Windows updater запускается отдельным
+PowerShell-процессом, потому что запущенный `xrun.exe` нельзя заменить на месте.
+
+Installer сверяет скачанный архив с `SHA256SUMS` из того же релиза и при
+несовпадении ничего не ставит. У релизов v0.9.0 и раньше этого файла нет — тогда
+печатается предупреждение и проверка пропускается. Для более новых релизов
+отсутствие `SHA256SUMS` — ошибка: без проверки они не ставятся. Релиз
+публикуется только после загрузки всех файлов (до этого он черновик).
+
+Фоновая проверка: `xrun watchdog` (планировщик раз в 5 мин, TUI раз в 60 с)
+не чаще раза в сутки сверяется с последним релизом (после сбоя сети —
+повтор через час; результат хранится в `update_check.json` рядом с БД) и
+шлёт `update.available` в каналы `[notify]` — один раз на релиз. Ничего
+не устанавливает.
+
+```toml
+[update]
+auto = "notify"   # "off" — без фоновой проверки и без сетевого запроса
+```
 
 Флаги:
 
@@ -364,7 +381,7 @@ xrun update --yes
 --no-tui       обновить только CLI, не трогать Python TUI
 ```
 
-Отключить startup-check для CI/скриптов:
+Отключить startup-check и фоновую проверку для CI/скриптов:
 
 ```bash
 XRUN_NO_UPDATE_CHECK=1 xrun
@@ -438,7 +455,8 @@ Kinds: `run.done`, `run.failed`, `run.idle`, `run.early_stopped`
 (`policy.early_stop`), `budget.warn`, `budget.auto_destroyed`,
 `budget.daily`, `budget.monthly`, `instance.cleanup_failed`,
 `instance.orphan`, `metric.anomaly` (NaN/inf или loss > 10× running-min
-после 10 точек), `poller.dead`, `user` (`xrun_hook.notify`, фильтру не
+после 10 точек), `poller.dead`, `update.available` (новый релиз xrun,
+`[update].auto`), `user` (`xrun_hook.notify`, фильтру не
 подчиняется). Каждый канал best-effort: падение одного не
 блокирует остальные и не ломает поллер.
 
@@ -449,7 +467,8 @@ Kinds: `run.done`, `run.failed`, `run.idle`, `run.early_stopped`
 что `xrun resume`). Живой PID, но heartbeat старше `heartbeat_stale_min`
 → `HUNG`, уведомление без respawn. Плюс инстансы с `price_per_hour`, не
 уничтоженные и без живого рана → `instance.orphan` (ничего не удаляет —
-это `xrun gc`).
+это `xrun gc`). Раз в сутки — проверка нового релиза → `update.available`
+(см. `xrun update`).
 
 ```
 --dry-run           только отчёт: без respawn, уведомлений и команд

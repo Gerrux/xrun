@@ -42,6 +42,8 @@ _TUI_FIELDS: list[tuple[str, str, str]] = [
 #   int    — integer, plain text input with numeric validation on save
 #   float  — float, plain text input with numeric validation on save
 #   bool   — accepts true/false/1/0/yes/no (CLI does the actual coercion)
+#   choice — Select over `_CHOICES[key]`; blank until the prefill lands, and
+#            a blank one is never written
 # (key, label, placeholder, kind)
 _POLLER_FIELDS: list[tuple[str, str, str, str]] = [
     ("poller.interval_active_secs", "Poller interval (active)", "30",  "int"),
@@ -72,11 +74,24 @@ _BUDGET_FIELDS: list[tuple[str, str, str, str]] = [
         "Typed confirm above (USD/h)",             "2.0", "float"),
 ]
 
+_UPDATE_FIELDS: list[tuple[str, str, str, str]] = [
+    ("update.auto", "Background update check", "loading…", "choice"),
+]
+
+# (label, value) per `choice` key, in the order shown.
+_CHOICES: dict[str, list[tuple[str, str]]] = {
+    "update.auto": [
+        ("Notify — push once per new release", "notify"),
+        ("Off — no check, no network call",    "off"),
+    ],
+}
+
 # Single source of truth for prefill / save iteration over xrun-core fields.
 _ALL_XRUN_FIELDS: list[tuple[str, str, str, str]] = (
     _POLLER_FIELDS
     + _DEFAULTS_FIELDS
     + _BUDGET_FIELDS
+    + _UPDATE_FIELDS
 )
 
 
@@ -163,6 +178,21 @@ class SettingsScreen(FormGuard, Screen):
                         for row in _BUDGET_FIELDS:
                             yield _xrun_row(row)
 
+            # ── Updates ──────────────────────────────────────────────────
+            with TabPane("Updates", id="tab-updates"):
+                with VerticalScroll():
+                    with Vertical(classes="settings-form"):
+                        yield Static(
+                            "[#565f89]xrun watchdog (scheduler, and this TUI "
+                            "every 60 s) looks up the latest release once a "
+                            "day and pushes it through the[/] [#7dcfff]g n[/] "
+                            "[#565f89]channels. Nothing is installed: run[/] "
+                            "[#7dcfff]xrun update[/][#565f89].[/]",
+                            classes="form-hint",
+                        )
+                        for row in _UPDATE_FIELDS:
+                            yield _xrun_row(row)
+
             # ── Storage (local DB) ───────────────────────────────────────
             with TabPane("Storage", id="tab-storage"):
                 with VerticalScroll():
@@ -239,18 +269,22 @@ class SettingsScreen(FormGuard, Screen):
             return
 
         filled: list[str] = []
-        for key, _, _, _ in _ALL_XRUN_FIELDS:
+        for key, _, _, kind in _ALL_XRUN_FIELDS:
             try:
-                inp = self.query_one(f"#input-xrun-{_sanitize(key)}", Input)
+                widget = self.query_one(f"#input-xrun-{_sanitize(key)}")
             except Exception:
                 continue
             val = _nested_get(data, key)
             if val is None:
                 continue
-            inp.value = str(val)
+            # A value outside a choice list stays blank, and a blank choice
+            # is never written.
+            if kind == "choice" and str(val) not in {v for _, v in _CHOICES[key]}:
+                continue
+            widget.value = str(val)  # type: ignore[attr-defined]  # Input | Select
             # Remembered so Save can tell a changed field from an untouched
             # one, and a cleared field from one that was never set.
-            self._loaded[key] = inp.value
+            self._loaded[key] = str(val)
             filled.append(key)
 
         self.snapshot_form(only={f"input-xrun-{_sanitize(k)}" for k in filled})
@@ -339,8 +373,9 @@ class SettingsScreen(FormGuard, Screen):
         # Theme
         try:
             theme_sel = self.query_one("#input-tui-theme", Select)
-            if theme_sel.value and theme_sel.value is not Select.BLANK:
-                tui_settings["theme"] = str(theme_sel.value)
+            theme = _field_value(theme_sel)
+            if theme:
+                tui_settings["theme"] = theme
         except Exception:
             pass
 
@@ -350,11 +385,13 @@ class SettingsScreen(FormGuard, Screen):
         # to its default (`None` in `pending`).
         pending: list[tuple[str, str | None]] = []
         for key, _, _, kind in _ALL_XRUN_FIELDS:
-            val = self.query_one(
-                f"#input-xrun-{_sanitize(key)}", Input
-            ).value.strip()
+            val = _field_value(
+                self.query_one(f"#input-xrun-{_sanitize(key)}")
+            )
             if val == self._loaded.get(key, ""):
                 continue
+            if kind == "choice" and not val:
+                continue  # nothing picked yet: a Select cannot be "cleared"
             if not val:
                 pending.append((key, None))
                 continue
@@ -441,15 +478,38 @@ class SettingsScreen(FormGuard, Screen):
 def _xrun_row(row: tuple[str, str, str, str]) -> Horizontal:
     """Build a form row widget for an xrun-core config key."""
     key, label, placeholder, kind = row
-    return Horizontal(
-        Label(f"{label}:", classes="form-label"),
-        Input(
+    field: Input | Select
+    if kind == "choice":
+        field = Select(
+            options=_CHOICES[key],
+            prompt=placeholder,
+            allow_blank=True,
+            id=f"input-xrun-{_sanitize(key)}",
+            classes="form-input",
+        )
+    else:
+        field = Input(
             placeholder=placeholder,
             id=f"input-xrun-{_sanitize(key)}",
             classes="form-input",
-        ),
+        )
+    return Horizontal(
+        Label(f"{label}:", classes="form-label"),
+        field,
         classes="form-row",
     )
+
+
+def _field_value(widget) -> str:
+    """Current text of an xrun field: stripped Input text, or the picked
+    Select value ("" while nothing is picked)."""
+    if isinstance(widget, Select):
+        # Every option value here is a string; anything else is the blank
+        # sentinel, which is Select.BLANK in older Textual and Select.NULL
+        # (truthy) in newer — so no comparison against either.
+        value = widget.value
+        return value if isinstance(value, str) else ""
+    return widget.value.strip()
 
 
 def _sanitize(key: str) -> str:
