@@ -57,6 +57,32 @@ pub struct InstanceHandle {
     pub ssh_host: Option<String>,
     pub ssh_port: Option<u16>,
     pub ssh_user: String,
+    /// ssh only: the remote run dir as the adapter's commands use it, fixed at
+    /// provision. Later config changes (host `default_workdir`) must not move
+    /// a run that is already in flight. `None` for other vendors and for
+    /// handles saved by older binaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_dir: Option<String>,
+}
+
+#[cfg(test)]
+mod handle_tests {
+    use super::*;
+
+    #[test]
+    fn handle_round_trips_with_and_without_run_dir() {
+        let old = r#"{"id":"i","vendor":"vast","ssh_host":null,"ssh_port":null,"ssh_user":"root"}"#;
+        let h: InstanceHandle = serde_json::from_str(old).unwrap();
+        assert_eq!(h.run_dir, None);
+        // Other vendors serialize unchanged: no `run_dir` key at all.
+        assert!(!serde_json::to_string(&h).unwrap().contains("run_dir"));
+
+        let mut h2 = h.clone();
+        h2.run_dir = Some("/data/xrun/R".into());
+        let back: InstanceHandle =
+            serde_json::from_str(&serde_json::to_string(&h2).unwrap()).unwrap();
+        assert_eq!(back.run_dir.as_deref(), Some("/data/xrun/R"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

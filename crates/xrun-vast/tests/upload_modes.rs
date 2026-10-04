@@ -199,6 +199,48 @@ fn build_launch_command_includes_workdir_cmd_and_nohup() {
 }
 
 #[test]
+fn build_launch_command_unbuffers_python_but_keeps_a_user_value() {
+    use xrun_vast::execute::build_launch_command;
+
+    let run_spec = RunSpec {
+        workdir: None,
+        setup: None,
+        cmd: Some("PYTHONUNBUFFERED=0 python train.py".to_string()),
+        notebook: None,
+        args: None,
+    };
+    let cmd = build_launch_command(&run_spec);
+    // Default 1, but an instance-level value wins ...
+    let default = "PYTHONUNBUFFERED=\"${PYTHONUNBUFFERED:-1}\"";
+    let at = cmd.find(default).expect("default unbuffered assignment");
+    // ... and the user's own prefix in run.cmd comes later, so it wins too.
+    let user = cmd
+        .find("PYTHONUNBUFFERED=0 python")
+        .expect("user value kept");
+    assert!(at < user, "{cmd}");
+}
+
+#[test]
+fn build_launch_command_exports_env_for_a_chained_run_cmd() {
+    use xrun_vast::execute::build_launch_command;
+
+    // An inline `VAR=… cmd` prefix would reach only `source`.
+    let run_spec = RunSpec {
+        workdir: None,
+        setup: None,
+        cmd: Some("source venv/bin/activate && python train.py".to_string()),
+        notebook: None,
+        args: None,
+    };
+    let cmd = build_launch_command(&run_spec);
+    let export = cmd
+        .find("export XRUN_RUN_DIR=/workspace/run PYTHONUNBUFFERED=")
+        .expect("env is exported");
+    let source = cmd.find("source venv").expect("user cmd kept");
+    assert!(export < source, "{cmd}");
+}
+
+#[test]
 fn build_launch_command_renders_args_in_output() {
     use xrun_vast::execute::build_launch_command;
 

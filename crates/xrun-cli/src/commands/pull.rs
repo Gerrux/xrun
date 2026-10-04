@@ -174,6 +174,7 @@ fn synthesize_handle(run: &Run, instance_id: &str) -> Result<InstanceHandle> {
         ssh_host: None,
         ssh_port: None,
         ssh_user: "xrun".to_string(),
+        run_dir: None,
     })
 }
 

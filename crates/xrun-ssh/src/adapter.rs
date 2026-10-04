@@ -74,8 +74,31 @@ pub struct RemoteRunFiles {
     pub stdout: String,
 }
 
+/// The run dir to use: the one stored in the instance handle at provision
+/// when present, else re-resolved from the current workdir root (runs
+/// launched by older binaries). The single place that decides, so launch,
+/// poll-daemon and the adapter cannot drift.
+///
+/// The handle lives on the instance row, which `--reuse-instance` shares
+/// between runs: a stored dir is only trusted when it is this run's
+/// (`…/<run_id>`), so `pull`/`stop` of an earlier run on a reused host do not
+/// land in the later run's dir.
+pub fn effective_run_dir(stored: Option<&str>, workdir_root: &str, run_id: &str) -> String {
+    let is_this_runs = |d: &&str| {
+        !d.trim().is_empty() && d.trim_end_matches('/').rsplit('/').next() == Some(run_id)
+    };
+    match stored.filter(is_this_runs) {
+        Some(dir) => dir.to_string(),
+        None => remote_run_dir(workdir_root, run_id),
+    }
+}
+
 pub fn remote_run_files(workdir_root: &str, run_id: &str) -> RemoteRunFiles {
-    let dir = remote_run_dir(workdir_root, run_id);
+    remote_run_files_in(&remote_run_dir(workdir_root, run_id))
+}
+
+/// Same as [`remote_run_files`] for an already-resolved run dir.
+pub fn remote_run_files_in(dir: &str) -> RemoteRunFiles {
     RemoteRunFiles {
         events: format!("{dir}/events.jsonl"),
         metrics: format!("{dir}/metrics.jsonl"),
@@ -145,8 +168,31 @@ impl SshAdapter {
             .ok_or_else(|| VendorError::Other("SshAdapter: run_id not set".into()))
     }
 
+    /// Run dir for a fresh run (provision), from the current workdir root.
     fn run_dir(&self, run_id: &RunId) -> String {
         remote_run_dir(&self.workdir_root, &run_id.to_string())
+    }
+
+    /// Run dir of an existing run: the handle's stored one, else re-resolved.
+    fn run_dir_for(&self, h: &InstanceHandle, run_id: &RunId) -> String {
+        effective_run_dir(
+            h.run_dir.as_deref(),
+            &self.workdir_root,
+            &run_id.to_string(),
+        )
+    }
+
+    /// The handle `provision` returns; launch persists it as the instance's
+    /// `state_json`, which is what keeps `run_dir` fixed for the whole run.
+    fn handle_for(&self, id: String, run_dir: String) -> InstanceHandle {
+        InstanceHandle {
+            id,
+            vendor: "ssh".to_string(),
+            ssh_host: Some(self.conn.host.clone()),
+            ssh_port: Some(self.conn.port),
+            ssh_user: self.conn.user.clone(),
+            run_dir: Some(run_dir),
+        }
     }
 
     fn instance_id(&self, run_id: &RunId) -> String {
@@ -279,7 +325,15 @@ impl VendorAdapter for SshAdapter {
                 .as_deref()
                 .and_then(|rid| rid.parse::<RunId>().ok())
                 .map(|rid| {
-                    let pid_file = format!("{}/run.pid", self.run_dir(&rid));
+                    let stored = inst
+                        .state_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<InstanceHandle>(s).ok())
+                        .and_then(|h| h.run_dir);
+                    let pid_file = format!(
+                        "{}/run.pid",
+                        effective_run_dir(stored.as_deref(), &self.workdir_root, &rid.to_string())
+                    );
                     match ssh_exec(
                         &self.conn,
                         &format!(
@@ -329,13 +383,7 @@ impl VendorAdapter for SshAdapter {
         }
         self.append_event("provision", "ok", Some(format!("remote workdir={run_dir}")));
 
-        Ok(InstanceHandle {
-            id,
-            vendor: "ssh".to_string(),
-            ssh_host: Some(self.conn.host.clone()),
-            ssh_port: Some(self.conn.port),
-            ssh_user: self.conn.user.clone(),
-        })
+        Ok(self.handle_for(id, run_dir))
     }
 
     fn upload(&self, _h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError> {
@@ -371,9 +419,9 @@ impl VendorAdapter for SshAdapter {
         Ok(())
     }
 
-    fn execute(&self, _h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VendorError> {
+    fn execute(&self, h: &InstanceHandle, run_spec: &RunSpec) -> Result<(), VendorError> {
         let run_id = self.run_id()?;
-        let run_dir = self.run_dir(&run_id);
+        let run_dir = self.run_dir_for(h, &run_id);
 
         let workdir = training_dir(run_spec, &run_dir);
 
@@ -446,9 +494,9 @@ impl VendorAdapter for SshAdapter {
         remote_tail(&self.conn, file, offset).map_err(SshError::into_vendor)
     }
 
-    fn pull(&self, _h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError> {
+    fn pull(&self, h: &InstanceHandle, remote: &str, into: &Path) -> Result<(), VendorError> {
         let run_id = self.run_id()?;
-        let workdir = self.run_dir(&run_id);
+        let workdir = self.run_dir_for(h, &run_id);
         let pattern = pull_pattern(&workdir, remote);
         std::fs::create_dir_all(into)
             .map_err(|e| VendorError::Other(format!("create local pull dir: {e}")))?;
@@ -490,9 +538,9 @@ impl VendorAdapter for SshAdapter {
         Ok(())
     }
 
-    fn process_alive(&self, _h: &InstanceHandle) -> Option<bool> {
+    fn process_alive(&self, h: &InstanceHandle) -> Option<bool> {
         let run_id = self.run_id().ok()?;
-        let pid_file = format!("{}/run.pid", self.run_dir(&run_id));
+        let pid_file = format!("{}/run.pid", self.run_dir_for(h, &run_id));
         let probe = format!(
             "if [ -f {pf} ]; then PID=$(cat {pf}); \
              if kill -0 \"$PID\" 2>/dev/null; then echo alive; else echo dead; fi; \
@@ -511,7 +559,7 @@ impl VendorAdapter for SshAdapter {
         // Kill the recorded process and confirm it stopped; never destroy the box.
         {
             let run_id = self.run_id()?;
-            let run_dir = self.run_dir(&run_id);
+            let run_dir = self.run_dir_for(h, &run_id);
             let pid_file = format!("{run_dir}/run.pid");
             let kill_script = format!(
                 "if [ -f {pf} ]; then PID=$(cat {pf}); \
@@ -539,6 +587,11 @@ impl SshAdapter {
             // The command runs after `cd <workdir>`: a home-relative run dir
             // would land the hook's events.jsonl under the workdir instead.
             format!("XRUN_RUN_DIR={}", absolute_shell_path(run_dir)),
+            // Unbuffered by default so stdout.log fills (idle caps watch it);
+            // a value already in the remote environment, or one set in
+            // `run.cmd` (`PYTHONUNBUFFERED=0 python …`, which comes later),
+            // wins.
+            "PYTHONUNBUFFERED=\"${PYTHONUNBUFFERED:-1}\"".to_string(),
         ];
         if let Some(gpu) = self.gpu_hint.borrow().as_deref() {
             match gpu {
@@ -553,11 +606,11 @@ impl SshAdapter {
                 }
             }
         }
-        let mut prefix = parts.join(" ");
-        if !prefix.is_empty() {
-            prefix.push(' ');
-        }
-        prefix
+        // `export … &&`, not an inline `VAR=… cmd` prefix: in
+        // `source venv/bin/activate && python train.py` an inline prefix
+        // reaches only `source`, and the hook would write its events where
+        // the poller never looks.
+        format!("export {} && ", parts.join(" "))
     }
 }
 
@@ -813,6 +866,88 @@ run:
         *a.gpu_hint.borrow_mut() = Some("cuda:0".to_string());
         let env = a.env_prefix(&rid, "/tmp/xrun/abc");
         assert!(env.contains("CUDA_VISIBLE_DEVICES='0'"));
+    }
+
+    #[test]
+    fn env_prefix_unbuffers_python_unless_the_environment_sets_it() {
+        let (_td, s) = fresh_store();
+        let a = SshAdapter::new(s, fake_conn(), "/tmp/xrun".into());
+        let rid: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let env = a.env_prefix(&rid, "/tmp/xrun/abc");
+        // Default 1, but an existing remote value wins; a `run.cmd` prefix
+        // comes after the env prefix and wins over both.
+        assert!(
+            env.contains("PYTHONUNBUFFERED=\"${PYTHONUNBUFFERED:-1}\" "),
+            "{env}"
+        );
+        let full = format!("cd x && {env}PYTHONUNBUFFERED=0 python t.py");
+        assert!(
+            full.find("${PYTHONUNBUFFERED:-1}") < full.find("PYTHONUNBUFFERED=0"),
+            "{full}"
+        );
+    }
+
+    #[test]
+    fn env_reaches_every_command_of_a_chained_run_cmd() {
+        // `source venv/bin/activate && python …`: an inline `VAR=… cmd`
+        // prefix applied only to `source`, so the hook never saw XRUN_RUN_DIR.
+        let (_td, s) = fresh_store();
+        let a = SshAdapter::new(s, fake_conn(), "/tmp/xrun".into());
+        let rid: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let env = a.env_prefix(&rid, "/tmp/xrun/abc");
+        assert!(env.starts_with("export ") && env.ends_with(" && "), "{env}");
+        let script = format!("{env}true && printenv XRUN_RUN_DIR PYTHONUNBUFFERED");
+        let Ok(out) = std::process::Command::new("bash")
+            .args(["-c", &script])
+            .env_remove("PYTHONUNBUFFERED")
+            .output()
+        else {
+            return; // no bash on PATH
+        };
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "/tmp/xrun/abc\n1\n");
+    }
+
+    #[test]
+    fn provision_handle_stores_the_run_dir_and_it_beats_a_changed_root() {
+        let (_td, s) = fresh_store();
+        let a = SshAdapter::new(s, fake_conn(), "/old/root".into());
+        let rid: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let h = a.handle_for("ssh-ws-x".into(), a.run_dir(&rid));
+        assert_eq!(h.run_dir, Some(format!("/old/root/{rid}")));
+        // Survives the state_json round trip launch does.
+        let h: InstanceHandle = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+
+        // The host's default_workdir changed afterwards: a new adapter
+        // resolves a different root, but the stored dir still wins.
+        let (_td2, s2) = fresh_store();
+        let b = SshAdapter::new(s2, fake_conn(), "/new/root".into());
+        assert_eq!(b.run_dir_for(&h, &rid), format!("/old/root/{rid}"));
+        assert_eq!(
+            effective_run_dir(h.run_dir.as_deref(), "/new/root", &rid.to_string()),
+            format!("/old/root/{rid}")
+        );
+    }
+
+    #[test]
+    fn run_dir_falls_back_to_the_root_when_the_handle_has_none() {
+        let (_td, s) = fresh_store();
+        let a = SshAdapter::new(s, fake_conn(), "/data/xrun/".into());
+        let rid: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let mut h = a.handle_for("i".into(), String::new());
+        h.run_dir = None;
+        assert_eq!(a.run_dir_for(&h, &rid), format!("/data/xrun/{rid}"));
+        // An empty stored value is treated as absent.
+        assert_eq!(effective_run_dir(Some(" "), "/r", "R"), "/r/R");
+        // A reused instance row carries the later run's dir: an earlier run
+        // (pull/stop/resume of it) must not adopt it.
+        assert_eq!(effective_run_dir(Some("/old/B"), "/r", "A"), "/r/A");
+        assert_eq!(effective_run_dir(Some("/old/A/"), "/r", "A"), "/old/A/");
+        assert_eq!(effective_run_dir(Some("xrun/A"), "/r", "A"), "xrun/A");
+        assert_eq!(
+            remote_run_files_in("xrun/R").stdout,
+            "xrun/R/stdout.log",
+            "home-relative form is kept as is"
+        );
     }
 
     #[test]

@@ -58,15 +58,21 @@ pub fn build_launch_command(run_spec: &RunSpec) -> String {
         .map(render_args)
         .unwrap_or_default();
 
+    // Unbuffered by default (stdout goes through a pipe to `tee`, so Python
+    // would block-buffer and stdout.log would stay empty). A value already in
+    // the instance environment, or set in `run.cmd` (it comes later), wins.
+    // Exported rather than an inline prefix, which in
+    // `source venv/bin/activate && python …` would reach only `source`.
+    let env = "export XRUN_RUN_DIR=/workspace/run PYTHONUNBUFFERED=\"${PYTHONUNBUFFERED:-1}\" &&";
     let main_cmd = if args_str.is_empty() {
         format!(
-            "cd {} && XRUN_RUN_DIR=/workspace/run {} 2>&1 | tee /workspace/run/stdout.log",
-            workdir, cmd
+            "cd {} && {} {} 2>&1 | tee /workspace/run/stdout.log",
+            workdir, env, cmd
         )
     } else {
         format!(
-            "cd {} && XRUN_RUN_DIR=/workspace/run {} {} 2>&1 | tee /workspace/run/stdout.log",
-            workdir, cmd, args_str
+            "cd {} && {} {} {} 2>&1 | tee /workspace/run/stdout.log",
+            workdir, env, cmd, args_str
         )
     };
 

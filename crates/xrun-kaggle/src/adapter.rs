@@ -711,6 +711,7 @@ impl VendorAdapter for KaggleAdapter {
             ssh_host: None,
             ssh_port: None,
             ssh_user: "kaggle".to_string(),
+            run_dir: None,
         })
     }
 
@@ -1535,6 +1536,7 @@ mod destroy_tests {
             ssh_host: None,
             ssh_port: None,
             ssh_user: String::new(),
+            run_dir: None,
         }
     }
 

@@ -49,6 +49,7 @@ impl VendorAdapter for MockVastAdapter {
             ssh_host: Some("127.0.0.1".to_string()),
             ssh_port: Some(22),
             ssh_user: "root".to_string(),
+            run_dir: None,
         })
     }
 

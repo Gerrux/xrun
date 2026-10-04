@@ -113,6 +113,7 @@ pub fn run(args: &GcArgs, db_path: &Path, config_dir: &Path) -> Result<()> {
                     .and_then(|s| s.split(':').nth(1))
                     .and_then(|p| p.parse().ok()),
                 ssh_user: "root".to_string(),
+                run_dir: None,
             };
             if let Err(e) = adapter.destroy(&handle) {
                 eprintln!("warn: destroy {} failed: {e}", r.id);

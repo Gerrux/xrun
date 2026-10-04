@@ -252,6 +252,7 @@ impl VendorAdapter for LocalAdapter {
             ssh_host: None,
             ssh_port: None,
             ssh_user: String::new(),
+            run_dir: None,
         })
     }
 
@@ -493,9 +494,30 @@ fn build_env(
     run_dir: &Path,
     local_spec: Option<&LocalSpec>,
 ) -> HashMap<String, String> {
+    build_env_with(
+        run_id,
+        run_dir,
+        local_spec,
+        std::env::var_os("PYTHONUNBUFFERED").is_some(),
+    )
+}
+
+/// `user_set_unbuffered`: the caller's environment already defines
+/// `PYTHONUNBUFFERED` (any value) — it is inherited as is, not overridden.
+fn build_env_with(
+    run_id: &RunId,
+    run_dir: &Path,
+    local_spec: Option<&LocalSpec>,
+    user_set_unbuffered: bool,
+) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = HashMap::new();
     env.insert("XRUN_RUN_ID".to_string(), run_id.to_string());
     env.insert("XRUN_RUN_DIR".to_string(), run_dir.display().to_string());
+    // Without xrun_hook Python block-buffers stdout into the log file, so
+    // stdout.log stays empty and an idle cap would kill a healthy run.
+    if !user_set_unbuffered {
+        env.insert("PYTHONUNBUFFERED".to_string(), "1".to_string());
+    }
 
     if let Some(gpu) = local_spec.and_then(|l| l.gpu.as_deref()) {
         match gpu {
@@ -639,6 +661,17 @@ run: {}
     }
 
     #[test]
+    fn build_env_unbuffers_python_unless_the_user_set_it() {
+        let td = TempDir::new().unwrap();
+        let run_id: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let env = build_env_with(&run_id, td.path(), None, false);
+        assert_eq!(env.get("PYTHONUNBUFFERED").map(String::as_str), Some("1"));
+        // An inherited user value is left alone (not overridden by the map).
+        let env = build_env_with(&run_id, td.path(), None, true);
+        assert!(!env.contains_key("PYTHONUNBUFFERED"));
+    }
+
+    #[test]
     fn build_env_translates_cpu_gpu_hint() {
         let td = TempDir::new().unwrap();
         let run_id: RunId = ulid::Ulid::new().to_string().parse().unwrap();
@@ -763,6 +796,7 @@ run:
             ssh_host: None,
             ssh_port: None,
             ssh_user: String::new(),
+            run_dir: None,
         };
         adapter.upload(&handle, &sources).expect("upload");
 

@@ -417,7 +417,15 @@ fn do_launch_with_budget(
     // persisted by the prior launch. New run is linked to the existing
     // instance row (one instance can serve many sequential runs).
     let (handle, reused_instance) = if let Some(reuse) = args.reuse_instance.as_deref() {
-        let h = resolve_reuse_handle(&store, reuse)?;
+        let mut h = resolve_reuse_handle(&store, reuse)?;
+        if manifest.vendor == Vendor::Ssh {
+            // The stored dir belongs to the run that provisioned the host;
+            // this run gets its own, fixed from here on.
+            h.run_dir = Some(xrun_ssh::remote_run_dir(
+                &ssh_workdir_root(manifest, &config_dir),
+                &run_id.to_string(),
+            ));
+        }
         eprintln!(
             "Reusing instance {} ({}@{}:{})",
             h.id,
@@ -569,6 +577,16 @@ fn do_launch_with_budget(
     // Foreground poller: blocks until done/failed/cancelled
     let cancel = CancellationToken::new();
     let instance_id = handle.id.clone();
+    let ssh_dir = if vendor_str == "ssh" {
+        ssh_run_dir(
+            handle.run_dir.as_deref(),
+            Some(manifest),
+            &config_dir,
+            &run_id.to_string(),
+        )
+    } else {
+        String::new()
+    };
     let mut poller = Poller::new(
         run_id.clone(),
         store,
@@ -578,14 +596,8 @@ fn do_launch_with_budget(
     )
     .with_budget(budget_cfg);
 
-    let ssh_root = if vendor_str == "ssh" {
-        ssh_workdir_root(manifest, &config_dir)
-    } else {
-        String::new()
-    };
-    let run_id_str = run_id.to_string();
     poller = poller.with_config(poller_config(
-        PollerFiles::for_vendor(vendor_str, &run_dir, &ssh_root, &run_id_str),
+        PollerFiles::for_vendor(vendor_str, &run_dir, &ssh_dir),
         FailPolicy::from_manifest_value(
             manifest
                 .policy
@@ -845,10 +857,7 @@ pub(crate) fn done_policy_from_manifest(manifest_path: &Path) -> xrun_core::mani
 pub(crate) fn poller_config(files: PollerFiles<'_>, on_stage_failed: FailPolicy) -> PollerConfig {
     let mut cfg = match files {
         PollerFiles::Local(run_dir) => local_poller_config(run_dir),
-        PollerFiles::Ssh {
-            workdir_root,
-            run_id,
-        } => ssh_poller_config(workdir_root, run_id),
+        PollerFiles::Ssh { run_dir } => ssh_poller_config(run_dir),
         PollerFiles::Default => PollerConfig::default(),
     };
     cfg.on_stage_failed = on_stage_failed;
@@ -861,30 +870,40 @@ pub(crate) enum PollerFiles<'a> {
     Default,
     /// Per-run dir on the host filesystem.
     Local(&'a Path),
-    /// `<workdir_root>/<run_id>/…` on the ssh host.
-    Ssh {
-        workdir_root: &'a str,
-        run_id: &'a str,
-    },
+    /// The run's dir on the ssh host (see [`ssh_run_dir`]).
+    Ssh { run_dir: &'a str },
 }
 
 impl<'a> PollerFiles<'a> {
-    /// `ssh_root` is only consulted for `vendor == "ssh"`.
-    pub(crate) fn for_vendor(
-        vendor: &str,
-        run_dir: &'a Path,
-        ssh_root: &'a str,
-        run_id: &'a str,
-    ) -> Self {
+    /// `ssh_run_dir` is only consulted for `vendor == "ssh"`.
+    pub(crate) fn for_vendor(vendor: &str, run_dir: &'a Path, ssh_run_dir: &'a str) -> Self {
         match vendor {
             "local" => PollerFiles::Local(run_dir),
             "ssh" => PollerFiles::Ssh {
-                workdir_root: ssh_root,
-                run_id,
+                run_dir: ssh_run_dir,
             },
             _ => PollerFiles::Default,
         }
     }
+}
+
+/// Remote run dir of an ssh run: the one stored in the instance handle at
+/// provision, else re-resolved from the manifest and current credentials
+/// (runs launched by older binaries). The one place launch and the poll-daemon
+/// ask, so they agree with the adapter.
+pub(crate) fn ssh_run_dir(
+    stored: Option<&str>,
+    manifest: Option<&Manifest>,
+    config_dir: &Path,
+    run_id: &str,
+) -> String {
+    // Always resolved: a stored dir of another run (reused instance row) is
+    // ignored by `effective_run_dir`, which then needs the real root.
+    let root = match manifest {
+        Some(m) => ssh_workdir_root(m, config_dir),
+        None => xrun_ssh::resolve_workdir_root(None, None),
+    };
+    xrun_ssh::effective_run_dir(stored, &root, run_id)
 }
 
 /// Remote workdir root of an ssh manifest, resolved like the adapter does
@@ -900,8 +919,8 @@ pub(crate) fn ssh_workdir_root(manifest: &Manifest, config_dir: &Path) -> String
 
 /// Poller config for an ssh run: the files live in the remote run dir that
 /// `SshAdapter` launches the training in (`XRUN_RUN_DIR`), not `/workspace/run`.
-pub(crate) fn ssh_poller_config(workdir_root: &str, run_id: &str) -> PollerConfig {
-    let files = xrun_ssh::remote_run_files(workdir_root, run_id);
+pub(crate) fn ssh_poller_config(run_dir: &str) -> PollerConfig {
+    let files = xrun_ssh::remote_run_files_in(run_dir);
     PollerConfig {
         events_file: files.events,
         metrics_file: files.metrics,
@@ -960,7 +979,7 @@ mod tests {
     #[test]
     fn ssh_poller_config_points_at_the_remote_run_dir_and_keeps_fail_policy() {
         let cfg = poller_config(
-            PollerFiles::for_vendor("ssh", Path::new("C:\\runs\\x"), "/data/xrun/", "R1"),
+            PollerFiles::for_vendor("ssh", Path::new("C:\\runs\\x"), "/data/xrun/R1"),
             FailPolicy::Keep,
         );
         assert_eq!(cfg.events_file, "/data/xrun/R1/events.jsonl");
@@ -969,22 +988,47 @@ mod tests {
         assert_eq!(cfg.on_stage_failed, FailPolicy::Keep);
 
         let default_root = poller_config(
-            PollerFiles::for_vendor("ssh", Path::new("."), "/tmp/xrun", "R2"),
+            PollerFiles::for_vendor("ssh", Path::new("."), "/tmp/xrun/R2"),
             FailPolicy::StopInstance,
         );
         assert_eq!(default_root.events_file, "/tmp/xrun/R2/events.jsonl");
 
         // Other vendors are untouched.
         let vast = poller_config(
-            PollerFiles::for_vendor("vast", Path::new("."), "", "R3"),
+            PollerFiles::for_vendor("vast", Path::new("."), ""),
             FailPolicy::StopInstance,
         );
         assert_eq!(vast.events_file, PollerConfig::default().events_file);
         let local = poller_config(
-            PollerFiles::for_vendor("local", Path::new("rd"), "", "R4"),
+            PollerFiles::for_vendor("local", Path::new("rd"), ""),
             FailPolicy::StopInstance,
         );
         assert!(local.events_file.contains("rd"));
+    }
+
+    #[test]
+    fn ssh_run_dir_prefers_the_stored_dir_over_the_current_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let m = Manifest::from_yaml_str(
+            "name: s\nvendor: ssh\nssh:\n  host_alias: box\n  workdir: /changed\nrun:\n  cmd: t\n",
+        )
+        .unwrap();
+        // Stored at launch: wins even though the manifest/config now says otherwise.
+        assert_eq!(
+            ssh_run_dir(Some("/old/R"), Some(&m), tmp.path(), "R"),
+            "/old/R"
+        );
+        // Runs from older binaries: re-resolved as before.
+        assert_eq!(ssh_run_dir(None, Some(&m), tmp.path(), "R"), "/changed/R");
+        assert_eq!(ssh_run_dir(None, None, tmp.path(), "R"), "/tmp/xrun/R");
+        // The shared (reused) instance row holds another run's dir: this run
+        // re-resolves from the real root, not from an empty one.
+        assert_eq!(
+            ssh_run_dir(Some("/old/OTHER"), Some(&m), tmp.path(), "R"),
+            "/changed/R"
+        );
+        let cfg = ssh_poller_config("/old/R");
+        assert_eq!(cfg.stdout_file, "/old/R/stdout.log");
     }
 
     #[test]

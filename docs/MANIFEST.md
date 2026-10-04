@@ -185,6 +185,9 @@ default_workdir = "/home/ubuntu/xrun-runs"   # optional fallback
   относительные пути (`ssh.workdir`, `default_workdir`, `run.workdir`)
   отсчитываются от домашнего каталога пользователя на хосте. Относительные
   `artifacts.patterns` ищутся в `run.workdir`, а без него — в `<workdir>/<run-id>/`.
+  Путь run-dir запоминается в хэндле инстанса при запуске: смена
+  `default_workdir` позже уже идущий ран не сдвигает (у ранов от старых
+  версий путь вычисляется заново).
 - **xrun_hook на удалёнке.** Установи `pip install xrun-hook` на сервере или
   включи в `data:` как для vast. `XRUN_RUN_DIR=<run-dir>` подставляется в env.
 - **destroy только убивает PID,** не машину. Идемпотентно: повторный `xrun
@@ -359,6 +362,11 @@ exclude:
 | `cmd` | Основная команда |
 | `args` | Map; рендерится как `--key value`. Bool `true` → флаг без значения, `false` → опускается |
 | `notebook` (kaggle) | Путь к .ipynb для kernel push |
+
+На local, ssh и vast xrun экспортирует `PYTHONUNBUFFERED=1`: вывод Python не
+буферизуется, `stdout.log` наполняется сразу (от него зависит `idle_timeout`).
+Своё значение побеждает: переменная в окружении хоста/инстанса или префикс в
+`run.cmd` (`PYTHONUNBUFFERED=0 python train.py`). На Kaggle не выставляется.
 
 ### `policy.early_stop`
 

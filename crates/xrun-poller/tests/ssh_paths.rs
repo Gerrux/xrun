@@ -131,6 +131,7 @@ fn run_with(events: String, alive: Option<bool>, with_train_start: bool) -> Outc
         ssh_host: None,
         ssh_port: None,
         ssh_user: "u".into(),
+        run_dir: None,
     };
     let status = Poller::new(
         run_id,

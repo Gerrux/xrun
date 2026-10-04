@@ -12,6 +12,7 @@ pub mod error;
 pub mod ssh;
 
 pub use adapter::{
-    remote_run_dir, remote_run_files, resolve_workdir_root, RemoteRunFiles, SshAdapter,
+    effective_run_dir, remote_run_dir, remote_run_files, remote_run_files_in, resolve_workdir_root,
+    RemoteRunFiles, SshAdapter,
 };
 pub use error::SshError;

@@ -94,6 +94,7 @@ fn make_handle() -> InstanceHandle {
         ssh_host: None,
         ssh_port: None,
         ssh_user: "user".to_string(),
+        run_dir: None,
     }
 }
 

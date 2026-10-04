@@ -223,6 +223,7 @@ impl VastAdapter {
             ssh_host,
             ssh_port,
             ssh_user: "root".to_string(),
+            run_dir: None,
         })
     }
 

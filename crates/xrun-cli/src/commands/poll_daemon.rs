@@ -79,6 +79,8 @@ pub fn run(
 
     let handle: InstanceHandle =
         serde_json::from_str(&state_json).context("failed to deserialize instance handle")?;
+    // ssh: the run dir fixed at launch (None for runs from older binaries).
+    let stored_run_dir = handle.run_dir.clone();
 
     // Reconstruct the vendor adapter based on the run's vendor field.
     let vendor: Box<dyn VendorAdapter> = match run.vendor.as_str() {
@@ -174,23 +176,22 @@ pub fn run(
         let run_dir = runs_dir.join(run_id.to_string());
         let on_failed =
             crate::commands::launch::fail_policy_from_manifest(&run_dir.join("manifest.yaml"));
-        let ssh_root = if run.vendor == "ssh" {
-            serde_yaml::from_str::<xrun_core::manifest::Manifest>(
+        let ssh_dir = if run.vendor == "ssh" {
+            let manifest = serde_yaml::from_str::<xrun_core::manifest::Manifest>(
                 &std::fs::read_to_string(run_dir.join("manifest.yaml")).unwrap_or_default(),
             )
-            .map(|m| crate::commands::launch::ssh_workdir_root(&m, config_dir))
-            .unwrap_or_default()
+            .ok();
+            crate::commands::launch::ssh_run_dir(
+                stored_run_dir.as_deref(),
+                manifest.as_ref(),
+                config_dir,
+                &run_id.to_string(),
+            )
         } else {
             String::new()
         };
-        let run_id_str = run_id.to_string();
         poller = poller.with_config(crate::commands::launch::poller_config(
-            crate::commands::launch::PollerFiles::for_vendor(
-                &run.vendor,
-                &run_dir,
-                &ssh_root,
-                &run_id_str,
-            ),
+            crate::commands::launch::PollerFiles::for_vendor(&run.vendor, &run_dir, &ssh_dir),
             on_failed,
         ));
     }
