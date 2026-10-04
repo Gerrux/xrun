@@ -11,6 +11,79 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.9.0] - 2026-10-04
+
+Manifest policies now actually act, ssh runs get live telemetry, and the
+TUI is reworked around one config writer and confirmed actions. The TUI
+needs the 0.9.0 binary (`config set --stdin`, `config unset`) — update
+both together.
+
+### Added
+
+- `xrun config set <key> --stdin` reads the value from stdin, so a secret
+  never appears in the process list; `xrun config unset <key>` clears a
+  credential, removes an ssh host (`ssh.<alias>`) or one of its fields, or
+  resets a key to its default. An empty credential value is now an error.
+- Every command that takes a run accepts a unique prefix / suffix of 4+
+  characters of the ULID; an ambiguous id lists the candidates.
+- `xrun diff --direction KEY=min|max` overrides which way "best" is for a
+  metric (then `policy.early_stop`, then the name). The name rule covers
+  mae, mse, rmse, perplexity, wer, cer, fid, nll, eer, bpb, bpc and
+  camelCase, and no longer treats `lossless_*` as a loss.
+- TUI: Local and SSH are first-class vendor cards (add, edit, probe and
+  remove ssh hosts); Instances opens on "All vendors"; the status bar
+  counts active runs per vendor.
+- `PYTHONUNBUFFERED=1` by default on local, ssh and vast (a value from the
+  environment or `run.cmd` wins), so stdout.log fills live without the hook.
+
+### Changed
+
+- At a normal `done` the poller honours `policy.on_done` and
+  `artifacts.pull_on`: it pulls `artifacts.patterns` into
+  `runs/<id>/artifacts`, then destroys the instance (`stop_instance`,
+  default) or keeps it (`keep`; also the default under
+  `--reuse-instance`). On vast without patterns it pulls `**/best*` first.
+  A failed or empty pull keeps the instance and pushes `instance.orphan`.
+  local / ssh instances are only marked destroyed.
+- `policy.on_stage_failed` reaches the poller, daemon, resume and watchdog
+  respawn; `keep` now ends the run as failed and only skips the destroy.
+- Idle / lifetime / cost caps from explicit sources (CLI flags, manifest)
+  apply to every vendor; the global `[budget]` defaults stay vast-only.
+  The idle cap is ignored on Kaggle; on ssh it works. An idle stop pushes
+  `run.idle`.
+- The TUI writes config only through `xrun config`; secrets go over stdin
+  and are never prefilled. Each setting has a single editor screen.
+- Launch, Stop, Rerun, DB cleanup, revoke and instance destroy ask for
+  confirmation with the focus on No; forms ask before discarding edits.
+
+### Fixed
+
+- ssh runs: the poller tailed vast's `/workspace/run/*` instead of the
+  run's own directory, so ssh runs never got live events / metrics or
+  finished by themselves. `~` and relative workdirs resolve against the
+  remote home; the run dir is recorded at launch and survives a change of
+  `default_workdir` mid-run.
+- `XRUN_RUN_DIR` & co reached only the first command of a compound
+  `run.cmd` (`source venv/bin/activate && python train.py`); ssh and vast
+  now `export` them for the whole command.
+- vast artifact globs resolved from `$HOME` instead of `run.workdir`; `**`
+  now recurses. Kaggle pulled its whole output once per pattern.
+- `xrun pull` on an ssh run could ask the wrong host when several were
+  configured.
+- Local runs: the poller appended stdout.log to itself every tick; a
+  reused instance kept the previous run's idle anchor.
+- TUI: screens took 3-5 s to open after a few hops and dropped chords
+  (refreshes now run off the message pump; navigation reuses open
+  screens); a crash when a refresh returned to a closing screen; vendor
+  probes sent twice; grouped Runs acted on the wrong row; the Dashboard
+  and Instances cursors jumped on refresh; text rows hidden by borders;
+  non-Tokyo themes painting Tokyo colours; key hints in button labels
+  eaten as markup.
+- Build: `async-trait` 0.1.92 — clippy on Rust 1.99 rejected the code
+  0.1.89 generated (`double_must_use`), breaking CI.
+
+---
+
 ## [0.8.0] - 2026-09-10
 
 ### Added

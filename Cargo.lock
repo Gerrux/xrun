@@ -247,13 +247,13 @@ checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
 
 [[package]]
 name = "async-trait"
-version = "0.1.89"
+version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -3940,7 +3940,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xrun-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3971,7 +3971,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3992,7 +3992,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-kaggle"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4011,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-local"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "glob",
@@ -4030,7 +4030,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-mlflow"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -4048,7 +4048,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-notify"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "notify-rust",
@@ -4066,7 +4066,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-poller"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "fs2",
@@ -4085,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-ssh"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "directories",
@@ -4104,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-tui"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-vast"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "pretty_assertions",
@@ -4142,7 +4142,7 @@ dependencies = [
 
 [[package]]
 name = "xrun-wandb"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",

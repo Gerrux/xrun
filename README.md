@@ -78,7 +78,7 @@ irm https://raw.githubusercontent.com/Gerrux/xrun/master/install.ps1 | iex
 
 Скрипт кладёт бинарь `xrun` (`~/.local/bin` либо `%LOCALAPPDATA%\xrun\bin`) и
 ставит TUI через `pip --user` — для неё нужен Python 3.11+. Флаги `--no-tui` /
-`-NoTui` ставят только CLI, `--version v0.8.0` — конкретный выпуск,
+`-NoTui` ставят только CLI, `--version v0.9.0` — конкретный выпуск,
 `--install-pip` / `-InstallPip` попробует `ensurepip`, если pip нет.
 
 Из исходников:
