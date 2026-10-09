@@ -14,9 +14,9 @@ from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Input, Label, Rule, Static
+from textual.widgets import Button, Footer, Input, Label, Static
 from xrun_tui.screens.confirm import ConfirmScreen
 from xrun_tui.screens.ssh_hosts import (
     SshHostsScreen,
@@ -38,13 +38,25 @@ _VENDORS = [
     ("vast",   "vast.ai",       "GPU cloud marketplace"),
     ("kaggle", "Kaggle",        "Notebook platform"),
     ("lightning", "Lightning AI", "Free Studio GPUs — 15 credits/month"),
-    ("colab",  "Google Colab",  "Free notebooks — login via xrun config login colab"),
+    ("colab",  "Google Colab",  "Free notebook GPUs"),
 ]
+
+# Card grids on the overview, in `_VENDORS` order (the cursor walks it).
+# j/k step by the column count, so keep each group's size even.
+_GROUPS = [
+    ("Your hardware", ("local", "ssh")),
+    ("Cloud",         ("vast", "kaggle", "lightning", "colab")),
+]
+
+# Two columns from this terminal width; below it cards stack in one.
+# At 94 the longest description (Lightning, 35 chars) still fits a card,
+# vertical scrollbar included (it takes 2 columns on short terminals).
+_TWO_COLUMNS_FROM = 94
 
 
 def _row_index(vid: str) -> int:
     """Position of a vendor in `_VENDORS`. Rows are addressed through this,
-    never by a literal index, so the order can change."""
+    never by a literal index; reorder `_GROUPS` along with `_VENDORS`."""
     return next(i for i, (v, _, _) in enumerate(_VENDORS) if v == vid)
 
 
@@ -52,7 +64,7 @@ def _row_index(vid: str) -> int:
 _LOGOS = {
     "local":  "▣",
     "ssh":    "⌁",
-    "vast":   "⚡",
+    "vast":   "V",
     "kaggle": "◆",
     "lightning": "ϟ",
     "colab":  "◉",
@@ -60,11 +72,23 @@ _LOGOS = {
 _BRAND = {
     "local":  "#9ece6a",
     "ssh":    "#bb9af7",
-    "vast":   "#ff6b35",
+    "vast":   "#000000",
     "kaggle": "#20beff",
     "lightning": "#7c3aed",
     "colab":  "#f9ab00",
 }
+
+
+def _ink(vid: str) -> str:
+    """Brand color for glyphs drawn on the dark card. vast.ai's black would
+    vanish there, so its dots use the white of its logo."""
+    return "#ffffff" if _BRAND[vid] == "#000000" else _BRAND[vid]
+
+
+def _logo(vid: str) -> str:
+    if vid == "vast":
+        return "[bold #ffffff on #000000] V [/]"  # white V on a black tile
+    return f"[{_BRAND[vid]}]{_LOGOS[vid]}[/]"
 
 
 _NOT_SECRET = {"kaggle.username", "lightning.user_id", "lightning.teamspace"}
@@ -208,71 +232,79 @@ class VendorsScreen(CardCursor, Screen):
         Binding("t",          "test",    "Test"),
         Binding("r",          "revoke",  "Revoke"),
         Binding("u",          "open_quota", "Quota"),
-        Binding("j,down",     "next",    "Down",   show=False),
-        Binding("k,up",       "prev",    "Up",     show=False),
+        Binding("j,down",     "down",    "Down",   show=False),
+        Binding("k,up",       "up",      "Up",     show=False),
+        Binding("l,right",    "next",    "Right",  show=False),
+        Binding("h,left",     "prev",    "Left",   show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         self._cursor = 0
+        self._cols = 1
         self._creds  = config.read_credentials()
         self._last_click: tuple[int, float] = (-1, 0.0)
         self._pulse_timers: dict[int, Any] = {}
         self._pulse_phase: dict[int, int] = {}
 
+    def _title(self) -> str:
+        n = sum(_vendor_configured(self._creds, vid) for vid, _, _ in _VENDORS)
+        return (f"Vendors & Credentials  [not bold #565f89]"
+                f"{n} of {len(_VENDORS)} configured[/]")
+
     def compose(self) -> ComposeResult:
         yield TitleBar("vendors")
-        yield Static("Vendors & Credentials", classes="screen-title")
-        with Vertical(id="vendor-overview"):
-            for i, (vid, vname, vdesc) in enumerate(_VENDORS):
-                configured = _vendor_configured(self._creds, vid)
-                brand      = _BRAND[vid]
-                state      = "ok" if configured else "empty"
-                with Vertical(
-                    classes=f"vendor-card vendor-card-{vid}",
-                    id=f"vrow-{i}",
-                ):
-                    with Horizontal(classes="vendor-card-head"):
-                        yield Static(
-                            f"[{brand}]{_LOGOS[vid]}[/]",
-                            classes="vendor-logo",
-                            id=f"vlogo-{i}",
-                        )
-                        yield Static(
-                            f"[bold #c0caf5]{vname}[/]  [#565f89]{vdesc}[/]",
-                            classes="vendor-card-title",
-                        )
-                        yield Static(
-                            pill(state),
-                            id=f"vstatus-{i}",
-                            classes="vendor-card-pill",
-                        )
-                    with Horizontal(classes="vendor-card-foot"):
-                        yield Static(
-                            f"[{brand if configured else '#414868'}]"
-                            f"{'●' if configured else '○'}[/]",
-                            classes="vendor-card-dot",
-                            id=f"vdot-{i}",
-                        )
-                        yield Static(
-                            _card_info(self._creds, vid),
-                            id=f"vinfo-{i}",
-                            classes="vendor-card-info",
-                        )
-            yield Rule()
-            yield Static(
-                "[#565f89]Enter/e[/] [#c0caf5]Edit / hosts[/]   "
-                "[#565f89]i[/] [#c0caf5]Import native[/]   "
-                "[#565f89]t[/] [#c0caf5]Test[/]   "
-                "[#565f89]u[/] [#c0caf5]Quota in browser[/]   "
-                "[#565f89]r[/] [#c0caf5]Revoke[/]   "
-                "[#565f89]j/k[/] [#c0caf5]Navigate[/]",
-                classes="vendor-hint",
-            )
+        yield Static(self._title(), classes="screen-title", id="vtitle")
+        with VerticalScroll(id="vendor-overview"):
+            for head, vids in _GROUPS:
+                yield Static(head, classes="vendor-group")
+                with Grid(classes="vendor-grid"):
+                    for vid in vids:
+                        yield from self._card(_row_index(vid))
+        # Key hints live in the Footer; a hint line here cost the rows that
+        # six cards need on a 30-row terminal.
         yield StatusBar()
         yield Footer()
 
+    def _card(self, i: int) -> ComposeResult:
+        vid, vname, vdesc = _VENDORS[i]
+        configured = _vendor_configured(self._creds, vid)
+        with Vertical(classes=f"vendor-card vendor-card-{vid}", id=f"vrow-{i}"):
+            with Horizontal(classes="vendor-card-head"):
+                yield Static(_logo(vid), classes="vendor-logo", id=f"vlogo-{i}")
+                yield Static(f"[bold #c0caf5]{vname}[/]", classes="vendor-card-title")
+                yield Static(pill("ok" if configured else "empty"),
+                             id=f"vstatus-{i}", classes="vendor-card-pill")
+            yield Static(f"[#565f89]{vdesc}[/]", classes="vendor-card-desc")
+            with Horizontal(classes="vendor-card-foot"):
+                yield Static(
+                    f"[{_ink(vid) if configured else '#414868'}]"
+                    f"{'●' if configured else '○'}[/]",
+                    classes="vendor-card-dot",
+                    id=f"vdot-{i}",
+                )
+                yield Static(_card_info(self._creds, vid),
+                             id=f"vinfo-{i}", classes="vendor-card-info")
+
+    def _set_columns(self, width: int) -> None:
+        self._cols = 2 if width >= _TWO_COLUMNS_FROM else 1
+        for grid in self.query(".vendor-grid"):
+            grid.styles.grid_size_columns = self._cols
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._set_columns(event.size.width)
+        self._highlight(self._cursor)  # keep the active card in view
+
+    def action_down(self) -> None:
+        self._cursor = (self._cursor + self._cols) % self._CARD_COUNT
+        self._highlight(self._cursor)
+
+    def action_up(self) -> None:
+        self._cursor = (self._cursor - self._cols) % self._CARD_COUNT
+        self._highlight(self._cursor)
+
     def on_mount(self) -> None:
+        self._set_columns(self.app.size.width)
         self._highlight(self._cursor)
         # No probes here: `on_screen_resume` also fires on the first show,
         # and starting them in both places sent every request twice.
@@ -645,7 +677,7 @@ class VendorsScreen(CardCursor, Screen):
             return  # the user left while the CLI write was still running
         vid = _VENDORS[idx][0]
         configured = _vendor_configured(self._creds, vid)
-        brand = _BRAND[vid]
+        brand = _ink(vid)
         self.query_one(f"#vdot-{idx}", Static).update(
             f"[{brand if configured else '#414868'}]"
             f"{'●' if configured else '○'}[/]"
@@ -654,6 +686,7 @@ class VendorsScreen(CardCursor, Screen):
             pill("ok" if configured else "empty")
         )
         self.query_one(f"#vinfo-{idx}", Static).update(_card_info(self._creds, vid))
+        self.query_one("#vtitle", Static).update(self._title())
 
     # ── Pulse animation on status dot during 'checking' state ────────────────
 
@@ -661,7 +694,7 @@ class VendorsScreen(CardCursor, Screen):
         self._stop_pulse(idx, ok=False, vid=vid, _restore=False)
         self._pulse_phase[idx] = 0
         frames = ["◐", "◓", "◑", "◒"]
-        brand  = _BRAND[vid]
+        brand  = _ink(vid)
 
         def _tick() -> None:
             try:
@@ -689,7 +722,7 @@ class VendorsScreen(CardCursor, Screen):
             w = self.query_one(f"#vdot-{idx}", Static)
         except Exception:
             return
-        color = _BRAND[vid] if ok else "#f7768e"
+        color = _ink(vid) if ok else "#f7768e"
         w.update(f"[{color}]●[/]")
 
     def on_click(self, event: events.Click) -> None:

@@ -493,7 +493,7 @@ CountryExcludeScreen {
 }
 
 .vendor-card-vast {
-    border-left: thick #ff6b35;
+    border-left: thick #000000;
 }
 
 .vendor-card-kaggle {
@@ -522,7 +522,7 @@ CountryExcludeScreen {
 }
 
 .vendor-row-active.vendor-card-vast {
-    border-left: thick #ff9e64;
+    border-left: thick #ffffff;
 }
 
 .vendor-row-active.vendor-card-kaggle {
@@ -586,6 +586,52 @@ CountryExcludeScreen {
     color: #565f89;
     padding: 1 1;
     height: auto;
+}
+
+/* Vendors screen only: a grid of cards per group, two columns from 94
+   terminal columns (set in code), all six cards within 30 rows there.
+   Notifications and sinks share the card classes and keep the list look. */
+VendorsScreen #vendor-overview {
+    padding: 0 2;
+}
+
+VendorsScreen .vendor-group {
+    color: #bb9af7;
+    text-style: bold;
+    height: 1;
+    padding: 0 1;
+    margin-top: 1;
+}
+
+VendorsScreen .vendor-grid {
+    grid-size: 2;
+    grid-rows: 6;
+    grid-gutter: 1 2;
+    height: auto;
+}
+
+VendorsScreen .vendor-card {
+    height: 6;
+    margin-bottom: 0;
+}
+
+VendorsScreen .vendor-card-desc {
+    height: 1;
+    padding: 0 0 0 4;
+}
+
+VendorsScreen .vendor-card-foot {
+    height: 2;
+    align: left top;
+}
+
+VendorsScreen .vendor-card-dot {
+    content-align: center top;
+}
+
+VendorsScreen .vendor-card-info {
+    height: 2;
+    content-align: left top;
 }
 
 /* ── LoadingIndicator ────────────────────────────────────────────────────── */

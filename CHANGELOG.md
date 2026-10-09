@@ -50,6 +50,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- TUI Vendors screen: the six cards are a grid in two groups, "Your
+  hardware" (local, ssh) and "Cloud" (vast, kaggle, lightning, colab), two
+  columns from 94 terminal columns, where all six fit in 30 rows (narrower
+  terminals get one column and scroll); before, the list
+  needed 42 and Colab sat below the edge even at 120×40. `j`/`k` move a row,
+  `h`/`l` a card; the title counts configured vendors. vast.ai gets its own
+  mark and colour: a white V on black.
 - TUI splash: the four-colour `XRUN` block banner is replaced by the mark and
   the lowercase name, per `docs/brand.md`; the version line reads `v0.10.0`.
 

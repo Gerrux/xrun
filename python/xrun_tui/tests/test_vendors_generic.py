@@ -105,6 +105,76 @@ def test_vendors_screen_has_six_cards_in_order(bare_app) -> None:
     asyncio.run(scenario())
 
 
+def test_vendors_screen_fits_six_cards_in_30_rows(bare_app) -> None:
+    async def scenario() -> None:
+        from xrun_tui.screens.vendors import VendorsScreen
+
+        app = bare_app(_NAS)
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = VendorsScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            box = screen.query_one("#vendor-overview")
+            assert box.max_scroll_y == 0
+            for i in range(6):
+                row = screen.query_one(f"#vrow-{i}").region
+                assert box.region.contains_region(row), (i, row, box.region)
+            headers = [str(w.render()) for w in screen.query(".vendor-group")]
+            assert headers == ["Your hardware", "Cloud"]
+            # The count also sees native login files in the real home dir.
+            assert "of 6 configured" in str(screen.query_one("#vtitle").render())
+            # Two columns: j/k move a row, h/l a card.
+            assert screen._cols == 2
+            await pilot.press("j")
+            assert screen._cursor == 2
+            await pilot.press("l")
+            assert screen._cursor == 3
+            await pilot.press("k")
+            assert screen._cursor == 1
+            await pilot.press("h")
+            assert screen._cursor == 0
+
+    asyncio.run(scenario())
+
+
+def test_groups_follow_vendor_order() -> None:
+    """The cursor walks `_VENDORS`, the grids draw `_GROUPS`: same order, or
+    j/k would jump across groups."""
+    from xrun_tui.screens.vendors import _GROUPS, _VENDORS
+
+    assert [v for _, vids in _GROUPS for v in vids] == [v for v, _, _ in _VENDORS]
+
+
+def test_vast_logo_is_white_v_on_black() -> None:
+    from xrun_tui.screens.vendors import _BRAND, _ink, _logo
+
+    assert _BRAND["vast"] == "#000000"
+    assert _logo("vast") == "[bold #ffffff on #000000] V [/]"
+    assert _ink("vast") == "#ffffff"  # black dots would vanish on the card
+    assert _ink("kaggle") == _BRAND["kaggle"]
+
+
+def test_vendors_cursor_scrolls_last_card_into_view(bare_app) -> None:
+    async def scenario() -> None:
+        from xrun_tui.screens.vendors import VendorsScreen
+
+        app = bare_app(_NAS)
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = VendorsScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            box = screen.query_one("#vendor-overview")
+            assert box.max_scroll_y > 0  # 24 rows cannot hold six cards
+            for _ in range(5):
+                await pilot.press("j")
+            await pilot.pause()
+            last = screen.query_one("#vrow-5")
+            assert last.has_class("vendor-row-active")
+            assert box.region.contains_region(last.region)
+
+    asyncio.run(scenario())
+
+
 def test_local_card_test_uses_probe_detail(bare_app, monkeypatch) -> None:
     _stub_services(monkeypatch)
 
