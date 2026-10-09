@@ -18,6 +18,10 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `xrun config login colab` hung on Windows with no output: the interactive
+  bridge run inherited the background bridge's `CREATE_NO_WINDOW`, so the
+  child Python had no console. `run_script_interactive` now keeps the parent
+  console; the OAuth URL prints and the code prompt works.
 - `install.ps1` no longer fails with "Cannot create a file when that file
   already exists" while xrun is running (a poll daemon or an open TUI locks
   `xrun.exe`). The old binary is renamed to `xrun.old.exe` first — Windows
