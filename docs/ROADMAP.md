@@ -506,11 +506,17 @@ Python-мост.
       визарде.
 - [x] Шаблоны `exp/templates/lightning_smoke.yaml`, `colab_smoke.yaml`
       (`xrun_hook` уезжает через `data:`, на PyPI его нет).
-- [ ] Живой smoke на реальных аккаунтах (см. чек-лист в docs/MANIFEST.md и
-      отчёт ревью от 2026-10-09): главное — переживает ли detached-процесс
-      конец SDK-сессии на Lightning и является ли `$HOME` корнем
-      `upload_file`; на Colab — `/content`-прелюдия и выживание Popen в
-      kernel.
+- [x] Живой smoke на реальных аккаунтах (2026-10-09). Colab T4:
+      provision 12 с, upload, метрики хука, pull, unassign, `xrun stop`
+      посреди рана — всё OK. Lightning CPU-Studio: `$HOME` =
+      `/teamspace/studios/this_studio` и есть корень `upload_file`,
+      detached-процесс переживает конец SDK-сессии, полный цикл до `done`
+      с pull и остановкой Studio, `on_done: keep` + ручной `xrun stop` — OK.
+      По дороге починены: проба без env (#8), teamspace как `owner/name`
+      из memberships (#8), ошибки API без заголовков (#8), гонка
+      «PID gone до чтения done» в поллере (#9). Не проверено: Lightning
+      на GPU — аккаунт без кредитов («insufficient balance»), T4 ждёт
+      пополнения или верификации телефона.
 
 ### Не входит в v0.11
 
