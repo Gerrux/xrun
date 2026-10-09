@@ -152,6 +152,50 @@ fn probe_lightning_without_creds_is_ok_false() {
 }
 
 #[test]
+fn config_set_lightning_teamspace_requires_owner_slash_name() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp).args(["config", "init"]).assert().success();
+    for bad in ["Gerrux Org", "default-project", "/x", "x/", "a/b/c"] {
+        xrun(&tmp)
+            .args(["config", "set", "lightning.teamspace", bad])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("owner/name"));
+    }
+    xrun(&tmp)
+        .args([
+            "config",
+            "set",
+            "lightning.teamspace",
+            "gerrux-org/default-project",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn probe_lightning_uses_stored_credentials_without_env() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp).args(["config", "init"]).assert().success();
+    for (k, v) in [
+        ("lightning.api_key", "test-key-abcdef123456"),
+        ("lightning.user_id", "user-42"),
+    ] {
+        xrun(&tmp).args(["config", "set", k, v]).assert().success();
+    }
+    // The probe must hand the stored pair to the bridge: whatever the bridge
+    // answers (no python, no SDK, bad key), it is never the "no credentials"
+    // short-circuit that an env-only probe produced.
+    let v = probe_json(&tmp, "lightning");
+    assert_eq!(v["ok"], false);
+    let detail = v["detail"].as_str().unwrap();
+    assert!(
+        !detail.contains("no API key and no"),
+        "stored credentials ignored: {detail}"
+    );
+}
+
+#[test]
 fn probe_lightning_rejects_half_a_credential_pair() {
     let tmp = TempDir::new().unwrap();
     let out = xrun(&tmp)
@@ -166,11 +210,16 @@ fn probe_lightning_rejects_half_a_credential_pair() {
 }
 
 #[test]
-fn probe_colab_without_python_is_ok_false() {
+fn probe_colab_always_prints_one_json_object() {
+    // An unusable `XRUN_PYTHON` falls back to the PATH python, which on a
+    // developer machine may have colab-cli installed and a token on disk, so
+    // `ok` is environment-dependent; the contract is the JSON shape and a
+    // clean exit, never a crash or a hang.
     let tmp = TempDir::new().unwrap();
     let v = probe_json(&tmp, "colab");
     assert_eq!(v["vendor"], "colab");
-    assert_eq!(v["ok"], false);
+    assert!(v["ok"].is_boolean());
+    assert!(v["detail"].is_string());
 }
 
 #[test]

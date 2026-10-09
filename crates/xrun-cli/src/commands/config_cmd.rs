@@ -70,7 +70,7 @@ pub fn run(args: &ConfigArgs, config_dir: &Path) -> Result<()> {
             cmd_set(config_dir, key, &value)
         }
         ConfigCommand::Unset { key } => cmd_unset(config_dir, key),
-        ConfigCommand::Probe(args) => crate::commands::probe::run(args),
+        ConfigCommand::Probe(args) => crate::commands::probe::run(args, config_dir),
         ConfigCommand::Login { vendor } => cmd_login(vendor),
     }
 }
@@ -314,6 +314,20 @@ fn cmd_set(config_dir: &Path, key: &str, value: &str) -> Result<()> {
         // overwriting a working key with "".
         if value.trim().is_empty() {
             bail!("empty value for `{key}`; to clear it run `xrun config unset {key}`");
+        }
+        // The SDK resolves a teamspace only from an `owner/name` slug; a bare
+        // or display name ("Gerrux Org") fails at provision with "Neither
+        // user or org are specified". `xrun config probe --vendor lightning`
+        // lists the valid slugs.
+        if key == "lightning.teamspace" {
+            let v = value.trim();
+            let ok = matches!(v.split_once('/'), Some((o, n)) if !o.is_empty() && !n.is_empty() && !n.contains('/'));
+            if !ok {
+                bail!(
+                    "lightning.teamspace must be `owner/name` (e.g. `my-org/default-project`), got `{v}`; \
+                     `xrun config probe --vendor lightning` prints the available slugs"
+                );
+            }
         }
         let creds = Credentials::load(config_dir)?;
         let mut json = serde_json::to_value(&creds)?;

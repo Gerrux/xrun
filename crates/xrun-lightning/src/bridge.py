@@ -74,12 +74,40 @@ def _ts_str(t):
     return "%s/%s" % (owner, t.name) if owner else str(t.name)
 
 
+def _teamspace_slugs(user):
+    """`owner/name` slugs of every teamspace the user is a member of, the
+    platform default first. `user.teamspaces` lists only user-OWNED
+    teamspaces, so the usual org teamspace never shows up there and a bare
+    name without its owner makes `Studio(teamspace=...)` fail with
+    "Neither user or org are specified"."""
+    try:
+        from lightning_sdk.api.user_api import UserApi
+
+        orgs = {}
+        try:
+            orgs = {str(o.id): str(o.name) for o in user.organizations}
+        except Exception:  # noqa: BLE001
+            pass
+        slugs = []
+        for m in UserApi()._get_all_teamspace_memberships(str(user.id)) or []:
+            owner_type = str(getattr(m.owner_type, "value", m.owner_type) or "").lower()
+            owner = orgs.get(str(m.owner_id)) if owner_type == "organization" else str(user.name)
+            if owner and m.name:
+                slugs.append(("%s/%s" % (owner, m.name), bool(getattr(m, "is_default", False))))
+        slugs.sort(key=lambda x: not x[1])
+        if slugs:
+            return [s for s, _ in slugs]
+    except Exception:  # noqa: BLE001 - private SDK surface; fall back to owned teamspaces
+        pass
+    return [_ts_str(t) for t in user.teamspaces]
+
+
 def _default_teamspace():
     """Explicit/env teamspaces are handled by the SDK; this is the last resort."""
-    teamspaces = list(_user().teamspaces)
-    if not teamspaces:
+    slugs = _teamspace_slugs(_user())
+    if not slugs:
         raise RuntimeError("no Lightning teamspace found for this user")
-    return _ts_str(teamspaces[0])
+    return slugs[0]
 
 
 def _studio(a, create_ok=False):
@@ -92,6 +120,11 @@ def _studio(a, create_ok=False):
     key = (name, ts)
     if key not in _studios:
         try:
+            if ts and "/" not in ts:
+                raise RuntimeError(
+                    "lightning.teamspace must be `owner/name`, got '%s'; available: %s"
+                    % (ts, ", ".join(_teamspace_slugs(_user())) or "(none)")
+                )
             _studios[key] = Studio(name=name, teamspace=ts, create_ok=create_ok)
         except ValueError as exc:
             # Nothing configured anywhere (SDK: "Couldn't resolve teamspace
@@ -152,11 +185,11 @@ def op_ping(a):
 
 def op_whoami(a):
     user = _user()
+    slugs = _teamspace_slugs(user)
     want = a.get("teamspace") or os.environ.get("LIGHTNING_TEAMSPACE") or None
     if want is None:
-        teamspaces = list(user.teamspaces)
-        want = _ts_str(teamspaces[0]) if teamspaces else None
-    return {"user": str(user.name), "teamspace": want}
+        want = slugs[0] if slugs else None
+    return {"user": str(user.name), "teamspace": want, "teamspaces": slugs}
 
 
 def op_studio_start(a):
@@ -230,11 +263,14 @@ def op_download_file(a):
 
 
 def op_list_studios(a):
+    from lightning_sdk import Teamspace
+
     want = a.get("teamspace") or os.environ.get("LIGHTNING_TEAMSPACE") or None
     out = []
-    for t in _user().teamspaces:
-        if want and want not in (_ts_str(t), str(t.name)):
+    for slug in _teamspace_slugs(_user()):
+        if want and want not in (slug, slug.split("/", 1)[-1]):
             continue
+        t = Teamspace(name=slug)
         for s in t.studios:
             try:
                 machine = str(getattr(s.machine, "name", s.machine))

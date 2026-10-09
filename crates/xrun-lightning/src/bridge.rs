@@ -42,6 +42,10 @@ pub struct WhoAmI {
     pub user: String,
     #[serde(default)]
     pub teamspace: Option<String>,
+    /// `owner/name` slugs of every teamspace the user belongs to (default
+    /// first); what `lightning.teamspace` may be set to.
+    #[serde(default)]
+    pub teamspaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +427,7 @@ mod fake {
                 teamspace: teamspace
                     .map(str::to_string)
                     .or(Some("tester/default".into())),
+                teamspaces: vec!["tester/default".into()],
             })
         }
 
