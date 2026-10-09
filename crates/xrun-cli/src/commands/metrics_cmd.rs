@@ -72,9 +72,10 @@ pub fn run(args: &MetricsArgs, db_path: &Path, config_dir: &Path) -> Result<()> 
         .as_deref()
         .map(|s| s.split(',').map(str::trim).map(str::to_string).collect());
 
-    if args.ascii {
-        println!("no data yet");
-        return Ok(());
+    // --ascii: terminal chart per key. --json wins when both are given so
+    // scripts always get parseable output.
+    if args.ascii && !args.json {
+        return render_ascii_charts(&store, &run.id, filter_keys.as_deref());
     }
 
     if let Some(keys) = &filter_keys {
@@ -126,6 +127,64 @@ pub fn run(args: &MetricsArgs, db_path: &Path, config_dir: &Path) -> Result<()> 
         }
     }
 
+    Ok(())
+}
+
+/// Максимум ключей на один вызов `--ascii` без явного `--key`: восемь строк
+/// на график, больше четырёх уже не помещается на экран.
+const MAX_ASCII_KEYS: usize = 4;
+
+/// Печать ASCII-графиков в stdout. `keys = None` — все ключи ран-а (не более
+/// [`MAX_ASCII_KEYS`]). «no data yet» печатается только когда ни у одного из
+/// выбранных ключей нет ни одной конечной точки.
+fn render_ascii_charts(store: &Store, run_id: &RunId, keys: Option<&[String]>) -> Result<()> {
+    let mut truncated_from: Option<usize> = None;
+    let selected: Vec<String> = match keys {
+        Some(k) => k.to_vec(),
+        None => {
+            let all = store
+                .list_metric_keys(run_id)
+                .context("failed to list metric keys")?;
+            if all.len() > MAX_ASCII_KEYS {
+                truncated_from = Some(all.len());
+            }
+            all.into_iter()
+                .take(MAX_ASCII_KEYS)
+                .map(|(k, _)| k)
+                .collect()
+        }
+    };
+
+    let mut charts: Vec<String> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for key in &selected {
+        let pts = store
+            .list_metrics(run_id, Some(std::slice::from_ref(key)))
+            .context("failed to list metrics")?;
+        let data: Vec<(i64, f64)> = pts.iter().map(|m| (m.step, m.value)).collect();
+        match crate::commands::ascii_chart::render_ascii(key, &data) {
+            Some(chart) => charts.push(chart),
+            None => missing.push(key),
+        }
+    }
+
+    if charts.is_empty() {
+        println!("no data yet");
+        return Ok(());
+    }
+
+    for (i, chart) in charts.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print!("{chart}");
+    }
+    if !missing.is_empty() {
+        println!("no data for: {}", missing.join(", "));
+    }
+    if let Some(total) = truncated_from {
+        println!("showing {MAX_ASCII_KEYS} of {total} keys — use --key to pick");
+    }
     Ok(())
 }
 

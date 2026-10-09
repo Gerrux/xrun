@@ -9,6 +9,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun metrics <id> --ascii` always printed "no data yet" without querying
+  the store. It now renders a value-vs-step ASCII chart (60×8, bucket-averaged
+  for long series) per selected key — the first four keys when `--key` is
+  omitted — with min / max / last / n and the step range. NaN / ±inf points
+  are skipped and counted separately. "no data yet" remains only when there
+  are no points at all; with `--json` the flag is ignored and the JSON output
+  is unchanged.
+
 ---
 
 ## [0.11.1] - 2026-10-09

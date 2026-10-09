@@ -88,7 +88,9 @@ stdout/stderr.
 
 ```
 --key val_f1,val_loss        выбрать конкретные
---ascii                      ASCII chart в stdout (default если TTY)
+--ascii                      ASCII-график «значение от шага» по каждому ключу
+                             (без --key — первые 4 ключа; с --json не действует;
+                             «no data yet» — только если точек нет вовсе)
 --png <out>                  дамп PNG (через MLflow или локально через plotters)
 --per-key                    в комбинации с --png: один subplot на ключ в auto-grid
                              (рекомендуется когда шкалы метрик различаются на порядки)
