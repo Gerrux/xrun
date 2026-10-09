@@ -16,7 +16,7 @@ from xrun_tui.db import Database, find_db_path
 from xrun_tui.screens.registry import iter_screens
 from xrun_tui.themes import palette_filter, write_theme_for_app
 
-XRUN_VERSION = "0.11.0"
+XRUN_VERSION = "0.11.1"
 
 # Map: chord-leader → {key → screen slug}, derived from the screen registry.
 _CHORDS: dict[str, dict[str, str]] = {

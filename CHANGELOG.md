@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.1] - 2026-10-09
+
+Follow-up to the Lightning AI / Colab release: one-command SDK install into
+the bridge interpreter, and two Windows fixes (`xrun config login colab`
+hung without a console; `install.ps1` could not replace a running `xrun.exe`).
+
 ### Added
 
 - `xrun install sdk <lightning|colab|all> [--dry-run] [--upgrade]` installs the
