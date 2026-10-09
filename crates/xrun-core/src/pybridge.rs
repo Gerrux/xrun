@@ -190,7 +190,20 @@ fn script_command(
     extra_args: &[String],
     env: &[(String, String)],
 ) -> Command {
-    let mut cmd = base_command(&py.0);
+    script_command_with(base_command(&py.0), py, script, extra_args, env)
+}
+
+/// Same as [`script_command`] on top of a caller-built `Command`. The
+/// interactive runner passes a plain `Command::new`: on Windows the bridge's
+/// `CREATE_NO_WINDOW` detaches the child from the console, and a script that
+/// prints a URL and waits on `input()` then shows nothing and hangs.
+fn script_command_with(
+    mut cmd: Command,
+    py: &PythonCmd,
+    script: &Path,
+    extra_args: &[String],
+    env: &[(String, String)],
+) -> Command {
     cmd.args(&py.1).arg(script).args(extra_args);
     cmd.env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1");
@@ -202,7 +215,8 @@ fn script_command(
 
 /// Run a bridge script as a foreground interactive process (stdio inherited),
 /// e.g. `python colab_bridge.py --login`. The caller is responsible for a TTY
-/// check where one is required.
+/// check where one is required. The child keeps the parent's console (no
+/// `CREATE_NO_WINDOW`), otherwise its prompts never reach the terminal.
 pub fn run_script_interactive(
     script_name: &str,
     script_src: &str,
@@ -213,7 +227,7 @@ pub fn run_script_interactive(
         io::Error::new(io::ErrorKind::NotFound, BridgeError::NoPython.to_string())
     })?;
     let script = materialize_script(script_name, script_src)?;
-    script_command(py, &script, extra_args, env)
+    script_command_with(Command::new(&py.0), py, &script, extra_args, env)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
