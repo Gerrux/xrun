@@ -243,7 +243,7 @@ pub struct MetricsArgs {
     /// Print the MLflow run URL and exit (requires mlflow.url in config)
     #[arg(long)]
     pub mlflow_url: bool,
-    /// Print ASCII chart (not implemented in v0.1)
+    /// Print an ASCII chart of value vs step per key (up to 4 keys without --key)
     #[arg(long)]
     pub ascii: bool,
     /// Output as JSON

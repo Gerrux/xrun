@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+pub mod ascii_chart;
 pub mod balance;
 pub mod common;
 pub mod config_cmd;
