@@ -15,7 +15,7 @@
 //! | wandb   | `XRUN_PROBE_WANDB_KEY`                                                    |
 //! | ssh     | (none — uses `--ssh-host` / `--ssh-user` / `--ssh-port` / `--ssh-key`)    |
 //! | local   | (none)                                                                    |
-//! | lightning | `XRUN_PROBE_LIGHTNING_API_KEY` + `..._USER_ID` (+ optional `..._TEAMSPACE`); both empty → `~/.lightning/credentials.json` |
+//! | lightning | `XRUN_PROBE_LIGHTNING_API_KEY` + `..._USER_ID` (+ optional `..._TEAMSPACE`); both empty → stored `[lightning]` creds, else `~/.lightning/credentials.json` |
 //! | colab   | (none — checks the `colab-cli` OAuth token via the bridge)               |
 //!
 //! Output is always one JSON object on stdout:
@@ -29,6 +29,7 @@
 
 #![deny(unsafe_code)]
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -67,7 +68,7 @@ pub struct ProbeArgs {
     pub ssh_key: Option<String>,
 }
 
-pub fn run(args: &ProbeArgs) -> Result<()> {
+pub fn run(args: &ProbeArgs, config_dir: &Path) -> Result<()> {
     let started = Instant::now();
     let (ok, detail) = match args.vendor.as_str() {
         "vast" => probe_vast(),
@@ -76,7 +77,7 @@ pub fn run(args: &ProbeArgs) -> Result<()> {
         "wandb" => probe_wandb(),
         "ssh" => probe_ssh(args),
         "local" => probe_local(),
-        "lightning" => probe_lightning(),
+        "lightning" => probe_lightning(config_dir),
         "colab" => probe_colab(),
         other => (false, format!("unknown vendor: {other}")),
     };
@@ -316,8 +317,9 @@ fn home_dir() -> Option<std::path::PathBuf> {
 
 // ── lightning ───────────────────────────────────────────────────────────────
 
-fn probe_lightning() -> (bool, String) {
+fn probe_lightning(config_dir: &Path) -> (bool, String) {
     use xrun_core::config::credentials::LightningCredentials;
+    use xrun_core::Credentials;
     use xrun_lightning::{LightningBridge, PyLightningBridge};
 
     let api_key = env_nonempty("XRUN_PROBE_LIGHTNING_API_KEY");
@@ -329,22 +331,38 @@ fn probe_lightning() -> (bool, String) {
             "LIGHTNING_API_KEY and LIGHTNING_USER_ID must be set together".into(),
         );
     }
-    // Both empty: pass no env, so the SDK loads ~/.lightning/credentials.json.
-    let creds = LightningCredentials {
-        api_key,
-        user_id,
-        teamspace: teamspace.clone(),
+    // The wizard probes pasted keys through the env. Without them (a user
+    // running the probe by hand, the TUI card, `xrun doctor`) the stored
+    // `[lightning]` credentials apply; with neither, the bridge gets no env
+    // and the SDK falls back to ~/.lightning/credentials.json.
+    let creds = match (api_key, user_id) {
+        (Some(api_key), Some(user_id)) => LightningCredentials {
+            api_key: Some(api_key),
+            user_id: Some(user_id),
+            teamspace: teamspace.clone(),
+        },
+        _ => {
+            let stored = Credentials::load(config_dir).unwrap_or_default().lightning;
+            LightningCredentials {
+                teamspace: teamspace.clone().or(stored.teamspace),
+                ..stored
+            }
+        }
     };
+    let teamspace = creds.teamspace.clone();
     let bridge = PyLightningBridge::new(&creds);
     match bridge.whoami(teamspace.as_deref()) {
-        Ok(w) => (
-            true,
-            format!(
+        Ok(w) => {
+            let mut detail = format!(
                 "authenticated as {} · teamspace {}",
                 w.user,
                 w.teamspace.as_deref().unwrap_or("(default)")
-            ),
-        ),
+            );
+            if w.teamspaces.len() > 1 {
+                detail.push_str(&format!(" · available: {}", w.teamspaces.join(", ")));
+            }
+            (true, detail)
+        }
         Err(e) => (false, format!("{e}")),
     }
 }

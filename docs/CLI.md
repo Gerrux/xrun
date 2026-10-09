@@ -302,8 +302,8 @@ xrun config login colab             первый вход в Google Colab (OAuth
 
 - `--vendor lightning` читает `XRUN_PROBE_LIGHTNING_API_KEY`,
   `XRUN_PROBE_LIGHTNING_USER_ID` и необязательный
-  `XRUN_PROBE_LIGHTNING_TEAMSPACE`; если env пуст — берёт файл
-  `lightning login`.
+  `XRUN_PROBE_LIGHTNING_TEAMSPACE`; если env пуст — берёт `[lightning]` из
+  `credentials.toml`, а без них — файл `lightning login`.
 - `--vendor colab` env не читает: проверяет токен colab-cli и запрашивает
   сводку потребления аккаунта (compute units); без токена — `ok: false`
   без запроса в сеть.
