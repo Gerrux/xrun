@@ -5,15 +5,16 @@
 а не нарисована поверх: под ней обязан быть фон, иначе на тёмной подложке
 знак превращается в белую закорючку на квадрате.
 
-Геометрия задана в поле 100×100 и продублирована в `docs/index.html` (SVG
-сайта). Правите одно — правьте и другое.
+Геометрия и вырез живут в `python/xrun_tui/src/xrun_tui/brand.py`: тот же
+код рисует знак в заставке TUI. Отсюда они только импортируются. Копия
+геометрии — SVG сайта в `docs/index.html`; правите одно — правьте и другое.
 
     python scripts/brand.py        # нужен Pillow
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -21,13 +22,13 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 
+sys.path.insert(0, str(ROOT / "python" / "xrun_tui" / "src"))
+from xrun_tui.brand import BG, BLUE, gradient, mask  # noqa: E402
+
 # Tokyo Night — та же палитра, что у TUI (python/xrun_tui/src/xrun_tui/app.tcss).
-BG = (0x1A, 0x1B, 0x26)
 SURFACE = (0x24, 0x28, 0x3B)
 TEXT = (0xC0, 0xCA, 0xF5)
 MUTED = (0x56, 0x5F, 0x89)
-BLUE = (0x7A, 0xA2, 0xF7)
-MAGENTA = (0xBB, 0x9A, 0xF7)
 # Цвета статусов — STATUS_DOT в python/xrun_tui/src/xrun_tui/utils.py.
 STATES = [
     ((0xE0, 0xAF, 0x68), "provisioning"),
@@ -36,28 +37,6 @@ STATES = [
     ((0xF7, 0x76, 0x8E), "failed"),
 ]
 
-# Геометрия знака в поле 100×100.
-RADIUS = 22
-CURVE = [(20, 24), (28, 62), (44, 70), (64, 70)]  # кубическая Безье
-STROKE = 11
-DOT = (80, 70, 7.5)
-
-
-def _bezier(p: Sequence[tuple[float, float]], n: int = 256) -> list[tuple[float, float]]:
-    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = p
-    out = []
-    for i in range(n + 1):
-        t = i / n
-        u = 1 - t
-        out.append(
-            (
-                u**3 * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t**3 * x3,
-                u**3 * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t**3 * y3,
-            )
-        )
-    return out
-
-
 def _gradient(size: int) -> Image.Image:
     """Диагональ BLUE → MAGENTA из левого верхнего угла в правый нижний."""
     img = Image.new("RGB", (size, size))
@@ -65,31 +44,15 @@ def _gradient(size: int) -> Image.Image:
     assert px is not None
     for y in range(size):
         for x in range(size):
-            t = (x + y) / (2 * (size - 1))
-            px[x, y] = tuple(round(a + (b - a) * t) for a, b in zip(BLUE, MAGENTA))
+            px[x, y] = gradient(x, y, size)
     return img
 
 
 def mark(size: int, fill: tuple[int, int, int] | None = None) -> Image.Image:
     """Знак на прозрачном фоне. fill=None — фирменная диагональ."""
-    ss = 4  # суперсэмплинг, чтобы кромка кривой не шла лесенкой
-    big = size * ss
-    k = big / 100
-    mask = Image.new("L", (big, big), 0)
-    d = ImageDraw.Draw(mask)
-    d.rounded_rectangle((0, 0, big - 1, big - 1), radius=RADIUS * k, fill=255)
-    pts = [(x * k, y * k) for x, y in _bezier(CURVE)]
-    w = STROKE * k
-    # Штамп кругами вдоль кривой, а не line(): у line() на изгибе рвутся
-    # стыки сегментов, и вырез идёт бахромой.
-    for x, y in pts:
-        d.ellipse((x - w / 2, y - w / 2, x + w / 2, y + w / 2), fill=0)
-    cx, cy, r = DOT
-    d.ellipse(((cx - r) * k, (cy - r) * k, (cx + r) * k, (cy + r) * k), fill=0)
-    mask = mask.resize((size, size), Image.Resampling.LANCZOS)
     body = _gradient(size) if fill is None else Image.new("RGB", (size, size), fill)
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(body, (0, 0), mask)
+    out.paste(body, (0, 0), mask(size))
     return out
 
 

@@ -18,8 +18,17 @@ Versions follow [Semantic Versioning](https://semver.org/).
   the list cannot be fetched the command warns and still exits 0.
 - `xrun dataset status` (text mode) prints `files: N  size: M MiB` next to
   the status, since `ready` alone does not distinguish an empty version.
+- TUI splash draws the xrun mark in half blocks — 32 px (16 rows) from 29
+  terminal rows, 24 px (12 rows) from 25 — and animates it on
+  start: the tile fades in, the loss curve is cut top to bottom, the
+  best-checkpoint dot lands last. The animation never delays the dashboard:
+  once the start checklist is done it jumps to the finished mark. Off with
+  `TEXTUAL_ANIMATIONS=none`; hidden in terminals under 25 rows.
 
 ### Changed
+
+- TUI splash: the four-colour `XRUN` block banner is replaced by the mark and
+  the lowercase name, per `docs/brand.md`; the version line reads `v0.10.0`.
 
 - `xrun launch` on Kaggle refuses to start when a dataset's status cannot
   be fetched (missing slug, 403, no kaggle CLI). Previously it logged a

@@ -60,9 +60,16 @@
 
 ## Где это живёт
 
-Знак нарисован дважды: `scripts/brand.py` собирает PNG для README и сайта
-(`docs/brand/mark.png`, `docs/brand/sizes.png`, `docs/favicon.png`,
-`docs/og.png`), SVG в `docs/index.html` — контур для самого сайта. Геометрия у
-них одна; правите одно — правьте и другое.
+Геометрия и вырез знака живут в одном месте —
+`python/xrun_tui/src/xrun_tui/brand.py`. Оттуда их берут:
+
+- `scripts/brand.py` — собирает PNG для README и сайта (`docs/brand/mark.png`,
+  `docs/brand/sizes.png`, `docs/favicon.png`, `docs/og.png`);
+- заставка TUI — рисует знак полублоками `▀`, 32 px (16 строк × 32 колонки)
+  или 24 px (12 × 24) в низком терминале, и
+  анимирует его на старте: плитка, кривая сверху вниз, точка последней.
+
+Вторая копия геометрии — SVG в `docs/index.html`, контур для самого сайта.
+Правите одно — правьте и другое.
 
 Пересобрать картинки: `python scripts/brand.py` (нужен Pillow).
