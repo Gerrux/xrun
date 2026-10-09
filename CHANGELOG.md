@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `install.ps1` no longer fails with "Cannot create a file when that file
+  already exists" while xrun is running (a poll daemon or an open TUI locks
+  `xrun.exe`). The old binary is renamed to `xrun.old.exe` first — Windows
+  allows renaming a running exe — and the running processes keep it.
+
 ---
 
 ## [0.11.0] - 2026-10-09
