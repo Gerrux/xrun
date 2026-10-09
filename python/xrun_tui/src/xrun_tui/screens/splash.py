@@ -1,21 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Awaitable, Callable
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Center, Middle, Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-_LOGO = r"""[bold #7aa2f7]██╗  ██╗[/][bold #bb9af7]██████╗ [/][bold #9ece6a]██╗   ██╗[/][bold #e0af68]███╗   ██╗[/]
-[bold #7aa2f7]╚██╗██╔╝[/][bold #bb9af7]██╔══██╗[/][bold #9ece6a]██║   ██║[/][bold #e0af68]████╗  ██║[/]
-[bold #7aa2f7] ╚███╔╝ [/][bold #bb9af7]██████╔╝[/][bold #9ece6a]██║   ██║[/][bold #e0af68]██╔██╗ ██║[/]
-[bold #7aa2f7] ██╔██╗ [/][bold #bb9af7]██╔══██╗[/][bold #9ece6a]██║   ██║[/][bold #e0af68]██║╚██╗██║[/]
-[bold #7aa2f7]██╔╝ ██╗[/][bold #bb9af7]██║  ██║[/][bold #9ece6a]╚██████╔╝[/][bold #e0af68]██║ ╚████║[/]
-[bold #7aa2f7]╚═╝  ╚═╝[/][bold #bb9af7]╚═╝  ╚═╝[/][bold #9ece6a] ╚═════╝ [/][bold #e0af68]╚═╝  ╚═══╝[/]"""
-
+# The name is lowercase and one word, never caps (docs/brand.md).
+_NAME = "[bold #c0caf5]xrun[/]"
 _TAGLINE = "[#565f89]Run GPU experiments anywhere[/]"
+
+# The mark in pixels: 24 columns × 12 rows of half blocks. Below 16 px the
+# curve runs into the dot; 24 is the smallest that reads cleanly.
+_MARK_PX = 24
+_MARK_ROWS = _MARK_PX // 2
+# The boot animation's length. It is cut to the finished mark as soon as the
+# init steps are done: the splash never waits for it.
+_MARK_ANIM_S = 0.6
+# Shortest terminal that fits the mark above the checklist; on a lower one
+# the splash shows the checklist alone.
+_MARK_MIN_H = _MARK_ROWS + 13
+
+
+def _theme_bg(theme: str) -> tuple[int, int, int]:
+    """The splash background under `theme`, for the mark to blend over.
+
+    The theme filter remaps only exact Tokyo Night colours: edge cells
+    blended over Tokyo's background would keep a Tokyo-tinted fringe.
+    """
+    from xrun_tui.themes import PALETTES, TOKYO_NIGHT
+
+    h = PALETTES.get(theme, TOKYO_NIGHT).get("#1a1b26", "#1a1b26")
+    return int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _STEP_W = 14
@@ -80,18 +100,22 @@ class SplashScreen(Screen):
         width: 56;
         height: auto;
     }
-    #splash-logo {
+    #splash-mark {
         content-align: center middle;
-        height: 6;
+        height: 12;
     }
-    #splash-tag {
+    #splash-name {
         content-align: center middle;
         height: 2;
         padding-top: 1;
     }
+    #splash-tag {
+        content-align: center middle;
+        height: 1;
+    }
     #splash-steps {
         height: auto;
-        padding-top: 2;
+        padding-top: 1;
         padding-left: 16;
     }
     .splash-step    { color: #565f89; height: 1; }
@@ -101,9 +125,9 @@ class SplashScreen(Screen):
     .splash-step-pending { color: #565f89; }
     #splash-version {
         content-align: center middle;
-        height: 3;
+        height: 2;
         color: #565f89;
-        padding-top: 2;
+        padding-top: 1;
     }
     """
 
@@ -127,12 +151,20 @@ class SplashScreen(Screen):
         self._running_sid: str | None = None
         self._spin_timer = None
         self._current_detail = "…"
+        self._brand = None  # xrun_tui.brand once loaded; Pillow is slow to import
+        self._mark_final: Text | None = None
+        self._mark_ok = True  # False once the renderer failed to load
+        self._mark_timer = None
+        self._mark_t0 = 0.0
+        self._mark_bg = _theme_bg("")
+        self._booted = False
 
     def compose(self) -> ComposeResult:
         with Middle():
             with Center():
                 with Vertical(id="splash-wrap"):
-                    yield Static(_LOGO, id="splash-logo")
+                    yield Static("", id="splash-mark")
+                    yield Static(_NAME, id="splash-name")
                     yield Static(_TAGLINE, id="splash-tag")
                     with Vertical(id="splash-steps"):
                         for sid, label in self._STEPS:
@@ -142,13 +174,84 @@ class SplashScreen(Screen):
                                 classes="splash-step splash-step-pending",
                             )
                     yield Static(
-                        f"[#565f89]xrun v{self._version}[/]",
+                        f"[#565f89]v{self._version}[/]",
                         id="splash-version",
                     )
 
     def on_mount(self) -> None:
+        self._fit_mark()
         self._spin_timer = self.set_interval(0.08, self._tick_spinner)
         self.run_worker(self._init_sequence(), exclusive=True)
+        # Own group: the init worker is exclusive and would cancel this one.
+        self.run_worker(self._load_mark(), group="mark")
+
+    def on_resize(self) -> None:
+        self._fit_mark()
+
+    def _fit_mark(self) -> None:
+        """Keep the mark's rows only if the terminal fits it.
+
+        The rows are held from the first paint, before the mark is drawn: if
+        they appeared with it, the centred checklist would jump.
+        """
+        try:
+            w = self.query_one("#splash-mark", Static)
+        except Exception:
+            return
+        w.display = self._mark_ok and self.size.height >= _MARK_MIN_H
+
+    async def _load_mark(self) -> None:
+        """Import the renderer off the event loop, then start the animation.
+
+        Pillow takes ~0.1 s to import; on the loop that would hold the
+        splash's first paint. Without Pillow the splash goes on markless.
+        """
+        bg = self._mark_bg = _theme_bg(getattr(self.app, "theme_name", ""))
+
+        def _load():
+            from xrun_tui import brand
+
+            return brand, brand.cells(_MARK_PX, bg=bg)
+
+        try:
+            self._brand, self._mark_final = await asyncio.to_thread(_load)
+        except Exception:
+            self._mark_ok = False
+            self._fit_mark()
+            return
+        if not self.is_mounted:
+            return
+        if self._booted or self.app.animation_level != "full":
+            self._finish_mark()
+            return
+        self._mark_t0 = time.monotonic()
+        self._tick_mark()
+        self._mark_timer = self.set_interval(1 / 30, self._tick_mark)
+
+    def _tick_mark(self) -> None:
+        t = (time.monotonic() - self._mark_t0) / _MARK_ANIM_S
+        if t >= 1 or self._brand is None:
+            self._finish_mark()
+            return
+        frame = self._brand.cells(
+            _MARK_PX, *self._brand.frame_at(t), bg=self._mark_bg
+        )
+        try:
+            self.query_one("#splash-mark", Static).update(frame)
+        except Exception:
+            pass
+
+    def _finish_mark(self) -> None:
+        """Stop the animation wherever it is and show the finished mark."""
+        if self._mark_timer is not None:
+            self._mark_timer.stop()
+            self._mark_timer = None
+        if self._mark_final is None:
+            return
+        try:
+            self.query_one("#splash-mark", Static).update(self._mark_final)
+        except Exception:
+            pass
 
     def _tick_spinner(self) -> None:
         if self._running_sid is None:
@@ -173,7 +276,7 @@ class SplashScreen(Screen):
             if v and self.is_mounted:
                 self._version = v
                 self.query_one("#splash-version", Static).update(
-                    f"[#565f89]xrun v{v}[/]"
+                    f"[#565f89]v{v}[/]"
                 )
         except Exception:
             pass
@@ -284,9 +387,13 @@ class SplashScreen(Screen):
         await scan_task
         await version_task
 
-        # 5) Done. One short beat so the finished checklist is readable.
+        # 5) Done. The mark jumps to its last frame rather than holding the
+        # dashboard back, then one short beat so the finished checklist is
+        # readable.
         await self._set("ready", "ok", detail="ready")
         self._running_sid = None
+        self._booted = True
+        self._finish_mark()
         await asyncio.sleep(0.12)
         self.app.call_later(self._on_done)
 
