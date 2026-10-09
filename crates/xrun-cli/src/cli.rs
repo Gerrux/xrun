@@ -90,7 +90,7 @@ pub enum Commands {
     /// `grep TODO_` lights up everything that needs review before launch.
     #[command(name = "init-manifest")]
     InitManifest(InitManifestArgs),
-    /// Install xrun agent skills/instructions into the current repository
+    /// Install xrun agent skills (`skill`) or vendor Python SDKs (`sdk lightning|colab|all`)
     Install(InstallArgs),
     /// Check for and install a newer xrun release
     Update(UpdateArgs),

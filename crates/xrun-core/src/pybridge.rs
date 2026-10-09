@@ -153,6 +153,13 @@ pub fn find_python() -> Option<PathBuf> {
     python_cmd().map(|(p, _)| p.clone())
 }
 
+/// Same interpreter as [`find_python`] plus the fixed leading args the bridge
+/// puts before the script (empty for `python`/`python3`, `["-3"]` for the
+/// `py` launcher). Use it to run `-m pip` in exactly the bridge's interpreter.
+pub fn python_argv() -> Option<(PathBuf, Vec<String>)> {
+    python_cmd().cloned()
+}
+
 // ---------------------------------------------------------------------------
 // script cache
 // ---------------------------------------------------------------------------
@@ -529,6 +536,22 @@ fn decode_response(v: Value) -> Result<Value, BridgeError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn python_argv_matches_find_python() {
+        match (python_argv(), find_python()) {
+            (Some((prog, args)), Some(found)) => {
+                assert_eq!(prog, found);
+                if prog.file_name().is_some_and(|n| n == "py" || n == "py.exe") {
+                    assert_eq!(args, vec!["-3".to_string()]);
+                } else {
+                    assert!(args.is_empty());
+                }
+            }
+            (None, None) => {}
+            other => panic!("python_argv and find_python disagree: {other:?}"),
+        }
+    }
 
     const ECHO: &str = r#"
 import sys, json, time, os

@@ -103,9 +103,18 @@ fn doctor_all_json_has_the_four_new_rows() {
         let row = find(name).unwrap_or_else(|| panic!("missing doctor row {name}"));
         assert_eq!(row["category"], category);
     }
-    // With no interpreter the SDK rows fail with a message instead of crashing.
-    assert_eq!(find("lightning_sdk").unwrap()["status"], "FAIL");
-    assert_eq!(find("colab_sdk").unwrap()["status"], "FAIL");
+    // A bad XRUN_PYTHON falls through to python on PATH, so on a machine that
+    // already has the SDKs the rows are OK; when they fail, the detail must
+    // carry a message (no crash) that points at the one-command fix.
+    for (name, hint) in [
+        ("lightning_sdk", "xrun install sdk lightning"),
+        ("colab_sdk", "xrun install sdk colab"),
+    ] {
+        let row = find(name).unwrap();
+        if row["status"] == "FAIL" {
+            assert!(row["detail"].as_str().unwrap().contains(hint), "{row}");
+        }
+    }
 }
 
 #[test]
@@ -272,4 +281,74 @@ fn init_writes_lightning_credentials_and_requires_the_pair() {
         .stderr(predicate::str::contains(
             "--lightning-user-id requires --lightning-key",
         ));
+}
+
+/// A real interpreter on PATH usable as `XRUN_PYTHON` (a bare program, no args).
+fn real_python() -> Option<&'static str> {
+    ["python", "python3"].into_iter().find(|p| {
+        std::process::Command::new(p)
+            .args(["-c", "import sys"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+#[test]
+fn install_sdk_lightning_dry_run_prints_the_pip_command() {
+    let Some(py) = real_python() else {
+        eprintln!("skip: no python on PATH");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .env("XRUN_PYTHON", py)
+        .args(["install", "sdk", "lightning", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-m pip install lightning-sdk"))
+        .stdout(predicate::str::contains("google-colab-cli").not());
+}
+
+#[test]
+fn install_sdk_all_dry_run_upgrade_lists_both_packages() {
+    let Some(py) = real_python() else {
+        eprintln!("skip: no python on PATH");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .env("XRUN_PYTHON", py)
+        .args(["install", "sdk", "all", "--dry-run", "--upgrade"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "-m pip install --upgrade lightning-sdk google-colab-cli",
+        ));
+}
+
+#[test]
+fn install_sdk_rejects_unknown_target() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .args(["install", "sdk", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("lightning"))
+        .stderr(predicate::str::contains("colab"))
+        .stderr(predicate::str::contains("all"));
+}
+
+#[test]
+fn install_sdk_without_python_fails_clearly() {
+    let tmp = TempDir::new().unwrap();
+    // xrun() points XRUN_PYTHON at a nonexistent binary, but PATH may still
+    // have a real python; only assert when discovery really finds nothing.
+    let out = xrun(&tmp)
+        .args(["install", "sdk", "lightning", "--dry-run"])
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        assert!(String::from_utf8_lossy(&out.stderr).contains("python interpreter not found"));
+    }
 }

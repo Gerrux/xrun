@@ -114,9 +114,12 @@ Kaggle лежат в [exp/templates](exp/templates/README.md).
 Для бесплатных вендоров нужны их Python-библиотеки:
 
 ```bash
-pip install lightning-sdk        # Lightning AI; ключи — xrun init или lightning login
-pip install google-colab-cli     # Google Colab; вход — xrun config login colab
+xrun install sdk lightning       # Lightning AI; ключи — xrun init или lightning login
+xrun install sdk colab           # Google Colab; вход — xrun config login colab
 ```
+
+Команда ставит пакет (`lightning-sdk` / `google-colab-cli`) в тот же
+интерпретатор, что использует xrun; вручную — `pip install` в него же.
 
 Консольный `colab` под Windows не запускается (нужен `termios`); xrun работает
 с библиотекой напрямую, так что вендор работает и там, а войти нужно через

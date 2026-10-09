@@ -220,6 +220,17 @@ Remove-Item $ZipPath -Force
 
 $Src = Join-Path $Tmp "xrun.exe"
 $Dst = Join-Path $InstallDir "xrun.exe"
+if (Test-Path $Dst) {
+    # A running xrun (poll daemon, open TUI) locks xrun.exe against overwrite,
+    # but Windows still lets it be renamed; the old process keeps its image.
+    $Old = Join-Path $InstallDir "xrun.old.exe"
+    Remove-Item $Old -Force -ErrorAction SilentlyContinue
+    if (Test-Path $Old) {
+        # The previous old copy is itself still running.
+        $Old = Join-Path $InstallDir ("xrun.old-{0}.exe" -f (Get-Date -Format "yyyyMMddHHmmss"))
+    }
+    Move-Item -Path $Dst -Destination $Old -Force
+}
 Move-Item -Path $Src -Destination $Dst -Force
 
 $UserPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")

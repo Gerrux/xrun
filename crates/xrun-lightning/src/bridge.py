@@ -142,7 +142,10 @@ def _ts_of(st):
 
 
 def op_ping(a):
-    import lightning_sdk  # no auth involved
+    try:
+        import lightning_sdk  # no auth involved
+    except ImportError as e:
+        raise RuntimeError("lightning-sdk is not importable (run `xrun install sdk lightning`, or pip install lightning-sdk): %s" % e)
 
     return {"pong": True, "sdk_version": str(getattr(lightning_sdk, "__version__", "unknown"))}
 

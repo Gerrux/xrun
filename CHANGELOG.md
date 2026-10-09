@@ -9,12 +9,23 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `xrun install sdk <lightning|colab|all> [--dry-run] [--upgrade]` installs the
+  Python SDK (`lightning-sdk` / `google-colab-cli`) into the exact interpreter
+  the bridge uses (`XRUN_PYTHON`, else `python`, `python3`, `py -3`), then pings
+  the bridge. `xrun doctor` and the bridge errors now point at it.
+
 ### Fixed
 
 - `xrun config login colab` hung on Windows with no output: the interactive
   bridge run inherited the background bridge's `CREATE_NO_WINDOW`, so the
   child Python had no console. `run_script_interactive` now keeps the parent
   console; the OAuth URL prints and the code prompt works.
+- `install.ps1` no longer fails with "Cannot create a file when that file
+  already exists" while xrun is running (a poll daemon or an open TUI locks
+  `xrun.exe`). The old binary is renamed to `xrun.old.exe` first — Windows
+  allows renaming a running exe — and the running processes keep it.
 
 ---
 
