@@ -189,6 +189,14 @@ pub struct Poller {
     /// fired yet, so a long-but-still-progressing setup phase doesn't trip
     /// the idle cap. Stays `None` until the run actually starts training.
     train_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Consecutive ticks on which `process_alive` said the training PID is
+    /// gone. The first one only schedules another drain: the hook writes
+    /// `done:ok` and exits within the same second, and on vendors whose tail
+    /// is one remote command per file (lightning, colab: ~1 s each) the
+    /// events tail routinely runs before that line lands while the PID probe
+    /// runs after the exit. Failing on the second tick keeps the OOM
+    /// detection and lets the `done` line be read.
+    pid_gone_ticks: u8,
     /// Push-notification fan-out. `None` = notifications off (no channels
     /// configured). Every hook below is a no-op in that case.
     notifier: Option<Notifier>,
@@ -484,6 +492,7 @@ impl Poller {
             monthly_alert_month: None,
             sinks_config: None,
             train_started_at: None,
+            pid_gone_ticks: 0,
             notifier: None,
             notify_reload: None,
             run_ref: None,
@@ -1195,7 +1204,17 @@ impl Poller {
             // run is still provisioning and the PID file may legitimately
             // not exist yet.
             if terminal_after_drain.is_none() && self.train_started_at.is_some() {
-                if let Some(false) = self.vendor.process_alive(&self.handle) {
+                match self.vendor.process_alive(&self.handle) {
+                    Some(false) => self.pid_gone_ticks = self.pid_gone_ticks.saturating_add(1),
+                    Some(true) => self.pid_gone_ticks = 0,
+                    None => {}
+                }
+                if self.pid_gone_ticks == 1 {
+                    tracing::debug!(
+                        "training PID is gone; draining the event files once more before failing"
+                    );
+                }
+                if self.pid_gone_ticks >= 2 {
                     let _ = self.store.append_event(
                         &self.run_id,
                         NewEvent {

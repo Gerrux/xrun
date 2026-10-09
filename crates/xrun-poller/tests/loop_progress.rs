@@ -365,9 +365,11 @@ fn test_poller_pid_dead_marks_run_failed() {
     let runs_dir = tmp.path().join("runs");
 
     // First tick: train_start arrives so the poller starts caring about PID
-    // liveness. No `done:ok`. The mock then reports the PID as dead.
+    // liveness. No `done:ok`. The mock then reports the PID as dead on two
+    // consecutive ticks: the first one only buys one more drain.
     let events_data = join_lines(&[event_line("train_start", "ok")]);
-    let mock = MockVendor::new(vec![events_data], vec![]).with_alive(vec![Some(false)]);
+    let mock =
+        MockVendor::new(vec![events_data], vec![]).with_alive(vec![Some(false), Some(false)]);
     let cancel = CancellationToken::new();
 
     let status = Poller::new(
@@ -397,6 +399,48 @@ fn test_poller_pid_dead_marks_run_failed() {
             .contains("PID is gone"),
         "msg: {:?}",
         stage_failed.msg
+    );
+}
+
+#[test]
+fn test_poller_pid_gone_once_still_reads_a_late_done() {
+    // Live Lightning smoke, 2026-10-09: the hook wrote `done:ok` and the
+    // script exited between the events tail and the PID probe of the same
+    // tick (each remote tail is ~1 s there). One PID-gone tick must not fail
+    // the run; the next drain finds the `done` line and the run is Done.
+    let tmp = TempDir::new().unwrap();
+    let (store, run_id) = setup_store(&tmp);
+    let runs_dir = tmp.path().join("runs");
+
+    let mock = MockVendor::new(
+        vec![
+            join_lines(&[event_line("train_start", "ok")]),
+            Vec::new(),
+            join_lines(&[event_line("done", "ok")]),
+        ],
+        vec![],
+    )
+    .with_alive(vec![Some(true), Some(false), Some(false)]);
+    let cancel = CancellationToken::new();
+
+    let status = Poller::new(
+        run_id.clone(),
+        store,
+        Box::new(mock),
+        make_handle(),
+        runs_dir,
+    )
+    .with_config(fast_config())
+    .run(cancel)
+    .unwrap();
+
+    assert_eq!(status, RunStatus::Done);
+    let store2 = Store::open(&tmp.path().join("runs.db")).unwrap();
+    let events = store2.list_events(&run_id).unwrap();
+    assert!(
+        !events.iter().any(|e| e.stage == "stage_failed"),
+        "one PID-gone tick must not fail the run: {:?}",
+        events.iter().map(|e| &e.stage).collect::<Vec<_>>()
     );
 }
 
