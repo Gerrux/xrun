@@ -1,0 +1,54 @@
+# Smoke на Google Colab: GPU T4, без данных.
+# Перед первым запуском:
+#   pip install google-colab-cli
+#   xrun config login colab        # один раз; OAuth copy-paste, нужен TTY
+#                                  # (в отдельном терминале, не из Claude Code)
+#   xrun doctor                    # colab_sdk / colab_login = ok
+# Запуск:
+#   xrun launch exp/templates/colab_smoke.yaml --detach
+#   xrun events <id> --follow
+#   xrun metrics <id> --ascii
+# Квота не гарантирована: GPU выдаётся «когда есть», сессия живёт не дольше
+# 12 часов. Консольный `colab` под Windows не работает (termios), но xrun
+# вызывает библиотеку напрямую.
+name: colab-smoke
+vendor: colab
+
+colab:
+  gpu: T4                 # T4 | L4 | A100 | H100 | G4 | cpu; default T4
+  high_mem: false         # больше RAM, только Colab Pro; default false
+  workdir: /content/xrun  # АБСОЛЮТНЫЙ корень; per-run каталог — <workdir>/<run-id>
+
+# Единственные «данные» — сам пакет xrun_hook (его нет на PyPI): каталог
+# уезжает в /content и подхватывается через PYTHONPATH. Запускать из корня
+# репозитория. Свои данные держи небольшими: загрузка идёт по одному файлу
+# целиком через base64. Крупное тяни из run.setup (wget, gdown, Drive).
+data:
+  - src: python/xrun_hook/src/xrun_hook
+    dst: /content/xrun_hook
+#   - src: ./datasets/tiny.csv
+#     dst: /content/xrun/data/tiny.csv
+
+run:
+  cmd: |
+    PYTHONPATH=/content python -c "
+    import os, time
+    import xrun_hook
+    print('=== colab smoke start ===', flush=True)
+    for i in range(10):
+        print(f'tick {i:02d}', flush=True)
+        xrun_hook.metric('iter', float(i), step=i)
+        time.sleep(2)
+    # XRUN_RUN_DIR — каталог этого запуска в сессии (/content/xrun/<run-id>)
+    with open(os.path.join(os.environ['XRUN_RUN_DIR'], 'result.txt'), 'w') as f:
+        f.write('colab smoke ok\n')
+    print('=== colab smoke done ===', flush=True)
+    xrun_hook.done()
+    "
+
+artifacts:
+  patterns:
+    - result.txt          # относительный паттерн ищется в каталоге запуска
+
+policy:
+  on_done: stop_instance  # освободить сессию Colab после забора артефактов

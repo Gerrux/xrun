@@ -196,6 +196,141 @@ default_workdir = "/home/ubuntu/xrun-runs"   # optional fallback
   override либо первый ssh-хост из creds (best-effort, идемпотентен).
   Когда есть стояла копия манифеста — берётся правильный alias.
 
+## Минимальный пример (lightning — Lightning AI Studio)
+
+`vendor: lightning` запускает тренировку в Studio на Lightning AI. Provision
+поднимает (или создаёт) Studio и стартует машину, `run.cmd` уходит туда
+detached-процессом, события и метрики тейлятся так же, как на ssh. Работает
+через Python SDK `lightning-sdk` (xrun держит один постоянный Python-процесс,
+см. [ARCHITECTURE.md](ARCHITECTURE.md)).
+
+```yaml
+name: lightning_train_v1
+vendor: lightning
+lightning:
+  machine: T4                    # default T4
+  interruptible: true            # default true — дешевле, но машину могут забрать
+  studio: my-studio              # optional, default xrun-<name>
+  teamspace: owner/name          # optional, перекрывает credentials.toml
+  workdir: xrun                  # optional, относительно home Studio
+  max_runtime_secs: 10800        # optional
+
+data:
+  - src: ./datasets/tiny
+    dst: data/tiny               # относительно home Studio, без ведущего /
+run:
+  cmd: python train.py --epochs 10
+artifacts:
+  patterns: [checkpoints/best*.pt]
+policy:
+  on_done: stop_instance         # остановить Studio (файлы остаются)
+```
+
+В `~/.config/xrun/credentials.toml`:
+
+```toml
+[lightning]
+api_key = "..."                  # секрет
+user_id = "..."
+teamspace = "owner/name"         # optional
+```
+
+Тот же результат даёт `xrun init --non-interactive --lightning-key - --lightning-user-id <ID>`
+или `xrun config set lightning.api_key|user_id|teamspace`. Если креды в xrun не
+заданы, берётся файл, который пишет `lightning login`
+(`~/.lightning/credentials.json`).
+
+### Lightning-специфичные нюансы
+
+- **Предварительно.** `pip install lightning-sdk`; проверка — `xrun doctor`
+  (строки `lightning_sdk`, `lightning_credentials`).
+- **Пути home-relative.** `data[].dst` обязан быть относительным к домашнему
+  каталогу Studio: ведущий `/` отвергается валидацией, `~/x` допустим (префикс
+  `~/` отбрасывается). То же для `lightning.workdir` — без ведущего `/`. Per-run
+  каталог `<workdir>/<run-id>/` (`events.jsonl`, `metrics.jsonl`, `stdout.log`,
+  `run.pid`) создаётся в `provision()`.
+- **`artifacts.patterns`** отсчитываются как на ssh: абсолютный путь — как есть,
+  `~/x` — от home, остальные — от `run.workdir` (а без него — от каталога
+  запуска).
+- **Бесплатный тариф.** 15 кредитов в месяц, одна активная Studio, машина
+  перезапускается каждые 4 часа. `interruptible: true` (default) дешевле, но
+  ран может быть прерван; для длинных ранов ставь чекпоинты и
+  `max_runtime_secs`.
+- **`policy.on_done: stop_instance`** (default) останавливает Studio —
+  вычислительные ресурсы освобождаются, файловая система сохраняется.
+  `xrun launch --reuse-instance` переиспользует ту же Studio; `keep` не
+  останавливает её (кредиты продолжают тратиться).
+- **Только `run.cmd`.** `run.notebook` не поддерживается. Цену xrun не
+  считает (оценка в `--dry-run` — 0), расход смотри в Lightning.
+- **`--max-cost` не действует.** Кредиты Lightning xrun не оценивает в деньгах,
+  поэтому лимит по стоимости не сработает; ограничивай ран через
+  `--max-hours` (или `max_runtime_secs`).
+- **Нет неявного pull `**/best*`.** В отличие от vast, при пустом
+  `artifacts.patterns` ничего не забирается перед остановкой Studio: если
+  чекпоинты важны, всегда задавай `artifacts.patterns`.
+- **xrun_hook** на PyPI нет: залей каталог пакета через `data:`
+  (`src: python/xrun_hook/src/xrun_hook`, `dst: xrun_hook`) и запускай с
+  `PYTHONPATH="$HOME"`, как в `exp/templates/lightning_smoke.yaml`;
+  `XRUN_RUN_DIR` подставляется в env абсолютным путём.
+
+## Минимальный пример (colab — Google Colab)
+
+`vendor: colab` берёт бесплатную (или Pro) сессию Google Colab, запускает в ней
+`run.cmd` через Jupyter-ядро и тейлит те же файлы, что и ssh. Работает через
+библиотеку `google-colab-cli`, которой xrun управляет напрямую.
+
+```yaml
+name: colab_train_v1
+vendor: colab
+colab:
+  gpu: T4                        # T4 | L4 | A100 | H100 | G4 | cpu, default T4
+  high_mem: false                # default false (только Pro)
+  workdir: /content/xrun         # optional, абсолютный путь
+
+data:
+  - src: ./datasets/tiny
+    dst: /content/xrun/data
+run:
+  cmd: python train.py --epochs 3
+artifacts:
+  patterns: [checkpoints/best*.pt]
+policy:
+  on_done: stop_instance         # освободить сессию
+```
+
+### Colab-специфичные нюансы
+
+- **Предварительно.** `pip install google-colab-cli`, затем один раз
+  `xrun config login colab` (интерактивный OAuth copy-paste; нужен TTY, из
+  Claude Code не запускается). Токен хранит сам colab-cli
+  (`~/.config/colab-cli/token.json`), отдельной секции в `credentials.toml`
+  нет. Проверка — `xrun doctor` (строки `colab_sdk`, `colab_login`).
+- **Windows.** Консольный бинарь `colab` импортирует `termios` и под Windows не
+  работает. xrun вызывает библиотеку напрямую, поэтому сам вендор на Windows
+  работает, но логиниться нужно именно через `xrun config login colab`.
+- **Раскладка.** Per-run каталог — `/content/xrun/<run-id>` (`events.jsonl`,
+  `metrics.jsonl`, `stdout.log`, `run.pid`); `colab.workdir` должен быть
+  абсолютным.
+- **Нет гарантий квоты.** На бесплатном тарифе GPU выдаётся «когда есть»,
+  сессия живёт не дольше 12 часов, после чего диск `/content` пропадает:
+  забирай артефакты (`artifacts.patterns`) и ставь чекпоинты. Сессия
+  называется `xrun-<run-id>`.
+- **Загрузка данных.** `upload` — по одному файлу за вызов, целиком в память и
+  через base64; держи `data:` небольшим (десятки МБ), крупное тяни из
+  `run.setup` (`gdown`, `wget`, Drive).
+- **`policy.on_done: stop_instance`** освобождает сессию (unassign и удаление
+  из store colab-cli).
+- **Только `run.cmd`;** `run.notebook` не поддерживается. Цену xrun не считает
+  (оценка в `--dry-run` — 0).
+- **Pull без совпадений.** Как на vast/ssh, pull, под который не подошёл ни один
+  файл, оставляет сессию живой (чтобы не потерять данные): поправь паттерн,
+  выполни `xrun pull <id>`, затем `xrun stop <id>`.
+- **Нет неявного pull `**/best*`.** При пустом `artifacts.patterns` ничего не
+  забирается перед освобождением сессии; если чекпоинты важны, всегда задавай
+  `artifacts.patterns` (unassign Colab стирает `/content`).
+- **`run.workdir`** обязан быть абсолютным (например `/content/proj`):
+  относительный отвергается валидацией.
+
 ## Минимальный пример (Kaggle)
 
 ```yaml
@@ -230,8 +365,8 @@ mlflow:
 | `name` | string | да | Slug; используется как experiment name в MLflow |
 | `description` | string | нет | Свободный текст |
 | `tags` | [string] | нет | Видны в `xrun ls`, фильтруются |
-| `vendor` | enum | да | `vast` \| `kaggle` \| `local` \| `ssh` |
-| `vast` / `kaggle` / `local` / `ssh` | object | да | По одному в зависимости от `vendor` (`local` блок опционален) |
+| `vendor` | enum | да | `vast` \| `kaggle` \| `local` \| `ssh` \| `lightning` \| `colab` |
+| `vast` / `kaggle` / `local` / `ssh` / `lightning` / `colab` | object | да | По одному в зависимости от `vendor` (блоки `local`, `lightning`, `colab` опциональны) |
 | `data` | [object] | нет | Что предзалить |
 | `run` | object | да | Команда тренировки |
 | `checkpoints` | object | нет | Watch + pull policy |
@@ -287,6 +422,30 @@ mlflow:
 | `host_alias` | Ключ в `[vendors.ssh.<alias>]` credentials.toml (обязательно) |
 | `workdir` | Remote workdir root, default `/tmp/xrun` |
 | `gpu` | `CUDA_VISIBLE_DEVICES` override (`auto`/`cpu`/`0`/`cuda:0`/...) |
+
+### `lightning`
+
+| Поле | Описание |
+|------|----------|
+| `machine` | Имя машины из `lightning_sdk.Machine` (`T4`, ...), default `T4` |
+| `interruptible` | Прерываемая (дешевле) машина, default `true` |
+| `studio` | Имя Studio. Default `xrun-<name>` (только `[a-z0-9-]`, до 40 символов) |
+| `teamspace` | `owner/name`; перекрывает `lightning.teamspace` из credentials.toml. Если нигде не задан — первый teamspace пользователя |
+| `workdir` | Корень на удалённой стороне, **относительно домашнего каталога Studio** (без ведущего `/`), default `xrun` |
+| `gpu` | `CUDA_VISIBLE_DEVICES` override, как у `ssh.gpu` (`auto`/`cpu`/`0`/`cuda:0`/...) |
+| `max_runtime_secs` | Потолок времени работы машины; уходит в `Studio.start(max_runtime=)` |
+
+Блок опционален: все поля имеют дефолты.
+
+### `colab`
+
+| Поле | Описание |
+|------|----------|
+| `gpu` | `T4` \| `L4` \| `A100` \| `H100` \| `G4` \| `cpu` (регистр не важен), default `T4` |
+| `high_mem` | Машина с большим объёмом RAM, default `false` (только Colab Pro) |
+| `workdir` | Абсолютный корень на удалённой стороне, default `/content/xrun` |
+
+Блок опционален: все поля имеют дефолты.
 
 ### `kaggle`
 
@@ -363,7 +522,7 @@ exclude:
 | `args` | Map; рендерится как `--key value`. Bool `true` → флаг без значения, `false` → опускается |
 | `notebook` (kaggle) | Путь к .ipynb для kernel push |
 
-На local, ssh и vast xrun экспортирует `PYTHONUNBUFFERED=1`: вывод Python не
+На local, ssh, lightning, colab и vast xrun экспортирует `PYTHONUNBUFFERED=1`: вывод Python не
 буферизуется, `stdout.log` наполняется сразу (от него зависит `idle_timeout`).
 Своё значение побеждает: переменная в окружении хоста/инстанса или префикс в
 `run.cmd` (`PYTHONUNBUFFERED=0 python train.py`). На Kaggle не выставляется.

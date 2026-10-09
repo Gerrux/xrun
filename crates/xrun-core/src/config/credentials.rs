@@ -37,6 +37,18 @@ pub struct KaggleCredentials {
     pub key: Option<String>,
 }
 
+/// Lightning AI. `api_key` + `user_id` pair mirrors the SDK's
+/// `LIGHTNING_API_KEY` / `LIGHTNING_USER_ID` env vars. When both are unset
+/// the SDK falls back to `~/.lightning/credentials.json` (`lightning login`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct LightningCredentials {
+    pub api_key: Option<String>,
+    pub user_id: Option<String>,
+    /// Default teamspace `owner/name`; a manifest's `lightning.teamspace` wins.
+    pub teamspace: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct MlflowCredentials {
@@ -94,6 +106,7 @@ pub struct WebhookCredentials {
 pub struct Credentials {
     pub vast: VastCredentials,
     pub kaggle: KaggleCredentials,
+    pub lightning: LightningCredentials,
     pub mlflow: MlflowCredentials,
     pub wandb: WandbCredentials,
     pub ntfy: NtfyCredentials,
@@ -111,6 +124,9 @@ impl Credentials {
             && self.kaggle.token.is_none()
             && self.kaggle.username.is_none()
             && self.kaggle.key.is_none()
+            && self.lightning.api_key.is_none()
+            && self.lightning.user_id.is_none()
+            && self.lightning.teamspace.is_none()
             && self.mlflow.token.is_none()
             && self.mlflow.username.is_none()
             && self.mlflow.password.is_none()
@@ -130,6 +146,40 @@ impl Credentials {
                 .join("vastai")
                 .join("vast_api_key"),
         )
+    }
+
+    /// Native Lightning login file (`~/.lightning/credentials.json`),
+    /// written by `lightning login`. Only its existence is ever checked.
+    pub fn lightning_native_path() -> Option<PathBuf> {
+        let base = directories::BaseDirs::new()?;
+        Some(base.home_dir().join(".lightning").join("credentials.json"))
+    }
+
+    /// Colab OAuth token owned by `colab-cli` (`~/.config/colab-cli/token.json`).
+    /// xrun never reads it, only checks that it exists.
+    pub fn colab_token_path() -> Option<PathBuf> {
+        let base = directories::BaseDirs::new()?;
+        Some(
+            base.home_dir()
+                .join(".config")
+                .join("colab-cli")
+                .join("token.json"),
+        )
+    }
+
+    /// Lightning is usable: `api_key` and `user_id` both set, or the native
+    /// `lightning login` file exists.
+    pub fn lightning_configured(&self) -> bool {
+        let set = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        if set(&self.lightning.api_key) && set(&self.lightning.user_id) {
+            return true;
+        }
+        Self::lightning_native_path().is_some_and(|p| p.is_file())
+    }
+
+    /// Colab is usable: `colab-cli` has a saved OAuth token.
+    pub fn colab_configured() -> bool {
+        Self::colab_token_path().is_some_and(|p| p.is_file())
     }
 
     /// Path to new-style token file (`~/.kaggle/access_token`).

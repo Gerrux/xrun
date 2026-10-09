@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 # Kaggle's kernel API only exposes "download all output", so single-file pull
 # is rejected upstream in pull.rs and we surface that here instead of silently
 # re-downloading everything. Local has no remote to pull from.
-_SELECTIVE_PULL_VENDORS: frozenset[str] = frozenset({"vast", "ssh"})
+_SELECTIVE_PULL_VENDORS: frozenset[str] = frozenset({"vast", "ssh", "lightning", "colab"})
 
 
 class ArtifactsScreen(Screen):

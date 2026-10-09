@@ -50,6 +50,8 @@ class CardCursor:
             except Exception:
                 continue  # card not mounted (yet)
             row.set_class(i == idx, self._ACTIVE_CLASS)
+            if i == idx:
+                row.scroll_visible(animate=False)  # long lists scroll with the cursor
 
     def action_next(self) -> None:
         self._cursor = (self._cursor + 1) % self._CARD_COUNT

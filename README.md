@@ -14,7 +14,7 @@
   <a href="https://github.com/Gerrux/xrun/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/xrun/ci.yml?branch=master&style=flat-square&labelColor=1A1B26&label=ci"></a>
   <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/xrun?style=flat-square&labelColor=1A1B26&color=9ECE6A"></a>
   <img alt="" src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-1A1B26?style=flat-square">
-  <img alt="" src="https://img.shields.io/badge/vast.ai%20%7C%20Kaggle%20%7C%20SSH%20%7C%20local-1A1B26?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/vast.ai%20%7C%20Kaggle%20%7C%20Lightning%20%7C%20Colab%20%7C%20SSH%20%7C%20local-1A1B26?style=flat-square">
 </p>
 
 **Запускатель ML-экспериментов.** Один манифест описывает запуск целиком:
@@ -24,8 +24,8 @@
 гасит инстанс сам.
 
 Rust-ядро в воркспейс-крейтах и CLI `xrun` над ним; поверх — TUI на Python
-Textual. Вендоров четыре: vast.ai, Kaggle, свой сервер по SSH и локальная
-машина. Вся история запусков лежит в локальной SQLite — ни стороннего
+Textual. Вендоров шесть: vast.ai, Kaggle, Lightning AI, Google Colab, свой сервер по
+SSH и локальная машина. Вся история запусков лежит в локальной SQLite — ни стороннего
 трекинг-сервиса, ни аккаунта для этого не нужно; MLflow и W&B подключаются
 зеркалом, если хочется их графиков.
 
@@ -111,11 +111,23 @@ TUI, а на первом запуске — мастер настройки (`x
 уведомления. Готовые заготовки манифестов под классификацию, регрессию и
 Kaggle лежат в [exp/templates](exp/templates/README.md).
 
+Для бесплатных вендоров нужны их Python-библиотеки:
+
+```bash
+pip install lightning-sdk        # Lightning AI; ключи — xrun init или lightning login
+pip install google-colab-cli     # Google Colab; вход — xrun config login colab
+```
+
+Консольный `colab` под Windows не запускается (нужен `termios`); xrun работает
+с библиотекой напрямую, так что вендор работает и там, а войти нужно через
+`xrun config login colab`. Шаблоны — `exp/templates/lightning_smoke.yaml` и
+`colab_smoke.yaml`.
+
 ## Манифест
 
 ```yaml
 name: resnet50_baseline
-vendor: vast                    # vast | kaggle | ssh | local
+vendor: vast                    # vast | kaggle | lightning | colab | ssh | local
 
 vast:
   image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
@@ -216,7 +228,9 @@ xrun watchdog schedule --install      # раз в 5 минут через schtas
   push.
 - **Креды не живут в репозитории.** Только в `credentials.toml` в каталоге
   конфигурации пользователя, никогда в манифесте; на инстанс уходит копия
-  манифеста без них.
+  манифеста без них. Нативные файлы вендоров (`~/.lightning/credentials.json`,
+  `~/.config/colab-cli/token.json`) xrun только проверяет на существование,
+  содержимое не читает и не копирует.
 - **Один манифест — один самодостаточный файл.** Без `include`, `extends` и
   шаблонизации: дублирование лучше скрытой иерархии.
 - **Агенту — те же команды.** `xrun install skill --claude` / `--codex` учит

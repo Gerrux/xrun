@@ -480,6 +480,7 @@ CountryExcludeScreen {
 #vendor-overview {
     padding: 1 2;
     height: 1fr;
+    overflow-y: auto;
 }
 
 .vendor-card {
@@ -497,6 +498,14 @@ CountryExcludeScreen {
 
 .vendor-card-kaggle {
     border-left: thick #20beff;
+}
+
+.vendor-card-lightning {
+    border-left: thick #7c3aed;
+}
+
+.vendor-card-colab {
+    border-left: thick #f9ab00;
 }
 
 .vendor-card-local {
@@ -518,6 +527,14 @@ CountryExcludeScreen {
 
 .vendor-row-active.vendor-card-kaggle {
     border-left: thick #7dcfff;
+}
+
+.vendor-row-active.vendor-card-lightning {
+    border-left: thick #a78bfa;
+}
+
+.vendor-row-active.vendor-card-colab {
+    border-left: thick #ffc233;
 }
 
 .vendor-row-active.vendor-card-local {

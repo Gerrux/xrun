@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use xrun_colab::ColabAdapter;
 use xrun_core::{
     budget,
     manifest::{Manifest, Vendor},
@@ -12,6 +13,7 @@ use xrun_core::{
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_kaggle::KaggleAdapter;
+use xrun_lightning::LightningAdapter;
 use xrun_local::LocalAdapter;
 use xrun_poller::{
     metric_fanout::{MetricSinksConfig, MlflowSubConfig, WandbSubConfig},
@@ -179,6 +181,23 @@ pub(crate) fn execute(
             );
             Box::new(SshAdapter::new(adapter_store, conn, workdir_root))
         }
+        Vendor::Lightning => {
+            let adapter_store = Store::open(db_path)
+                .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+            let creds = Credentials::load(config_dir).unwrap_or_default();
+            Box::new(
+                LightningAdapter::new(adapter_store, creds.lightning)
+                    .with_workdir_root(&remote_workdir_root(Vendor::Lightning, Some(&manifest))),
+            )
+        }
+        Vendor::Colab => {
+            let adapter_store = Store::open(db_path)
+                .with_context(|| format!("failed to open store at {}", db_path.display()))?;
+            Box::new(
+                ColabAdapter::new(adapter_store)
+                    .with_workdir_root(remote_workdir_root(Vendor::Colab, Some(&manifest))),
+            )
+        }
     };
 
     vendor
@@ -231,6 +250,8 @@ pub(crate) fn execute(
             Vendor::Kaggle => "Kaggle".into(),
             Vendor::Local => "Local".into(),
             Vendor::Ssh => "SSH".into(),
+            Vendor::Lightning => "Lightning AI".into(),
+            Vendor::Colab => "Google Colab".into(),
         },
         gpu: plan.gpu_query.clone(),
         hourly_usd: plan.estimated_price_max,
@@ -277,7 +298,7 @@ fn caps_from_args_and_config(args: &LaunchArgs, cfg: &xrun_core::BudgetConfig) -
     caps
 }
 
-/// Caps for non-billable vendors (local, ssh, kaggle): only what the user
+/// Caps for non-billable vendors (local, ssh, kaggle, lightning, colab): only what the user
 /// asked for — CLI flags, and the manifest's `policy.on_idle_minutes` for the
 /// idle timeout (CLI wins; local only, see below). The global `[budget]`
 /// defaults are about money and must not start killing long local trainings.
@@ -306,8 +327,8 @@ pub(crate) fn explicit_caps(args: &LaunchArgs, manifest: &Manifest) -> InstanceC
             }
         }
     }
-    // The idle timer needs to see activity. ssh is observed (the poller tails
-    // the remote run dir), so its idle cap stays. Kaggle's live telemetry is
+    // The idle timer needs to see activity. ssh, lightning and colab are
+    // observed (the poller tails the remote run dir), so their idle cap stays. Kaggle's live telemetry is
     // ingested past the poller (none at all without MLflow), so an idle cap
     // there is a kill timer from launch. Lifetime / cost still apply.
     if caps.idle_timeout_secs.is_some() && matches!(manifest.vendor, Vendor::Kaggle) {
@@ -423,6 +444,12 @@ fn do_launch_with_budget(
             // this run gets its own, fixed from here on.
             h.run_dir = Some(xrun_ssh::remote_run_dir(
                 &ssh_workdir_root(manifest, &config_dir),
+                &run_id.to_string(),
+            ));
+        } else if matches!(manifest.vendor, Vendor::Lightning | Vendor::Colab) {
+            // Same for a reused Studio / Colab session: own dir per run.
+            h.run_dir = Some(xrun_ssh::remote_run_dir(
+                &remote_workdir_root(manifest.vendor, Some(manifest)),
                 &run_id.to_string(),
             ));
         }
@@ -577,16 +604,13 @@ fn do_launch_with_budget(
     // Foreground poller: blocks until done/failed/cancelled
     let cancel = CancellationToken::new();
     let instance_id = handle.id.clone();
-    let ssh_dir = if vendor_str == "ssh" {
-        ssh_run_dir(
-            handle.run_dir.as_deref(),
-            Some(manifest),
-            &config_dir,
-            &run_id.to_string(),
-        )
-    } else {
-        String::new()
-    };
+    let ssh_dir = remote_poller_dir(
+        vendor_str,
+        handle.run_dir.as_deref(),
+        Some(manifest),
+        &config_dir,
+        &run_id.to_string(),
+    );
     let mut poller = Poller::new(
         run_id.clone(),
         store,
@@ -857,7 +881,9 @@ pub(crate) fn done_policy_from_manifest(manifest_path: &Path) -> xrun_core::mani
 pub(crate) fn poller_config(files: PollerFiles<'_>, on_stage_failed: FailPolicy) -> PollerConfig {
     let mut cfg = match files {
         PollerFiles::Local(run_dir) => local_poller_config(run_dir),
-        PollerFiles::Ssh { run_dir } => ssh_poller_config(run_dir),
+        PollerFiles::Ssh { run_dir } | PollerFiles::Remote { run_dir } => {
+            ssh_poller_config(run_dir)
+        }
         PollerFiles::Default => PollerConfig::default(),
     };
     cfg.on_stage_failed = on_stage_failed;
@@ -872,18 +898,74 @@ pub(crate) enum PollerFiles<'a> {
     Local(&'a Path),
     /// The run's dir on the ssh host (see [`ssh_run_dir`]).
     Ssh { run_dir: &'a str },
+    /// The run's dir on a Lightning Studio / Colab session (same file layout
+    /// as ssh; see [`remote_poller_dir`]).
+    Remote { run_dir: &'a str },
 }
 
 impl<'a> PollerFiles<'a> {
-    /// `ssh_run_dir` is only consulted for `vendor == "ssh"`.
+    /// `ssh_run_dir` is the remote run dir from [`remote_poller_dir`]; it is
+    /// only consulted for ssh, lightning and colab.
     pub(crate) fn for_vendor(vendor: &str, run_dir: &'a Path, ssh_run_dir: &'a str) -> Self {
         match vendor {
             "local" => PollerFiles::Local(run_dir),
             "ssh" => PollerFiles::Ssh {
                 run_dir: ssh_run_dir,
             },
+            "lightning" | "colab" => PollerFiles::Remote {
+                run_dir: ssh_run_dir,
+            },
             _ => PollerFiles::Default,
         }
+    }
+}
+
+/// Remote workdir root of a Lightning (home-relative, default `xrun`) or
+/// Colab (absolute, default `/content/xrun`) manifest. Other vendors: empty.
+pub(crate) fn remote_workdir_root(vendor: Vendor, manifest: Option<&Manifest>) -> String {
+    match vendor {
+        Vendor::Lightning => manifest
+            .and_then(|m| m.lightning.as_ref())
+            .and_then(|s| s.workdir.as_deref())
+            .map(|w| w.trim().trim_start_matches("~/").trim_end_matches('/'))
+            .filter(|w| !w.is_empty())
+            .unwrap_or("xrun")
+            .to_string(),
+        Vendor::Colab => manifest
+            .and_then(|m| m.colab.as_ref())
+            .and_then(|s| s.workdir.as_deref())
+            .map(|w| w.trim().trim_end_matches('/'))
+            .filter(|w| !w.is_empty())
+            .unwrap_or(xrun_colab::DEFAULT_WORKDIR)
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The remote run dir the poller reads events / metrics / stdout from, per
+/// vendor: ssh via [`ssh_run_dir`]; lightning / colab the dir stored in the
+/// handle at provision (when it is this run's), else `<root>/<run_id>`. Empty
+/// for vendors that do not poll a remote dir.
+pub(crate) fn remote_poller_dir(
+    vendor: &str,
+    stored: Option<&str>,
+    manifest: Option<&Manifest>,
+    config_dir: &Path,
+    run_id: &str,
+) -> String {
+    match vendor {
+        "ssh" => ssh_run_dir(stored, manifest, config_dir, run_id),
+        "lightning" => xrun_ssh::effective_run_dir(
+            stored,
+            &remote_workdir_root(Vendor::Lightning, manifest),
+            run_id,
+        ),
+        "colab" => xrun_ssh::effective_run_dir(
+            stored,
+            &remote_workdir_root(Vendor::Colab, manifest),
+            run_id,
+        ),
+        _ => String::new(),
     }
 }
 
@@ -974,6 +1056,86 @@ mod tests {
             fail_policy_from_manifest(&tmp.path().join("missing.yaml")),
             FailPolicy::StopInstance
         );
+    }
+
+    #[test]
+    fn lightning_and_colab_poll_their_remote_run_dir() {
+        let l = poller_config(
+            PollerFiles::for_vendor("lightning", Path::new("."), "xrun/R1"),
+            FailPolicy::StopInstance,
+        );
+        assert_eq!(l.events_file, "xrun/R1/events.jsonl");
+        assert_eq!(l.stdout_file, "xrun/R1/stdout.log");
+        let c = poller_config(
+            PollerFiles::for_vendor("colab", Path::new("."), "/content/xrun/R2"),
+            FailPolicy::Keep,
+        );
+        assert_eq!(c.metrics_file, "/content/xrun/R2/metrics.jsonl");
+        assert_eq!(c.on_stage_failed, FailPolicy::Keep);
+    }
+
+    #[test]
+    fn remote_poller_dir_prefers_this_runs_stored_dir_else_spec_default() {
+        let cfg = Path::new(".");
+        let none: Option<&Manifest> = None;
+        // Stored dir of this run wins.
+        assert_eq!(
+            remote_poller_dir("lightning", Some("custom/R"), none, cfg, "R"),
+            "custom/R"
+        );
+        // Handle of an earlier run on a reused box is ignored.
+        assert_eq!(
+            remote_poller_dir("lightning", Some("xrun/OLD"), none, cfg, "R"),
+            "xrun/R"
+        );
+        assert_eq!(
+            remote_poller_dir("colab", None, none, cfg, "R"),
+            "/content/xrun/R"
+        );
+        let m = Manifest::from_yaml_str(
+            "name: c\nvendor: colab\ncolab:\n  workdir: /content/w/\nrun:\n  cmd: t\n",
+        )
+        .unwrap();
+        assert_eq!(
+            remote_poller_dir("colab", None, Some(&m), cfg, "R"),
+            "/content/w/R"
+        );
+        let m = Manifest::from_yaml_str(
+            "name: l\nvendor: lightning\nlightning:\n  workdir: runs/x\nrun:\n  cmd: t\n",
+        )
+        .unwrap();
+        assert_eq!(
+            remote_poller_dir("lightning", None, Some(&m), cfg, "R"),
+            "runs/x/R"
+        );
+        assert_eq!(remote_poller_dir("vast", None, none, cfg, "R"), "");
+    }
+
+    #[test]
+    fn lightning_and_colab_keep_the_idle_cap() {
+        let args = LaunchArgs {
+            manifest: std::path::PathBuf::from("m.yaml"),
+            dry_run: false,
+            allow_duplicate: false,
+            name: None,
+            json: false,
+            detach: false,
+            max_cost: None,
+            max_hours: None,
+            idle_timeout: Some(10.0),
+            yes: false,
+            reuse_instance: None,
+            upload_only: false,
+            overrides: Vec::new(),
+            trace: false,
+        };
+        for yaml in [
+            "name: l\nvendor: lightning\nrun:\n  cmd: t\n",
+            "name: c\nvendor: colab\nrun:\n  cmd: t\n",
+        ] {
+            let m = Manifest::from_yaml_str(yaml).unwrap();
+            assert_eq!(explicit_caps(&args, &m).idle_timeout_secs, Some(600));
+        }
     }
 
     #[test]

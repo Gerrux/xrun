@@ -1,0 +1,56 @@
+# Smoke на Lightning AI Studio: бесплатный GPU (T4), без данных.
+# Перед первым запуском:
+#   pip install lightning-sdk
+#   xrun init                      # user_id + API-ключ (или `lightning login`)
+#   xrun doctor                    # lightning_sdk / lightning_credentials = ok
+# Запуск:
+#   xrun launch exp/templates/lightning_smoke.yaml --detach
+#   xrun events <id> --follow
+#   xrun metrics <id> --ascii
+# Бесплатный тариф: 15 кредитов в месяц, одна активная Studio, машина
+# перезапускается каждые 4 часа.
+name: lightning-smoke
+vendor: lightning
+
+lightning:
+  machine: T4             # имя из lightning_sdk.Machine; default T4
+  interruptible: true     # дешевле, но машину могут забрать; default true
+  # studio: my-studio     # default xrun-<name> (только [a-z0-9-], до 40 символов)
+  # teamspace: owner/name # default — из credentials.toml, иначе первый teamspace
+  workdir: xrun           # корень ОТНОСИТЕЛЬНО home Studio, без ведущего /
+  max_runtime_secs: 1800  # потолок времени работы машины (необязательно)
+  gpu: auto               # CUDA_VISIBLE_DEVICES: auto | cpu | 0 | cuda:0
+
+# Единственные «данные» — сам пакет xrun_hook (его нет на PyPI): каталог
+# уезжает в home Studio и подхватывается через PYTHONPATH. Запускать из
+# корня репозитория. Свои данные — dst только относительно home Studio
+# (`data/x` или `~/data/x`, но не `/data/x`):
+data:
+  - src: python/xrun_hook/src/xrun_hook
+    dst: xrun_hook
+#   - src: ./datasets/tiny
+#     dst: data/tiny
+
+run:
+  cmd: |
+    PYTHONPATH="$HOME" python -c "
+    import os, time
+    import xrun_hook
+    print('=== lightning smoke start ===', flush=True)
+    for i in range(10):
+        print(f'tick {i:02d}', flush=True)
+        xrun_hook.metric('iter', float(i), step=i)
+        time.sleep(2)
+    # XRUN_RUN_DIR — абсолютный каталог этого запуска на Studio
+    with open(os.path.join(os.environ['XRUN_RUN_DIR'], 'result.txt'), 'w') as f:
+        f.write('lightning smoke ok\n')
+    print('=== lightning smoke done ===', flush=True)
+    xrun_hook.done()
+    "
+
+artifacts:
+  patterns:
+    - result.txt          # относительный паттерн ищется в каталоге запуска
+
+policy:
+  on_done: stop_instance  # остановить Studio (файлы сохраняются), чтобы не тратить кредиты

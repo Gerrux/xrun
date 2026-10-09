@@ -53,6 +53,12 @@ pub enum ConfigCommand {
     /// Used by the first-run wizard to validate pasted keys before persisting
     /// them. Output is one JSON object on stdout; exit code is always 0.
     Probe(ProbeArgs),
+    /// Interactive vendor login. Only `colab` needs it (OAuth, requires a
+    /// terminal); Lightning uses `lightning.api_key` / `lightning.user_id`.
+    Login {
+        /// Vendor to log in to (colab).
+        vendor: String,
+    },
 }
 
 pub fn run(args: &ConfigArgs, config_dir: &Path) -> Result<()> {
@@ -65,7 +71,32 @@ pub fn run(args: &ConfigArgs, config_dir: &Path) -> Result<()> {
         }
         ConfigCommand::Unset { key } => cmd_unset(config_dir, key),
         ConfigCommand::Probe(args) => crate::commands::probe::run(args),
+        ConfigCommand::Login { vendor } => cmd_login(vendor),
     }
+}
+
+/// `config login <vendor>`: only Colab has an interactive login. The OAuth
+/// flow reads a pasted code from stdin, so a TTY is required.
+fn cmd_login(vendor: &str) -> Result<()> {
+    if vendor != "colab" {
+        bail!("login is only needed for colab (lightning uses lightning.api_key)");
+    }
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "xrun config login colab requires a TTY (the OAuth flow asks for a pasted code). \
+             Run it in a separate terminal."
+        );
+    }
+    let status = xrun_colab::run_login().context("failed to start the colab login helper")?;
+    if !status.success() {
+        bail!(
+            "colab login failed (exit code {})",
+            status.code().map_or("?".to_string(), |c| c.to_string())
+        );
+    }
+    println!("colab: logged in");
+    Ok(())
 }
 
 /// Pick the value source for `config set`: exactly one of the positional
@@ -124,6 +155,17 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                     "telegram.bot_token": creds.telegram.bot_token.is_some(),
                     "telegram.chat_id": creds.telegram.chat_id.is_some(),
                     "webhook.url": creds.webhook.url.is_some(),
+                    "lightning.api_key": creds.lightning.api_key.is_some(),
+                    "lightning.user_id": creds.lightning.user_id.is_some(),
+                    "lightning.teamspace": creds.lightning.teamspace.is_some(),
+                }),
+            );
+            // Not secrets: shown as is.
+            map.insert(
+                "_credentials_plain".into(),
+                serde_json::json!({
+                    "lightning.user_id": creds.lightning.user_id,
+                    "lightning.teamspace": creds.lightning.teamspace,
                 }),
             );
             if secrets {
@@ -143,6 +185,7 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
                         "telegram.bot_token": creds.telegram.bot_token.as_deref().map(tail6),
                         "telegram.chat_id": creds.telegram.chat_id.as_deref().map(tail6),
                         "webhook.url": creds.webhook.url.as_deref().map(tail6),
+                        "lightning.api_key": creds.lightning.api_key.as_deref().map(tail6),
                     }),
                 );
             }
@@ -174,6 +217,21 @@ fn cmd_show(config_dir: &Path, json: bool, secrets: bool) -> Result<()> {
         secrets,
     );
     print_cred("webhook.url", creds.webhook.url.as_deref(), secrets);
+    print_cred(
+        "lightning.api_key",
+        creds.lightning.api_key.as_deref(),
+        secrets,
+    );
+    // user_id and teamspace are identifiers, not secrets.
+    for (key, value) in [
+        ("lightning.user_id", &creds.lightning.user_id),
+        ("lightning.teamspace", &creds.lightning.teamspace),
+    ] {
+        match value {
+            Some(v) => println!("{key}: {v}"),
+            None => println!("{key}: <unset>"),
+        }
+    }
     Ok(())
 }
 
@@ -448,6 +506,9 @@ fn is_credential_key(k: &str) -> bool {
             | "telegram.bot_token"
             | "telegram.chat_id"
             | "webhook.url"
+            | "lightning.api_key"
+            | "lightning.user_id"
+            | "lightning.teamspace"
     )
 }
 

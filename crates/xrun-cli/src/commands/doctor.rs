@@ -153,6 +153,78 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
         });
     }
 
+    // The bridge ping spawns a Python child, so these rows only exist for an
+    // active vendor (configured, named by a manifest, or `--all`).
+    if active_vendors.contains(&Vendor::Lightning) {
+        use xrun_lightning::{LightningBridge, PyLightningBridge};
+        let (ping_ok, ping_detail) = match PyLightningBridge::new(&creds.lightning).ping() {
+            Ok(info) => (true, format!("lightning-sdk {}", info.sdk_version)),
+            Err(e) => (
+                false,
+                format!(
+                    "{e} (install: pip install lightning-sdk; XRUN_PYTHON picks the interpreter)"
+                ),
+            ),
+        };
+        checks.push(Check {
+            name: "lightning_sdk",
+            category: "vendor:lightning",
+            ok: ping_ok,
+            warn_only: false,
+            detail: ping_detail,
+        });
+        let non_empty = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        let (cred_ok, cred_detail) =
+            if non_empty(&creds.lightning.api_key) && non_empty(&creds.lightning.user_id) {
+                (true, "api_key+user_id set".to_string())
+            } else if Credentials::lightning_configured(&creds) {
+                (true, "~/.lightning/credentials.json found".to_string())
+            } else {
+                (
+                false,
+                "not configured — `xrun config set lightning.api_key …` and `lightning.user_id`"
+                    .to_string(),
+            )
+            };
+        checks.push(Check {
+            name: "lightning_credentials",
+            category: "vendor:lightning",
+            ok: cred_ok,
+            warn_only: false,
+            detail: cred_detail,
+        });
+    }
+
+    if active_vendors.contains(&Vendor::Colab) {
+        use xrun_colab::{ColabBridge, PyColabBridge};
+        let (ping_ok, ping_detail) = match PyColabBridge::new().ping() {
+            Ok(info) => (true, format!("google-colab-cli {}", info.sdk_version)),
+            Err(e) => (
+                false,
+                format!("{e} (install: pip install google-colab-cli; XRUN_PYTHON picks the interpreter)"),
+            ),
+        };
+        checks.push(Check {
+            name: "colab_sdk",
+            category: "vendor:colab",
+            ok: ping_ok,
+            warn_only: false,
+            detail: ping_detail,
+        });
+        let logged_in = Credentials::colab_configured();
+        checks.push(Check {
+            name: "colab_login",
+            category: "vendor:colab",
+            ok: logged_in,
+            warn_only: false,
+            detail: if logged_in {
+                "OAuth token file found".to_string()
+            } else {
+                "not logged in — run `xrun config login colab` in a terminal".to_string()
+            },
+        });
+    }
+
     if active_vendors.contains(&Vendor::Local) {
         // Local has no external prerequisites beyond what core already checks;
         // surface a single OK row so users see local is wired up.
@@ -413,6 +485,8 @@ fn active_vendors(creds: &Credentials, manifests: &[DiscoveredManifest], all: bo
         push(&mut set, Vendor::Kaggle);
         push(&mut set, Vendor::Local);
         push(&mut set, Vendor::Ssh);
+        push(&mut set, Vendor::Lightning);
+        push(&mut set, Vendor::Colab);
         return set;
     }
     if creds.vast.api_key.is_some() {
@@ -425,6 +499,12 @@ fn active_vendors(creds: &Credentials, manifests: &[DiscoveredManifest], all: bo
     }
     if !creds.ssh_hosts.is_empty() {
         push(&mut set, Vendor::Ssh);
+    }
+    if creds.lightning_configured() {
+        push(&mut set, Vendor::Lightning);
+    }
+    if Credentials::colab_configured() {
+        push(&mut set, Vendor::Colab);
     }
     for m in manifests {
         if let Some(p) = &m.parsed {
@@ -683,7 +763,7 @@ fn vendor_limits(vendor: Vendor) -> Option<(u32, u32)> {
         // Kaggle P100 / T4 x2: ~13 GB RAM, ~73 GB writable on /kaggle/working.
         // Source: kaggle.com/docs/efficient-gpu-usage and field-tested.
         Vendor::Kaggle => Some((13, 73)),
-        Vendor::Vast | Vendor::Local | Vendor::Ssh => None,
+        Vendor::Vast | Vendor::Local | Vendor::Ssh | Vendor::Lightning | Vendor::Colab => None,
     }
 }
 

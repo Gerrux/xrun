@@ -15,6 +15,8 @@
 //! | wandb   | `XRUN_PROBE_WANDB_KEY`                                                    |
 //! | ssh     | (none — uses `--ssh-host` / `--ssh-user` / `--ssh-port` / `--ssh-key`)    |
 //! | local   | (none)                                                                    |
+//! | lightning | `XRUN_PROBE_LIGHTNING_API_KEY` + `..._USER_ID` (+ optional `..._TEAMSPACE`); both empty → `~/.lightning/credentials.json` |
+//! | colab   | (none — checks the `colab-cli` OAuth token via the bridge)               |
 //!
 //! Output is always one JSON object on stdout:
 //!
@@ -40,7 +42,7 @@ use xrun_wandb::WandbClient;
 
 #[derive(Debug, Args)]
 pub struct ProbeArgs {
-    /// Vendor / sink to probe: vast, kaggle, mlflow, ssh, local.
+    /// Vendor / sink to probe: vast, kaggle, mlflow, wandb, ssh, local, lightning, colab.
     #[arg(long)]
     pub vendor: String,
 
@@ -74,6 +76,8 @@ pub fn run(args: &ProbeArgs) -> Result<()> {
         "wandb" => probe_wandb(),
         "ssh" => probe_ssh(args),
         "local" => probe_local(),
+        "lightning" => probe_lightning(),
+        "colab" => probe_colab(),
         other => (false, format!("unknown vendor: {other}")),
     };
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -307,6 +311,61 @@ fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(windows))]
     {
         std::env::var_os("HOME").map(std::path::PathBuf::from)
+    }
+}
+
+// ── lightning ───────────────────────────────────────────────────────────────
+
+fn probe_lightning() -> (bool, String) {
+    use xrun_core::config::credentials::LightningCredentials;
+    use xrun_lightning::{LightningBridge, PyLightningBridge};
+
+    let api_key = env_nonempty("XRUN_PROBE_LIGHTNING_API_KEY");
+    let user_id = env_nonempty("XRUN_PROBE_LIGHTNING_USER_ID");
+    let teamspace = env_nonempty("XRUN_PROBE_LIGHTNING_TEAMSPACE");
+    if api_key.is_some() ^ user_id.is_some() {
+        return (
+            false,
+            "LIGHTNING_API_KEY and LIGHTNING_USER_ID must be set together".into(),
+        );
+    }
+    // Both empty: pass no env, so the SDK loads ~/.lightning/credentials.json.
+    let creds = LightningCredentials {
+        api_key,
+        user_id,
+        teamspace: teamspace.clone(),
+    };
+    let bridge = PyLightningBridge::new(&creds);
+    match bridge.whoami(teamspace.as_deref()) {
+        Ok(w) => (
+            true,
+            format!(
+                "authenticated as {} · teamspace {}",
+                w.user,
+                w.teamspace.as_deref().unwrap_or("(default)")
+            ),
+        ),
+        Err(e) => (false, format!("{e}")),
+    }
+}
+
+// ── colab ───────────────────────────────────────────────────────────────────
+
+fn probe_colab() -> (bool, String) {
+    use xrun_colab::{ColabBridge, PyColabBridge};
+
+    match PyColabBridge::new().whoami() {
+        Ok(w) if w.logged_in => (
+            true,
+            w.usage
+                .filter(|u| !u.trim().is_empty())
+                .unwrap_or_else(|| "logged in".into()),
+        ),
+        Ok(_) => (
+            false,
+            "not logged in — run `xrun config login colab`".into(),
+        ),
+        Err(e) => (false, format!("{e}")),
     }
 }
 

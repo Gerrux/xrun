@@ -1,0 +1,275 @@
+//! CLI wiring of the Lightning AI and Google Colab vendors. None of these
+//! tests needs python, the SDKs or a network: bridge failures must surface as
+//! `ok: false` rows / JSON, never as a crash.
+
+use std::path::PathBuf;
+
+use assert_cmd::Command;
+use predicates::prelude::*;
+use tempfile::TempDir;
+
+fn template(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../exp/templates")
+        .join(name)
+}
+
+fn xrun(tmp: &TempDir) -> Command {
+    let mut cmd = Command::cargo_bin("xrun").unwrap();
+    cmd.env("XRUN_DATA_DIR", tmp.path().join("data"))
+        .env("XRUN_CONFIG_DIR", tmp.path().join("config"))
+        // A missing interpreter must degrade to ok:false, not hang or crash.
+        .env("XRUN_PYTHON", "definitely-not-a-python-binary");
+    cmd
+}
+
+#[test]
+fn launch_dry_run_lightning_template() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .arg("launch")
+        .arg(template("lightning_smoke.yaml"))
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gpu_query"));
+}
+
+#[test]
+fn launch_dry_run_colab_template() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .arg("launch")
+        .arg(template("colab_smoke.yaml"))
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gpu_query"));
+}
+
+#[test]
+fn init_manifest_lightning_and_colab_parse() {
+    for vendor in ["lightning", "colab"] {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join(format!("{vendor}.yaml"));
+        xrun(&tmp)
+            .args(["init-manifest", "--vendor", vendor, "--into"])
+            .arg(&out)
+            .assert()
+            .success();
+        let body = std::fs::read_to_string(&out).unwrap();
+        assert!(body.contains(&format!("vendor: {vendor}")), "{body}");
+        xrun_core::manifest::Manifest::from_yaml_str(&body)
+            .unwrap_or_else(|e| panic!("{vendor} skeleton must validate: {e}"));
+        // The generated skeleton must also pass a dry-run end to end.
+        xrun(&tmp)
+            .arg("launch")
+            .arg(&out)
+            .arg("--dry-run")
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn init_manifest_unknown_vendor_lists_all_six() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .args(["init-manifest", "--vendor", "runpod", "--into", "-"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "vast, kaggle, local, ssh, lightning, colab",
+        ));
+}
+
+#[test]
+fn doctor_all_json_has_the_four_new_rows() {
+    let tmp = TempDir::new().unwrap();
+    let out = xrun(&tmp)
+        .args(["doctor", "--all", "--json"])
+        .output()
+        .unwrap();
+    // Exit code may be 1 (failing checks); the JSON must be there regardless.
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).expect("doctor --json prints a JSON array");
+    let find = |name: &str| rows.iter().find(|r| r["check"] == name);
+    for (name, category) in [
+        ("lightning_sdk", "vendor:lightning"),
+        ("lightning_credentials", "vendor:lightning"),
+        ("colab_sdk", "vendor:colab"),
+        ("colab_login", "vendor:colab"),
+    ] {
+        let row = find(name).unwrap_or_else(|| panic!("missing doctor row {name}"));
+        assert_eq!(row["category"], category);
+    }
+    // With no interpreter the SDK rows fail with a message instead of crashing.
+    assert_eq!(find("lightning_sdk").unwrap()["status"], "FAIL");
+    assert_eq!(find("colab_sdk").unwrap()["status"], "FAIL");
+}
+
+#[test]
+fn doctor_without_new_vendors_configured_skips_their_rows() {
+    let tmp = TempDir::new().unwrap();
+    // A manifest naming no lightning/colab and no creds: the bridge is not spawned.
+    let out = xrun(&tmp).args(["doctor", "--json"]).output().unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    // `lightning_sdk` may exist only if this machine really has a native
+    // Lightning login, so only assert the rows are consistent pairs.
+    let has = |n: &str| rows.iter().any(|r| r["check"] == n);
+    assert_eq!(has("lightning_sdk"), has("lightning_credentials"));
+    assert_eq!(has("colab_sdk"), has("colab_login"));
+}
+
+fn probe_json(tmp: &TempDir, vendor: &str) -> serde_json::Value {
+    let out = xrun(tmp)
+        .args(["config", "probe", "--vendor", vendor])
+        .env_remove("XRUN_PROBE_LIGHTNING_API_KEY")
+        .env_remove("XRUN_PROBE_LIGHTNING_USER_ID")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "probe always exits 0");
+    let line = String::from_utf8(out.stdout).unwrap();
+    serde_json::from_str(line.trim()).expect("probe prints one JSON object")
+}
+
+#[test]
+fn probe_lightning_without_creds_is_ok_false() {
+    let tmp = TempDir::new().unwrap();
+    let v = probe_json(&tmp, "lightning");
+    assert_eq!(v["vendor"], "lightning");
+    assert_eq!(v["ok"], false);
+    assert!(v["detail"].is_string());
+}
+
+#[test]
+fn probe_lightning_rejects_half_a_credential_pair() {
+    let tmp = TempDir::new().unwrap();
+    let out = xrun(&tmp)
+        .args(["config", "probe", "--vendor", "lightning"])
+        .env("XRUN_PROBE_LIGHTNING_API_KEY", "test-key-abc")
+        .env_remove("XRUN_PROBE_LIGHTNING_USER_ID")
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert!(v["detail"].as_str().unwrap().contains("together"));
+}
+
+#[test]
+fn probe_colab_without_python_is_ok_false() {
+    let tmp = TempDir::new().unwrap();
+    let v = probe_json(&tmp, "colab");
+    assert_eq!(v["vendor"], "colab");
+    assert_eq!(v["ok"], false);
+}
+
+#[test]
+fn config_lightning_keys_round_trip_and_mask() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp).args(["config", "init"]).assert().success();
+    for (k, v) in [
+        ("lightning.api_key", "test-key-abcdef123456"),
+        ("lightning.user_id", "user-42"),
+        ("lightning.teamspace", "me/proj"),
+    ] {
+        xrun(&tmp)
+            .args(["config", "set", k, v])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(k));
+    }
+    // Plain show: the api key never appears, the identifiers do.
+    xrun(&tmp)
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test-key-abcdef123456").not())
+        .stdout(predicate::str::contains("lightning.api_key: <set>"))
+        .stdout(predicate::str::contains("lightning.user_id: user-42"))
+        .stdout(predicate::str::contains("lightning.teamspace: me/proj"));
+    // --secrets: only the tail of the key.
+    xrun(&tmp)
+        .args(["config", "show", "--secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test-key-abcdef123456").not())
+        .stdout(predicate::str::contains("123456"));
+    for k in [
+        "lightning.api_key",
+        "lightning.user_id",
+        "lightning.teamspace",
+    ] {
+        xrun(&tmp)
+            .args(["config", "unset", k])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("<unset>"));
+    }
+    xrun(&tmp)
+        .args(["config", "show"])
+        .assert()
+        .stdout(predicate::str::contains("lightning.api_key: <unset>"))
+        .stdout(predicate::str::contains("lightning.user_id: <unset>"));
+}
+
+#[test]
+fn config_login_requires_a_tty_for_colab() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .args(["config", "login", "colab"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires a TTY"));
+}
+
+#[test]
+fn config_login_rejects_other_vendors() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .args(["config", "login", "lightning"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("login is only needed for colab"));
+}
+
+#[test]
+fn init_writes_lightning_credentials_and_requires_the_pair() {
+    let tmp = TempDir::new().unwrap();
+    xrun(&tmp)
+        .args([
+            "init",
+            "--non-interactive",
+            "--json",
+            "--lightning-key",
+            "-",
+            "--lightning-user-id",
+            "user-42",
+            "--lightning-teamspace",
+            "me/proj",
+        ])
+        .write_stdin("test-key-abc\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lightning.api_key"))
+        .stdout(predicate::str::contains("lightning.user_id"))
+        .stdout(predicate::str::contains("lightning.teamspace"))
+        .stdout(predicate::str::contains("test-key-abc").not());
+
+    let tmp2 = TempDir::new().unwrap();
+    xrun(&tmp2)
+        .args(["init", "--non-interactive", "--lightning-key", "k"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--lightning-key requires --lightning-user-id",
+        ));
+    xrun(&tmp2)
+        .args(["init", "--non-interactive", "--lightning-user-id", "u"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--lightning-user-id requires --lightning-key",
+        ));
+}

@@ -51,7 +51,7 @@ _POLLER_FIELDS: list[tuple[str, str, str, str]] = [
 ]
 
 _DEFAULTS_FIELDS: list[tuple[str, str, str, str]] = [
-    ("defaults.vendor",  "Default vendor",  "local / vast / kaggle / ssh", "text"),
+    ("defaults.vendor",  "Default vendor",  "local / vast / kaggle / ssh / lightning / colab", "text"),
     ("defaults.exp_dir", "Default exp dir", "exp/",                        "text"),
 ]
 

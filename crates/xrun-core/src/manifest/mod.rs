@@ -5,11 +5,12 @@ pub mod types;
 pub mod validate;
 
 pub use types::ssh_workdir_anchor;
+pub use types::ColabSpec;
 pub use types::{
     anchor_vast_pattern, ckpt_to_remote_pattern, Artifacts, CheckpointPull, Checkpoints,
     DataCompress, DataMode, DataSource, DonePolicy, EarlyStop, EarlyStopMode, GpuSpec, KaggleSpec,
-    KeepBest, LocalSpec, Manifest, MlflowSpec, Policy, PriceSpec, Requires, RunSpec, SshSpec,
-    UnpackSpec, VastSpec, Vendor,
+    KeepBest, LightningSpec, LocalSpec, Manifest, MlflowSpec, Policy, PriceSpec, Requires, RunSpec,
+    SshSpec, UnpackSpec, VastSpec, Vendor, COLAB_GPU_VALUES,
 };
 pub use validate::validate;
 

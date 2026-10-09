@@ -11,6 +11,29 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Two new vendors: `vendor: lightning` (Lightning AI Studio) and `vendor:
+  colab` (Google Colab session), crates `xrun-lightning` and `xrun-colab`.
+  Same lifecycle as ssh (provision, upload, detached run, tail of
+  `events.jsonl` / `metrics.jsonl`, pull, destroy). Manifest sections
+  `lightning:` (`machine`, `interruptible`, `studio`, `teamspace`, `workdir`,
+  `gpu`, `max_runtime_secs`) and `colab:` (`gpu`, `high_mem`, `workdir`), both
+  optional. `policy.on_done: stop_instance` stops the Studio (its filesystem
+  persists) or releases the Colab session.
+- `xrun_core::pybridge`: a persistent Python child process (JSON lines,
+  `<<<XRUN_BRIDGE>>>` sentinel, one respawn-and-retry) that the new adapters
+  use to talk to `lightning-sdk` and `google-colab-cli`. Persistent because a
+  cold `import lightning_sdk` takes about 3.5 s against a 5 s poll tick.
+- `[lightning]` credentials section (`api_key`, `user_id`, `teamspace`);
+  `xrun config set|unset lightning.api_key|user_id|teamspace`; `xrun init
+  --lightning-key / --lightning-user-id / --lightning-teamspace`.
+- `xrun config login colab`: first Google Colab OAuth login through the
+  library (needs a TTY). Works on Windows, where the `colab` console binary
+  does not (it imports `termios`).
+- `xrun config probe --vendor lightning|colab`, `xrun init-manifest --vendor
+  lightning|colab`, doctor checks `lightning_sdk`, `lightning_credentials`,
+  `colab_sdk`, `colab_login`.
+- TUI Vendors screen and setup wizard: Lightning AI and Google Colab cards.
+- Templates `exp/templates/lightning_smoke.yaml` and `colab_smoke.yaml`.
 - `xrun dataset push --verify` (default on, needs `--wait`): after the
   dataset is `ready`, xrun fetches Kaggle's file list and compares it with
   the local staging dir. A mismatch (empty version, unextracted `train.tar`

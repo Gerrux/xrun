@@ -167,7 +167,7 @@ class InstancesScreen(LiveScreen):
         self._remote_instances = []
 
         if not api_key:
-            # Neutral: a user on local/ssh/kaggle has no reason to want a
+            # Neutral: a user on local/ssh/kaggle/lightning/colab has no reason to want a
             # vast key, their instances are in the "All vendors" tab.
             self._summary_vast = "[#565f89]vast.ai is not configured[/]"
             self._show_summary()

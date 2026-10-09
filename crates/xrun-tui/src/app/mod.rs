@@ -280,5 +280,7 @@ pub(super) fn vendor_name(v: &xrun_core::manifest::types::Vendor) -> String {
         xrun_core::manifest::types::Vendor::Kaggle => "kaggle".to_string(),
         xrun_core::manifest::types::Vendor::Local => "local".to_string(),
         xrun_core::manifest::types::Vendor::Ssh => "ssh".to_string(),
+        xrun_core::manifest::types::Vendor::Lightning => "lightning".to_string(),
+        xrun_core::manifest::types::Vendor::Colab => "colab".to_string(),
     }
 }

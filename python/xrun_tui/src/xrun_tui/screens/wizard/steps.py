@@ -19,6 +19,7 @@ from textual.widgets import (
 
 from xrun_tui.screens.wizard.catalog import (
     KAGGLE_FIELDS,
+    LIGHTNING_FIELDS,
     MLFLOW_FIELDS,
     SINKS,
     SINK_BY_ID,
@@ -116,6 +117,10 @@ async def render_vendors(screen: "WizardScreen", body: Vertical) -> None:
         await row.mount(cb)
         if vid == "kaggle":
             await _mount_kaggle_form(screen, row)
+        elif vid == "lightning":
+            await _mount_lightning_form(screen, row)
+        elif vid == "colab":
+            await _mount_colab_form(screen, row)
         elif takes_key:
             await _mount_vendor_key_form(screen, row, vid, label)
         elif vid == "ssh":
@@ -150,6 +155,49 @@ async def _mount_kaggle_form(screen: "WizardScreen", row: Vertical) -> None:
             id=f"wiz-kaggle-{field}",
             classes="wizard-input",
         ))
+
+
+async def _mount_lightning_form(screen: "WizardScreen", row: Vertical) -> None:
+    lform = Vertical(id="wiz-lightning-form", classes="wizard-ssh-form")
+    lform.display = "lightning" in screen._selected_vendors
+    await row.mount(lform)
+    hint = (
+        "[#565f89]User ID and API key are on the Keys tab of your Lightning "
+        "settings. Leave blank if [/][bold]~/.lightning/credentials.json[/]"
+        "[#565f89] exists (from `lightning login`).[/]"
+    )
+    if "lightning" in screen._existing_vendors:
+        hint = (
+            "[#9ece6a]● Lightning credentials already on disk[/] "
+            "[#565f89]— leave blank to keep them, or fill all fields to overwrite.[/]"
+        )
+    await lform.mount(Static(hint, classes="wizard-text"))
+    await lform.mount(Static(
+        " Get key ↗  Open Lightning Settings → Keys ",
+        id="wiz-open-lightning",
+        classes="wizard-link-btn",
+    ))
+    for field, placeholder, password, _req in LIGHTNING_FIELDS:
+        await lform.mount(Input(
+            value=screen._lightning_fields.get(field, ""),
+            placeholder=placeholder,
+            password=password,
+            id=f"wiz-lightning-{field}",
+            classes="wizard-input",
+        ))
+
+
+async def _mount_colab_form(screen: "WizardScreen", row: Vertical) -> None:
+    """Colab has no key to paste: a one-line hint, the OAuth login is a CLI step."""
+    cform = Vertical(id="wiz-colab-form", classes="wizard-ssh-form")
+    cform.display = "colab" in screen._selected_vendors
+    await row.mount(cform)
+    await cform.mount(Static(
+        "[#565f89]No key needed here. After the wizard run [/]"
+        "[bold]xrun config login colab[/][#565f89] in a terminal "
+        "(Google sign-in needs a TTY).[/]",
+        classes="wizard-text",
+    ))
 
 
 async def _mount_vendor_key_form(
@@ -360,6 +408,14 @@ async def render_recap(screen: "WizardScreen", body: Vertical) -> None:
             keys_set.append("kaggle [#565f89](kept existing)[/]")
         else:
             keys_set.append("kaggle (auto-import from ~/.kaggle/)")
+    if "lightning" in screen._selected_vendors:
+        if (screen._lightning_fields.get("user_id")
+                and screen._lightning_fields.get("api_key")):
+            keys_set.append("lightning (user id + key)")
+        elif "lightning" in screen._existing_vendors:
+            keys_set.append("lightning [#565f89](kept existing)[/]")
+    if "colab" in screen._selected_vendors:
+        keys_set.append("colab [#565f89](run `xrun config login colab`)[/]")
 
     ssh_line = "[#414868]not configured[/]"
     if "ssh" in screen._selected_vendors and screen._ssh_fields.get("alias"):
@@ -563,6 +619,34 @@ def _probe_targets(screen: "WizardScreen") -> list[dict]:
                     "env": env,
                     "args": [],
                 })
+        elif vid == "lightning":
+            uid = screen._lightning_fields.get("user_id", "").strip()
+            # Blank key next to a user ID = the stored one (the CLI probe only
+            # falls back to ~/.lightning, never to credentials.toml).
+            lkey = (screen._lightning_fields.get("api_key", "").strip()
+                    or (screen._lightning_stored.get("api_key", "") if uid else ""))
+            env = {}
+            if uid and lkey:
+                env["XRUN_PROBE_LIGHTNING_USER_ID"] = uid
+                env["XRUN_PROBE_LIGHTNING_API_KEY"] = lkey
+                team = screen._lightning_fields.get("teamspace", "").strip()
+                if team:
+                    env["XRUN_PROBE_LIGHTNING_TEAMSPACE"] = team
+            # Blank form: the probe falls back to ~/.lightning/credentials.json.
+            if env or "lightning" in screen._existing_vendors:
+                targets.append({
+                    "label": "lightning",
+                    "vendor": "lightning",
+                    "env": env or None,
+                    "args": [],
+                })
+        elif vid == "colab":
+            targets.append({
+                "label": "colab",
+                "vendor": "colab",
+                "env": None,
+                "args": [],
+            })
         elif vid == "ssh":
             host = screen._ssh_fields.get("host", "").strip()
             user = screen._ssh_fields.get("user", "").strip()

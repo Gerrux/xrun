@@ -149,6 +149,25 @@ pub fn run(
             adapter.set_run_id(&run_id);
             Box::new(adapter)
         }
+        // Studio name / teamspace / run dir come from the stored handle, so
+        // the daemon needs neither the manifest nor the vendor section.
+        "lightning" => {
+            let adapter_store = Store::open(db_path).with_context(|| {
+                format!("failed to open adapter store at {}", db_path.display())
+            })?;
+            let creds = Credentials::load(config_dir).unwrap_or_default();
+            let adapter = xrun_lightning::LightningAdapter::new(adapter_store, creds.lightning);
+            adapter.set_run_id(&run_id);
+            Box::new(adapter)
+        }
+        "colab" => {
+            let adapter_store = Store::open(db_path).with_context(|| {
+                format!("failed to open adapter store at {}", db_path.display())
+            })?;
+            let adapter = xrun_colab::ColabAdapter::new(adapter_store);
+            adapter.set_run_id(&run_id);
+            Box::new(adapter)
+        }
         _ => {
             let adapter_store = Store::open(db_path).with_context(|| {
                 format!("failed to open adapter store at {}", db_path.display())
@@ -176,20 +195,17 @@ pub fn run(
         let run_dir = runs_dir.join(run_id.to_string());
         let on_failed =
             crate::commands::launch::fail_policy_from_manifest(&run_dir.join("manifest.yaml"));
-        let ssh_dir = if run.vendor == "ssh" {
-            let manifest = serde_yaml::from_str::<xrun_core::manifest::Manifest>(
-                &std::fs::read_to_string(run_dir.join("manifest.yaml")).unwrap_or_default(),
-            )
-            .ok();
-            crate::commands::launch::ssh_run_dir(
-                stored_run_dir.as_deref(),
-                manifest.as_ref(),
-                config_dir,
-                &run_id.to_string(),
-            )
-        } else {
-            String::new()
-        };
+        let manifest = serde_yaml::from_str::<xrun_core::manifest::Manifest>(
+            &std::fs::read_to_string(run_dir.join("manifest.yaml")).unwrap_or_default(),
+        )
+        .ok();
+        let ssh_dir = crate::commands::launch::remote_poller_dir(
+            &run.vendor,
+            stored_run_dir.as_deref(),
+            manifest.as_ref(),
+            config_dir,
+            &run_id.to_string(),
+        );
         poller = poller.with_config(crate::commands::launch::poller_config(
             crate::commands::launch::PollerFiles::for_vendor(&run.vendor, &run_dir, &ssh_dir),
             on_failed,
