@@ -50,7 +50,7 @@ def _lib():
             _L["state"] = importlib.import_module("colab_cli.common").state
         except Exception as e:  # ImportError and anything a broken install raises
             _L.clear()
-            raise BridgeError("%s is not importable (pip install %s): %s" % (PKG, PKG, e))
+            raise BridgeError("%s is not importable (run `xrun install sdk colab`, or pip install %s): %s" % (PKG, PKG, e))
     return _L
 
 

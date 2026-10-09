@@ -162,7 +162,7 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
             Err(e) => (
                 false,
                 format!(
-                    "{e} (install: pip install lightning-sdk; XRUN_PYTHON picks the interpreter)"
+                    "{e} (install: pip install lightning-sdk; XRUN_PYTHON picks the interpreter) — run `xrun install sdk lightning`"
                 ),
             ),
         };
@@ -201,7 +201,7 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
             Ok(info) => (true, format!("google-colab-cli {}", info.sdk_version)),
             Err(e) => (
                 false,
-                format!("{e} (install: pip install google-colab-cli; XRUN_PYTHON picks the interpreter)"),
+                format!("{e} (install: pip install google-colab-cli; XRUN_PYTHON picks the interpreter) — run `xrun install sdk colab`"),
             ),
         };
         checks.push(Check {

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 const SKILL_BODY: &str = include_str!("../../../../claude/skill.md");
 
@@ -16,6 +16,31 @@ pub struct InstallArgs {
 pub enum InstallSubcommand {
     /// Install the xrun skill/instructions for an agent harness
     Skill(InstallSkillArgs),
+    /// Install a vendor's Python SDK (`pip install`) into the interpreter xrun's bridge uses
+    Sdk(InstallSdkArgs),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SdkTarget {
+    /// `lightning-sdk` (vendor: lightning)
+    Lightning,
+    /// `google-colab-cli` (vendor: colab)
+    Colab,
+    /// Both SDKs
+    All,
+}
+
+#[derive(Args)]
+pub struct InstallSdkArgs {
+    /// Which SDK to install
+    #[arg(value_enum)]
+    pub target: SdkTarget,
+    /// Print the pip command and exit without running it
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Pass `--upgrade` to pip
+    #[arg(long)]
+    pub upgrade: bool,
 }
 
 #[derive(Args)]
@@ -37,6 +62,97 @@ pub struct InstallSkillArgs {
 pub fn run(args: &InstallArgs) -> Result<()> {
     match &args.subcommand {
         InstallSubcommand::Skill(skill_args) => install_skill(skill_args),
+        InstallSubcommand::Sdk(sdk_args) => install_sdk(sdk_args),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SdkVendor {
+    Lightning,
+    Colab,
+}
+
+impl SdkVendor {
+    fn package(self) -> &'static str {
+        match self {
+            Self::Lightning => "lightning-sdk",
+            Self::Colab => "google-colab-cli",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Lightning => "lightning",
+            Self::Colab => "colab",
+        }
+    }
+}
+
+fn install_sdk(args: &InstallSdkArgs) -> Result<()> {
+    let vendors: &[SdkVendor] = match args.target {
+        SdkTarget::Lightning => &[SdkVendor::Lightning],
+        SdkTarget::Colab => &[SdkVendor::Colab],
+        SdkTarget::All => &[SdkVendor::Lightning, SdkVendor::Colab],
+    };
+    let (python, lead) = xrun_core::pybridge::python_argv().ok_or_else(|| {
+        anyhow!("python interpreter not found (set XRUN_PYTHON or install Python 3)")
+    })?;
+
+    let mut pip_args: Vec<String> = lead;
+    pip_args.extend(["-m", "pip", "install"].map(String::from));
+    if args.upgrade {
+        pip_args.push("--upgrade".into());
+    }
+    pip_args.extend(vendors.iter().map(|v| v.package().to_string()));
+
+    println!("python: {}", python.display());
+    println!("{} {}", python.display(), pip_args.join(" "));
+    if args.dry_run {
+        return Ok(());
+    }
+
+    // Inherited stdio on purpose: the user wants to see pip's output.
+    let status = std::process::Command::new(&python)
+        .args(&pip_args)
+        .status()
+        .with_context(|| format!("failed to run {}", python.display()))?;
+    if !status.success() {
+        bail!("pip install failed ({status})");
+    }
+
+    let mut failed = false;
+    for v in vendors {
+        match ping_sdk(*v) {
+            Ok(version) => println!("{}: {} {version} OK", v.name(), v.package()),
+            Err(e) => {
+                failed = true;
+                eprintln!("{}: installed, but the bridge ping failed: {e}", v.name());
+            }
+        }
+    }
+    if failed {
+        bail!("SDK installed but not importable by the bridge");
+    }
+    Ok(())
+}
+
+fn ping_sdk(v: SdkVendor) -> Result<String, String> {
+    match v {
+        SdkVendor::Lightning => {
+            use xrun_lightning::{LightningBridge, PyLightningBridge};
+            let bridge = PyLightningBridge::new(&Default::default());
+            bridge
+                .ping()
+                .map(|i| i.sdk_version)
+                .map_err(|e| e.to_string())
+        }
+        SdkVendor::Colab => {
+            use xrun_colab::{ColabBridge, PyColabBridge};
+            PyColabBridge::new()
+                .ping()
+                .map(|i| i.sdk_version)
+                .map_err(|e| e.to_string())
+        }
     }
 }
 

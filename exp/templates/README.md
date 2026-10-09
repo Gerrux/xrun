@@ -10,8 +10,8 @@
 | `regression` | `regression.yaml` + `regression_train.py` | Регрессия с метриками `loss`, `mae`, `rmse`, `r2` |
 | `kaggle_smoke` | `kaggle_smoke.yaml` (inline cmd) | Минимальный live-telemetry smoke на Kaggle (~30 секунд, 15 ticks). Проверяет что xrun_hook → MLflow → xrun ingest работает end-to-end. Требует настроенный `mlflow.url`. |
 | `kaggle_classification` | `kaggle_classification.yaml` (inline cmd) | Тот же classification, но vendor=kaggle. Live events/stages/metrics в `xrun show <id>` мид-ран через MLflow. |
-| `lightning_smoke` | `lightning_smoke.yaml` (inline cmd) | Smoke на Lightning AI Studio (T4, ~20 секунд после старта машины). Нужны `pip install lightning-sdk` и ключи (`xrun init`). Запускать из корня репозитория: пакет `xrun_hook` уезжает через `data:` (на PyPI его нет). Пути в `data:` только относительно home Studio. |
-| `colab_smoke` | `colab_smoke.yaml` (inline cmd) | Smoke на Google Colab (T4). Нужны `pip install google-colab-cli` и однократный `xrun config login colab` в отдельном терминале. Запускать из корня репозитория (`xrun_hook` уезжает через `data:`). Квота не гарантирована, `data:` держи небольшим. |
+| `lightning_smoke` | `lightning_smoke.yaml` (inline cmd) | Smoke на Lightning AI Studio (T4, ~20 секунд после старта машины). Нужны `xrun install sdk lightning` и ключи (`xrun init`). Запускать из корня репозитория: пакет `xrun_hook` уезжает через `data:` (на PyPI его нет). Пути в `data:` только относительно home Studio. |
+| `colab_smoke` | `colab_smoke.yaml` (inline cmd) | Smoke на Google Colab (T4). Нужны `xrun install sdk colab` и однократный `xrun config login colab` в отдельном терминале. Запускать из корня репозитория (`xrun_hook` уезжает через `data:`). Квота не гарантирована, `data:` держи небольшим. |
 
 ## Самая короткая первая проверка
 

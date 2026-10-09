@@ -137,8 +137,9 @@ printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --kaggle-token
 / `cat ~/.config/xrun/credentials.toml`.
 
 Для `vendor: lightning` / `colab` нужны Python-библиотеки на машине
-пользователя: `pip install lightning-sdk` и `pip install google-colab-cli`
-(`xrun doctor` покажет `lightning_sdk` / `colab_sdk`). Ключи Lightning —
+пользователя: `xrun install sdk lightning` и `xrun install sdk colab`
+(ставят в интерпретатор моста; альтернатива — `pip install lightning-sdk` /
+`google-colab-cli` вручную; `xrun doctor` покажет `lightning_sdk` / `colab_sdk`). Ключи Lightning —
 `xrun init` (`--lightning-key -`, `--lightning-user-id`) или `xrun config set
 lightning.api_key|user_id|teamspace`; Colab — один раз `xrun config login
 colab` в отдельном терминале (как `xrun init`, без TTY не работает). Консольный

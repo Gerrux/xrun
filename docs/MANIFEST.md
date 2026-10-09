@@ -242,7 +242,7 @@ teamspace = "owner/name"         # optional
 
 ### Lightning-специфичные нюансы
 
-- **Предварительно.** `pip install lightning-sdk`; проверка — `xrun doctor`
+- **Предварительно.** `xrun install sdk lightning` (или `pip install lightning-sdk`); проверка — `xrun doctor`
   (строки `lightning_sdk`, `lightning_credentials`).
 - **Пути home-relative.** `data[].dst` обязан быть относительным к домашнему
   каталогу Studio: ведущий `/` отвергается валидацией, `~/x` допустим (префикс
@@ -300,7 +300,7 @@ policy:
 
 ### Colab-специфичные нюансы
 
-- **Предварительно.** `pip install google-colab-cli`, затем один раз
+- **Предварительно.** `xrun install sdk colab` (или `pip install google-colab-cli`), затем один раз
   `xrun config login colab` (интерактивный OAuth copy-paste; нужен TTY, из
   Claude Code не запускается). Токен хранит сам colab-cli
   (`~/.config/colab-cli/token.json`), отдельной секции в `credentials.toml`

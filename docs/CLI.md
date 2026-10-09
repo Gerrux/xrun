@@ -266,9 +266,9 @@ xrun doctor --manifest exp/a.yaml --manifest exp/b.yaml --json
 
 | Проверка | Категория | Что проверяет |
 |----------|-----------|---------------|
-| `lightning_sdk` | `vendor:lightning` | Python-мост отвечает на ping, `lightning-sdk` импортируется (`pip install lightning-sdk`) |
+| `lightning_sdk` | `vendor:lightning` | Python-мост отвечает на ping, `lightning-sdk` импортируется (`xrun install sdk lightning`) |
 | `lightning_credentials` | `vendor:lightning` | заданы `lightning.api_key` + `lightning.user_id` либо есть файл от `lightning login` |
-| `colab_sdk` | `vendor:colab` | Python-мост отвечает на ping, `colab_cli` импортируется (`pip install google-colab-cli`) |
+| `colab_sdk` | `vendor:colab` | Python-мост отвечает на ping, `colab_cli` импортируется (`xrun install sdk colab`) |
 | `colab_login` | `vendor:colab` | есть OAuth-токен (`xrun config login colab`) |
 
 ```
@@ -393,6 +393,31 @@ Claude target пишет `.claude/skills/xrun/SKILL.md` и добавляет po
 ```
 --repo <DIR>    установить в другой репозиторий вместо текущего каталога
 --force         перезаписать существующий SKILL.md
+```
+
+## `xrun install sdk`
+
+Ставит Python-SDK вендора (`pip install`) ровно в тот интерпретатор, который
+использует Python-мост xrun: `XRUN_PYTHON`, иначе `python`, `python3`, `py -3`.
+
+```bash
+xrun install sdk lightning            # lightning-sdk
+xrun install sdk colab                # google-colab-cli
+xrun install sdk all --upgrade        # оба, с обновлением
+xrun install sdk lightning --dry-run  # только показать команду pip
+```
+
+Перед запуском печатается выбранный интерпретатор и точная команда
+`<python> [-3] -m pip install [--upgrade] <пакет>`; вывод pip идёт напрямую в
+терминал. После успешной установки xrun делает `ping` моста и печатает версию
+SDK (или ошибку). Интерпретатор не найден — ошибка `python interpreter not
+found (set XRUN_PYTHON or install Python 3)`.
+
+Флаги:
+
+```
+--dry-run       напечатать команду и выйти (код 0), pip не запускается
+--upgrade       добавить --upgrade к pip install
 ```
 
 ## `xrun update`
