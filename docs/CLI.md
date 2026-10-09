@@ -108,6 +108,11 @@ stdout/stderr.
 
 ### `xrun stop <run-id>`
 Корректный stop: посылает SIGTERM в команду, ждёт N сек, забирает финальные артефакты, гасит инстанс.
+Активный ран (`provisioning`/`uploading`/`running`) после этого получает статус
+`cancelled`. Ран, который уже завершился (`done`/`failed`, инстанс оставлен
+через `policy.on_done: keep` или для отладки), статус не меняет: `xrun stop`
+только гасит инстанс и печатает `released instance for finished run <id>`;
+если живого инстанса нет — `run <id> already <status>; no live instance to release`.
 
 ```
 --force          сразу destroy, без graceful

@@ -1,9 +1,11 @@
 use assert_cmd::Command;
 use chrono::Utc;
+use predicates::prelude::PredicateBooleanExt;
 use serde_json::Value;
 use tempfile::TempDir;
 use xrun_core::{
     store::{NewEvent, RunStatus},
+    vendor::InstanceHandle,
     Store,
 };
 
@@ -246,6 +248,88 @@ fn keep_instance_does_not_falsely_mark_run_cancelled() {
     assert_eq!(
         store.get_run(&id).unwrap().unwrap().status,
         RunStatus::Running
+    );
+}
+
+/// Seed a local run in `status` with a live (not destroyed) local instance
+/// whose handle is saved, the way `launch` leaves it. The store is dropped
+/// before the binary runs. Returns `(run_id, instance_id)`.
+fn seed_run_with_live_instance(tmp: &TempDir, status: RunStatus) -> (String, String) {
+    let mut store = Store::open(&tmp.path().join("data/runs.db")).unwrap();
+    let run_id = store
+        .create_run("kept", "hash", "manifest", "local", &[])
+        .unwrap();
+    store.update_run_status(&run_id, status).unwrap();
+    let instance_id = format!("local-{run_id}");
+    store
+        .insert_instance(&instance_id, "local", Some(&run_id), None, None, Utc::now())
+        .unwrap();
+    let handle = InstanceHandle {
+        id: instance_id.clone(),
+        vendor: "local".into(),
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: String::new(),
+        run_dir: None,
+    };
+    store
+        .update_instance_state_json(&instance_id, &serde_json::to_string(&handle).unwrap())
+        .unwrap();
+    store.update_run_instance_id(&run_id, &instance_id).unwrap();
+    (run_id.to_string(), instance_id)
+}
+
+#[test]
+fn stop_on_finished_run_releases_instance_and_keeps_status() {
+    // `policy.on_done: keep` leaves the instance alive after `done`; the
+    // manual `xrun stop` that releases it must not rewrite a successful run
+    // as `cancelled` (seen live on a Lightning Studio, 2026-10-09).
+    let tmp = TempDir::new().unwrap();
+    let (run_id, instance_id) = seed_run_with_live_instance(&tmp, RunStatus::Done);
+
+    command(&tmp)
+        .args(["stop", &run_id])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!(
+            "released instance for finished run {run_id}"
+        )))
+        .stdout(predicates::str::contains("stopped").not());
+
+    let store = Store::open(&tmp.path().join("data/runs.db")).unwrap();
+    let run = store.get_run(&run_id.parse().unwrap()).unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Done);
+    let instance = store.get_instance(&instance_id).unwrap().unwrap();
+    assert!(instance.destroyed_at.is_some(), "instance must be released");
+
+    // Second stop: nothing left to release, status still untouched.
+    command(&tmp)
+        .args(["stop", &run_id])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already done"));
+    let run = store.get_run(&run_id.parse().unwrap()).unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Done);
+}
+
+#[test]
+fn stop_on_running_run_destroys_instance_and_marks_cancelled() {
+    let tmp = TempDir::new().unwrap();
+    let (run_id, instance_id) = seed_run_with_live_instance(&tmp, RunStatus::Running);
+
+    command(&tmp)
+        .args(["stop", &run_id])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("stopped {run_id}")));
+
+    let store = Store::open(&tmp.path().join("data/runs.db")).unwrap();
+    let run = store.get_run(&run_id.parse().unwrap()).unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Cancelled);
+    let instance = store.get_instance(&instance_id).unwrap().unwrap();
+    assert!(
+        instance.destroyed_at.is_some(),
+        "instance must be destroyed"
     );
 }
 
