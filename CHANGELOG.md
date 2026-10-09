@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun config login colab` hung on Windows with no output: the interactive
+  bridge run inherited the background bridge's `CREATE_NO_WINDOW`, so the
+  child Python had no console. `run_script_interactive` now keeps the parent
+  console; the OAuth URL prints and the code prompt works.
+
 ---
 
 ## [0.11.0] - 2026-10-09
