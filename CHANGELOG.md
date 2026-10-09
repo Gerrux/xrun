@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `xrun install sdk <lightning|colab|all> [--dry-run] [--upgrade]` installs the
+  Python SDK (`lightning-sdk` / `google-colab-cli`) into the exact interpreter
+  the bridge uses (`XRUN_PYTHON`, else `python`, `python3`, `py -3`), then pings
+  the bridge. `xrun doctor` and the bridge errors now point at it.
+
 ### Fixed
 
 - `install.ps1` no longer fails with "Cannot create a file when that file
