@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.2] - 2026-10-10
+
+Fixes from the first live Lightning AI / Colab smoke: Lightning credentials
+and teamspace handling, readable Lightning API errors, a poller race that
+marked finished runs as failed, and `xrun metrics --ascii`.
+
 ### Fixed
 
 - `xrun metrics <id> --ascii` always printed "no data yet" without querying
@@ -18,6 +26,25 @@ Versions follow [Semantic Versioning](https://semver.org/).
   are skipped and counted separately. "no data yet" remains only when there
   are no points at all; with `--json` the flag is ignored and the JSON output
   is unchanged.
+- `xrun config probe --vendor lightning` without the wizard's env variables
+  ignored `[lightning]` in `credentials.toml` and failed with "no API key".
+  It now uses the stored credentials, falling back to the `lightning login`
+  file only when there are none.
+- Lightning: the default teamspace came from `user.teamspaces` (owned
+  teamspaces only), and a bare name without an owner broke provision with
+  "Neither user or org are specified". The bridge now builds `owner/name`
+  slugs from memberships (org teamspaces included, default first); the probe
+  lists them as "available: …". `xrun config set lightning.teamspace` accepts
+  only `owner/name` and rejects display names with a hint to run the probe.
+- Lightning API errors no longer dump the response headers: only the body's
+  `message` is shown ("HTTP 400: …"), and the error class comes from the HTTP
+  status (401/403 — auth, 404 — not_found). An "insufficient balance" error is
+  no longer reported as an auth problem.
+- Poller: when the hook wrote `done:ok` and the process exited between the
+  event tail and the PID probe of the same tick, the run was marked failed.
+  The first tick with a dead PID now schedules one more drain; the run fails
+  only on the second such tick in a row (OOM detection is delayed by one
+  poll interval).
 
 ---
 
