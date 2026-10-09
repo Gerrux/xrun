@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.0] - 2026-10-09
+
+Two new vendors, Lightning AI and Google Colab, through a persistent Python
+bridge; Kaggle dataset uploads are verified after push; the TUI gets the
+animated xrun mark on the splash and a card grid on the Vendors screen.
+
 ### Added
 
 - Two new vendors: `vendor: lightning` (Lightning AI Studio) and `vendor:
@@ -58,7 +66,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
   `h`/`l` a card; the title counts configured vendors. vast.ai gets its own
   mark and colour: a white V on black.
 - TUI splash: the four-colour `XRUN` block banner is replaced by the mark and
-  the lowercase name, per `docs/brand.md`; the version line reads `v0.10.0`.
+  the lowercase name, per `docs/brand.md`, with the version line below.
 
 - `xrun launch` on Kaggle refuses to start when a dataset's status cannot
   be fetched (missing slug, 403, no kaggle CLI). Previously it logged a
