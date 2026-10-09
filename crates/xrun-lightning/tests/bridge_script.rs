@@ -85,6 +85,29 @@ class _Api:
         _log("api_upload", kw["remote_path"], kw["file_path"])
 
 
+class ApiException(Exception):
+    """Shape of lightning_cloud's ApiException: `status`, `body`, and a str()
+    that dumps the response headers (which mention `Authorization`)."""
+
+    def __init__(self, status, body):
+        super().__init__(status)
+        self.status = status
+        self.body = body
+
+    def __str__(self):
+        return (
+            "(%s)\nReason: Bad Request\nHTTP response headers: HTTPHeaderDict({"
+            "'access-control-allow-headers': 'Content-Type,Authorization', "
+            "'Set-Cookie': 'session-id=abc'})\nHTTP response body: %r" % (self.status, self.body)
+        )
+
+
+NO_BALANCE_BODY = (
+    b'{"code":3, "message":"creating cloud space instance: insufficient balance '
+    b'to start the cloud space, top up and try again", "details":[]}'
+)
+
+
 class Studio:
     def __init__(self, name=None, teamspace=None, create_ok=True):
         _log("init", name, teamspace, create_ok)
@@ -113,6 +136,8 @@ class Studio:
         st = self.status
         if st != Status.Stopped:
             raise RuntimeError("Cannot start a Studio that is not stopped. Studio is %s." % st)
+        if machine.name == "NOBALANCE":
+            raise ApiException(400, NO_BALANCE_BODY)
         _log("start", machine.name, interruptible, max_runtime)
         self._seq = ["running"]
         self.machine = machine
@@ -267,6 +292,31 @@ fn stop_of_an_already_stopped_studio_is_ok() {
     let stops = stub.calls_named("stop");
     assert_eq!(stops.len(), 1);
     assert_eq!(stops[0][1], json!("busy"));
+}
+
+#[test]
+fn insufficient_balance_is_not_an_auth_error_and_keeps_only_the_body_message() {
+    if !have_python() {
+        return;
+    }
+    let stub = Stub::new();
+    let b = stub.bridge(json!({"s": ["stopped"]}), true);
+    let mut r = req("studio_start", "s");
+    r["machine"] = json!("NOBALANCE");
+    match b.call(r, T).unwrap_err() {
+        BridgeError::Remote { kind, msg } => {
+            assert_eq!(kind, RemoteKind::Other, "{msg}");
+            assert!(
+                msg.contains("HTTP 400: creating cloud space instance: insufficient balance"),
+                "{msg}"
+            );
+            assert!(
+                !msg.contains("Set-Cookie") && !msg.contains("HTTPHeaderDict"),
+                "{msg}"
+            );
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
 }
 
 #[test]

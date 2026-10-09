@@ -55,11 +55,34 @@ def _user():
         return User(name=UserApi()._client.auth_service_get_user().username)
 
 
+def _short_msg(exc):
+    """`str(ApiException)` dumps every response header (which mention
+    `Authorization`, so they also fooled the auth classifier); keep the
+    body's `message`, e.g. "insufficient balance to start the cloud space"."""
+    body = getattr(exc, "body", None)
+    if body:
+        try:
+            raw = body if isinstance(body, str) else body.decode("utf-8", "replace")
+            m = json.loads(raw).get("message")
+            if m:
+                return "HTTP %s: %s" % (getattr(exc, "status", "?"), m)
+        except Exception:  # noqa: BLE001
+            pass
+    return str(exc)
+
+
 def _classify(exc):
-    msg = str(exc).lower()
-    if any(w in msg for w in ("authenticat", "api key", "api_key", "401", "403", "unauthorized", "credentials")):
+    status = getattr(exc, "status", None)
+    if status in (401, 403):
         return "auth"
-    if "not found" in msg or "404" in msg or "does not exist" in msg:
+    if status == 404:
+        return "not_found"
+    msg = _short_msg(exc).lower()
+    if status is None and any(
+        w in msg for w in ("authenticat", "api key", "api_key", "401", "403", "unauthorized", "credentials")
+    ):
+        return "auth"
+    if status is None and ("not found" in msg or "404" in msg or "does not exist" in msg):
         return "not_found"
     return "other"
 
@@ -297,7 +320,7 @@ def serve():
                 _require_auth()
             resp = {"ok": True, "result": fn(req)}
         except Exception as exc:  # noqa: BLE001
-            resp = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc), "kind": _classify(exc)}
+            resp = {"ok": False, "error": "%s: %s" % (type(exc).__name__, _short_msg(exc)), "kind": _classify(exc)}
         print(SENTINEL + json.dumps(resp), flush=True)
 
 
