@@ -14,16 +14,27 @@ from textual.widgets import Static
 _NAME = "[bold #c0caf5]xrun[/]"
 _TAGLINE = "[#565f89]Run GPU experiments anywhere[/]"
 
-# The mark in pixels: 24 columns × 12 rows of half blocks. Below 16 px the
-# curve runs into the dot; 24 is the smallest that reads cleanly.
-_MARK_PX = 24
-_MARK_ROWS = _MARK_PX // 2
+# Mark sizes in pixels, largest first; half blocks give two pixels per row,
+# so 32 px is 32 columns × 16 rows. The larger the mark, the smoother the
+# curve. Below 16 px the curve runs into the dot; 24 is the smallest that
+# reads cleanly.
+_MARK_SIZES = (32, 24)
+# Rows the splash needs besides the mark: name, tagline, checklist, version
+# and a margin.
+_SPLASH_ROWS = 13
 # The boot animation's length. It is cut to the finished mark as soon as the
 # init steps are done: the splash never waits for it.
 _MARK_ANIM_S = 0.6
-# Shortest terminal that fits the mark above the checklist; on a lower one
-# the splash shows the checklist alone.
-_MARK_MIN_H = _MARK_ROWS + 13
+
+
+def _mark_px(height: int) -> int | None:
+    """The largest mark that fits above the checklist in a terminal `height`
+    rows tall; None when even the smallest does not — then the splash shows
+    the checklist alone."""
+    for px in _MARK_SIZES:
+        if height >= px // 2 + _SPLASH_ROWS:
+            return px
+    return None
 
 
 def _theme_bg(theme: str) -> tuple[int, int, int]:
@@ -101,8 +112,8 @@ class SplashScreen(Screen):
         height: auto;
     }
     #splash-mark {
+        /* height: set from the mark size picked in `_fit_mark` */
         content-align: center middle;
-        height: 12;
     }
     #splash-name {
         content-align: center middle;
@@ -152,7 +163,8 @@ class SplashScreen(Screen):
         self._spin_timer = None
         self._current_detail = "…"
         self._brand = None  # xrun_tui.brand once loaded; Pillow is slow to import
-        self._mark_final: Text | None = None
+        self._mark_final: Text | None = None  # finished mark at `_px`
+        self._px: int | None = None  # mark size picked for the terminal height
         self._mark_ok = True  # False once the renderer failed to load
         self._mark_timer = None
         self._mark_t0 = 0.0
@@ -189,7 +201,7 @@ class SplashScreen(Screen):
         self._fit_mark()
 
     def _fit_mark(self) -> None:
-        """Keep the mark's rows only if the terminal fits it.
+        """Size the mark to the terminal height, or hide it if none fits.
 
         The rows are held from the first paint, before the mark is drawn: if
         they appeared with it, the centred checklist would jump.
@@ -198,7 +210,18 @@ class SplashScreen(Screen):
             w = self.query_one("#splash-mark", Static)
         except Exception:
             return
-        w.display = self._mark_ok and self.size.height >= _MARK_MIN_H
+        px = _mark_px(self.size.height) if self._mark_ok else None
+        w.display = px is not None
+        if px is None or px == self._px:
+            return
+        self._px = px
+        w.styles.height = px // 2
+        if self._brand is not None:
+            # A running animation draws its next frame at the new size by
+            # itself; a finished one is redrawn here.
+            final = self._mark_final = self._brand.cells(px, bg=self._mark_bg)
+            if self._mark_timer is None:
+                w.update(final)
 
     async def _load_mark(self) -> None:
         """Import the renderer off the event loop, then start the animation.
@@ -207,11 +230,12 @@ class SplashScreen(Screen):
         splash's first paint. Without Pillow the splash goes on markless.
         """
         bg = self._mark_bg = _theme_bg(getattr(self.app, "theme_name", ""))
+        px = self._px or _MARK_SIZES[-1]
 
         def _load():
             from xrun_tui import brand
 
-            return brand, brand.cells(_MARK_PX, bg=bg)
+            return brand, brand.cells(px, bg=bg)
 
         try:
             self._brand, self._mark_final = await asyncio.to_thread(_load)
@@ -221,6 +245,8 @@ class SplashScreen(Screen):
             return
         if not self.is_mounted:
             return
+        if self._px is not None and self._px != px:  # resized during the load
+            self._mark_final = self._brand.cells(self._px, bg=bg)
         if self._booted or self.app.animation_level != "full":
             self._finish_mark()
             return
@@ -234,7 +260,7 @@ class SplashScreen(Screen):
             self._finish_mark()
             return
         frame = self._brand.cells(
-            _MARK_PX, *self._brand.frame_at(t), bg=self._mark_bg
+            self._px or _MARK_SIZES[-1], *self._brand.frame_at(t), bg=self._mark_bg
         )
         try:
             self.query_one("#splash-mark", Static).update(frame)

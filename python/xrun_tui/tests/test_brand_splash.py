@@ -21,8 +21,10 @@ def _px(size: int, curve: float = 1.0, dot: float = 1.0):
 def test_dot_stays_detached_at_splash_size() -> None:
     # Merged with the curve, the dot reads as a bent tail and the mark as
     # "L" (docs/brand.md). Some column between the curve's end and the dot
-    # must stay mostly tile on every row the dot spans.
-    px = _px(splash._MARK_PX)
+    # must stay mostly tile on every row the dot spans — checked at the
+    # smallest splash size, where the gap is narrowest.
+    assert min(splash._MARK_SIZES) == 24
+    px = _px(24)
     gap = max(min(px(x, y) for y in (15, 16, 17)) for x in range(14, 19))
     assert gap >= 64
     assert px(19, 16) < 32  # the dot itself is cut
@@ -98,8 +100,9 @@ def _mark_text(screen) -> list[tuple[int, int, str]]:
     return _styled(screen.query_one("#splash-mark", Static).content)
 
 
-def _final() -> list[tuple[int, int, str]]:
-    return _styled(brand.cells(splash._MARK_PX))
+def _final(px: int = 32) -> list[tuple[int, int, str]]:
+    # 32 px: the tests run a 42-row terminal, tall enough for the largest.
+    return _styled(brand.cells(px))
 
 
 async def _loaded(pilot, screen) -> None:
@@ -219,23 +222,68 @@ def test_mark_blends_over_the_theme_background(idle_init) -> None:
             await app.push_screen(screen)
             await _loaded(pilot, screen)
             text = screen.query_one("#splash-mark", Static).content
-            # Cell (0, 0) is outside the tile's rounded corner: pure background.
-            return str(text.spans[0].style.bgcolor.triplet.hex)
+            # Pixel (0, 0) — the top half of the first cell — lies outside
+            # the tile's rounded corner: pure background.
+            return str(text.spans[0].style.color.triplet.hex)
 
     assert asyncio.run(scenario()) == "#1e1e2e"
 
 
-@pytest.mark.parametrize("height, shown", [(splash._MARK_MIN_H - 1, False), (42, True)])
-def test_mark_needs_room(idle_init, height, shown) -> None:
-    async def scenario() -> bool:
+@pytest.mark.parametrize(
+    "height, rows",
+    [(24, None), (25, 12), (28, 12), (29, 16), (42, 16)],
+)
+def test_mark_size_follows_terminal_height(idle_init, height, rows) -> None:
+    # 32 px (16 rows) where it fits above the checklist, else 24 px
+    # (12 rows), else no mark at all.
+    async def scenario() -> int | None:
         app = _Host()
         async with app.run_test(size=(100, height)) as pilot:
             screen = SplashScreen(_never_done)
             await app.push_screen(screen)
             await pilot.pause()
-            return screen.query_one("#splash-mark", Static).display
+            w = screen.query_one("#splash-mark", Static)
+            return w.size.height if w.display else None
 
-    assert asyncio.run(scenario()) is shown
+    assert asyncio.run(scenario()) == rows
+
+
+def test_resize_redraws_the_finished_mark(idle_init) -> None:
+    async def scenario() -> tuple[int, list]:
+        app = _Host(animation="none")
+        async with app.run_test(size=(100, 42)) as pilot:
+            screen = SplashScreen(_never_done)
+            await app.push_screen(screen)
+            await _loaded(pilot, screen)
+            await pilot.resize_terminal(100, 26)
+            await pilot.pause()
+            w = screen.query_one("#splash-mark", Static)
+            return w.size.height, _mark_text(screen)
+
+    assert asyncio.run(scenario()) == (12, _final(24))
+
+
+def test_resize_during_load_draws_the_new_size(idle_init, monkeypatch) -> None:
+    # The finished frame is drawn in a thread at the size picked on mount; a
+    # resize before it is back must not leave a 32 px frame in 12 rows.
+    async def scenario() -> list:
+        app = _Host(animation="none")
+        async with app.run_test(size=(100, 42)) as pilot:
+            screen = SplashScreen(_never_done)
+            real = asyncio.to_thread
+
+            async def _slow(fn, *a, **k):
+                await pilot.resize_terminal(100, 26)
+                await pilot.pause()
+                return await real(fn, *a, **k)
+
+            monkeypatch.setattr(splash.asyncio, "to_thread", _slow)
+            await app.push_screen(screen)
+            await _loaded(pilot, screen)
+            await pilot.pause()
+            return _mark_text(screen)
+
+    assert asyncio.run(scenario()) == _final(24)
 
 
 def test_brand_load_failure_drops_the_mark(idle_init, monkeypatch) -> None:
