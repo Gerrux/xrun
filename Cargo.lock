@@ -3957,8 +3957,10 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "xrun-colab",
  "xrun-core",
  "xrun-kaggle",
+ "xrun-lightning",
  "xrun-local",
  "xrun-mlflow",
  "xrun-notify",
@@ -3967,6 +3969,24 @@ dependencies = [
  "xrun-tui",
  "xrun-vast",
  "xrun-wandb",
+]
+
+[[package]]
+name = "xrun-colab"
+version = "0.10.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "pretty_assertions",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "xrun-core",
+ "xrun-ssh",
 ]
 
 [[package]]
@@ -4007,6 +4027,25 @@ dependencies = [
  "wiremock",
  "xrun-core",
  "xrun-mlflow",
+]
+
+[[package]]
+name = "xrun-lightning"
+version = "0.10.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "pretty_assertions",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "ulid",
+ "xrun-core",
+ "xrun-ssh",
 ]
 
 [[package]]

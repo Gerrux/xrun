@@ -85,6 +85,30 @@ fn credentials_is_empty_detects_unset() {
     assert!(!creds.is_empty());
 }
 
+#[test]
+fn lightning_credentials_roundtrip_and_is_empty() {
+    let dir = tempdir().unwrap();
+    let mut creds = Credentials::default();
+    creds.lightning.api_key = Some("test-key-abc".to_string());
+    creds.lightning.user_id = Some("user-123".to_string());
+    creds.lightning.teamspace = Some("owner/space".to_string());
+    assert!(!creds.is_empty());
+
+    creds.save(dir.path()).unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("credentials.toml")).unwrap();
+    assert!(raw.contains("[lightning]"), "{raw}");
+    let loaded = Credentials::load(dir.path()).unwrap();
+    assert_eq!(creds, loaded);
+}
+
+#[test]
+fn lightning_configured_with_explicit_key_and_user() {
+    let mut creds = Credentials::default();
+    creds.lightning.api_key = Some("k".to_string());
+    creds.lightning.user_id = Some("u".to_string());
+    assert!(creds.lightning_configured());
+}
+
 #[cfg(unix)]
 #[test]
 fn credentials_file_is_owner_readable_only() {

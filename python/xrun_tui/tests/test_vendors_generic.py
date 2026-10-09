@@ -79,7 +79,7 @@ def test_splash_counts_ssh_hosts() -> None:
     assert "ssh" not in _configured_vendors({"ssh": {}})
 
 
-def test_vendors_screen_has_four_cards_in_order(bare_app) -> None:
+def test_vendors_screen_has_six_cards_in_order(bare_app) -> None:
     async def scenario() -> None:
         from textual.widgets import Static
         from xrun_tui.screens.vendors import VendorsScreen
@@ -90,7 +90,7 @@ def test_vendors_screen_has_four_cards_in_order(bare_app) -> None:
             await app.push_screen(screen)
             await pilot.pause()
             rows = [w.id for w in screen.query(".vendor-card")]
-            assert rows == ["vrow-0", "vrow-1", "vrow-2", "vrow-3"]
+            assert rows == [f"vrow-{i}" for i in range(6)]
             info = str(screen.query_one("#vinfo-1", Static).render())
             assert "nas" in info and "1" in info
             # Actions that do not apply to local / ssh only notify.
@@ -338,7 +338,7 @@ def test_vast_and_kaggle_rows_follow_their_ids_not_old_indices(bare_app, monkeyp
         from textual.widgets import Button, Static
         from xrun_tui.screens.vendors import _VENDORS, VendorsScreen, _row_index
 
-        assert [v for v, _, _ in _VENDORS] == ["local", "ssh", "vast", "kaggle"]
+        assert [v for v, _, _ in _VENDORS] == ["local", "ssh", "vast", "kaggle", "lightning", "colab"]
         app = bare_app('[vast]\napi_key = "test-key-abc"\n')
         async with app.run_test(size=(120, 50)) as pilot:
             screen = VendorsScreen()

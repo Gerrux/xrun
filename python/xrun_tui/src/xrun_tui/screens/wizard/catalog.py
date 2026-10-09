@@ -15,15 +15,18 @@ VENDOR_CARDS = [
     ("ssh",    "SSH machine",
         "Your own server / NAS / VPS over SSH (add hosts later in Vendors (g v) → SSH hosts)",
         "https://www.openssh.com/manual.html", True, False),
+    ("lightning", "Lightning AI",
+        "Free Studio GPUs — 15 credits/month (user id + API key from Settings → Keys)",
+        "https://lightning.ai/me/settings", True, False),
+    ("colab",  "Google Colab",
+        "Free notebooks — after the wizard run `xrun config login colab` in a terminal",
+        "https://colab.research.google.com/", True, False),
     ("runpod", "RunPod",
         "REST + SSH cloud (v0.7)",
         "https://www.runpod.io/console/user/settings", False, False),
     ("lambda", "Lambda Labs",
         "Stable-priced GPU cloud (v0.7)",
         "https://cloud.lambdalabs.com/api-keys", False, False),
-    ("lightning", "Lightning AI",
-        "80 free GPU-h/mo (v0.7)",
-        "https://lightning.ai/me/settings", False, False),
 ]
 
 # (id, label, available_now, url)
@@ -56,6 +59,14 @@ KAGGLE_FIELDS = [
     ("key",      "or legacy API key (paired with username)",                      True),
 ]
 
+# Lightning AI: user id + API key (both from lightning.ai → Settings → Keys),
+# optional default teamspace "owner/name". (field, placeholder, password, required)
+LIGHTNING_FIELDS = [
+    ("user_id",   "User ID (Settings → Keys)",                       False, True),
+    ("api_key",   "API key (Settings → Keys)",                       True,  True),
+    ("teamspace", "Teamspace owner/name (optional — default one if blank)", False, False),
+]
+
 # MLflow form. URL is required; auth is optional (token, OR user+password,
 # OR none for an anonymous server). (field, placeholder, password)
 MLFLOW_FIELDS = [
@@ -71,6 +82,7 @@ _FOCUS_URL_PREFIXES = {
     "wiz-sink-cb-":      lambda sid: SINK_BY_ID.get(sid, (None,) * 4)[3],
     "wiz-ssh-":          lambda _f: VENDOR_BY_ID["ssh"][3],
     "wiz-kaggle-":       lambda _f: VENDOR_BY_ID["kaggle"][3],
+    "wiz-lightning-":    lambda _f: VENDOR_BY_ID["lightning"][3],
     "wiz-mlflow-":       lambda _f: SINK_BY_ID["mlflow"][3],
     "wiz-notify-":       lambda _f: "https://ntfy.sh/",
 }

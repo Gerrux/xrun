@@ -340,3 +340,238 @@ fn pull_on_rejects_unknown_value() {
     assert!(err.contains("artifacts.pull_on"), "{err}");
     assert!(err.contains("done"), "{err}");
 }
+
+fn manifest_with(vendor: &str, section: &str) -> String {
+    format!("name: t\nvendor: {vendor}\n{section}run:\n  cmd: python train.py\n")
+}
+
+fn err_of(yaml: &str) -> String {
+    Manifest::from_yaml_str(yaml).unwrap_err().to_string()
+}
+
+#[test]
+fn lightning_minimal_without_section_ok() {
+    let m = Manifest::from_yaml_str(&manifest_with("lightning", "")).unwrap();
+    assert_eq!(m.vendor.as_str(), "lightning");
+    assert!(m.lightning.is_none());
+}
+
+#[test]
+fn lightning_full_roundtrips_through_yaml() {
+    let m = Manifest::from_yaml_str(&manifest_with(
+        "lightning",
+        "lightning:\n  machine: T4\n  interruptible: true\n  studio: My-Studio\n  teamspace: owner/name\n  workdir: xrun\n  gpu: auto\n  max_runtime_secs: 10800\n",
+    ))
+    .unwrap();
+    let l = m.lightning.as_ref().unwrap();
+    assert_eq!(l.machine.as_deref(), Some("T4"));
+    assert_eq!(l.max_runtime_secs, Some(10800));
+    let back = Manifest::from_yaml_str(&serde_yaml::to_string(&m).unwrap()).unwrap();
+    assert_eq!(m, back);
+    assert_eq!(m.canonical_hash(), back.canonical_hash());
+}
+
+#[test]
+fn lightning_unknown_field_rejected() {
+    let err = err_of(&manifest_with("lightning", "lightning:\n  bogus: 1\n"));
+    assert!(err.contains("bogus"), "{err}");
+}
+
+#[test]
+fn lightning_workdir_must_be_relative() {
+    let err = err_of(&manifest_with("lightning", "lightning:\n  workdir: /abs\n"));
+    assert!(err.contains("lightning.workdir"), "{err}");
+}
+
+#[test]
+fn lightning_teamspace_must_be_owner_slash_name() {
+    for bad in ["solo", "a/b/c", "/name", "owner/"] {
+        let err = err_of(&manifest_with(
+            "lightning",
+            &format!("lightning:\n  teamspace: \"{bad}\"\n"),
+        ));
+        assert!(err.contains("lightning.teamspace"), "{bad}: {err}");
+    }
+    Manifest::from_yaml_str(&manifest_with(
+        "lightning",
+        "lightning:\n  teamspace: owner/name\n",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn colab_run_workdir_must_be_absolute() {
+    let rel = "name: t\nvendor: colab\nrun:\n  cmd: python train.py\n  workdir: proj\n";
+    let err = err_of(rel);
+    assert!(
+        err.contains("vendor=colab: run.workdir must be absolute"),
+        "{err}"
+    );
+    let abs = "name: t\nvendor: colab\nrun:\n  cmd: python train.py\n  workdir: /content/proj\n";
+    Manifest::from_yaml_str(abs).unwrap();
+}
+
+#[test]
+fn lightning_studio_name_validated() {
+    for bad in ["has space", "under_score", "-lead", &"a".repeat(41)] {
+        let err = err_of(&manifest_with(
+            "lightning",
+            &format!("lightning:\n  studio: \"{bad}\"\n"),
+        ));
+        assert!(err.contains("lightning.studio"), "{bad}: {err}");
+    }
+    for good in ["a", "xrun-my-exp1", &"a".repeat(40)] {
+        Manifest::from_yaml_str(&manifest_with(
+            "lightning",
+            &format!("lightning:\n  studio: \"{good}\"\n"),
+        ))
+        .unwrap();
+    }
+}
+
+#[test]
+fn colab_minimal_and_full_ok() {
+    Manifest::from_yaml_str(&manifest_with("colab", "")).unwrap();
+    let m = Manifest::from_yaml_str(&manifest_with(
+        "colab",
+        "colab:\n  gpu: a100\n  high_mem: true\n  workdir: /content/xrun\n",
+    ))
+    .unwrap();
+    let c = m.colab.as_ref().unwrap();
+    assert_eq!(c.gpu.as_deref(), Some("a100"));
+    let back = Manifest::from_yaml_str(&serde_yaml::to_string(&m).unwrap()).unwrap();
+    assert_eq!(m, back);
+}
+
+#[test]
+fn colab_unknown_field_rejected() {
+    let err = err_of(&manifest_with("colab", "colab:\n  nope: 1\n"));
+    assert!(err.contains("nope"), "{err}");
+}
+
+#[test]
+fn colab_workdir_must_be_absolute() {
+    let err = err_of(&manifest_with("colab", "colab:\n  workdir: rel/dir\n"));
+    assert!(err.contains("colab.workdir"), "{err}");
+}
+
+#[test]
+fn colab_gpu_allowed_set_case_insensitive() {
+    for g in ["T4", "l4", "A100", "h100", "G4", "CPU"] {
+        Manifest::from_yaml_str(&manifest_with("colab", &format!("colab:\n  gpu: {g}\n"))).unwrap();
+    }
+    let err = err_of(&manifest_with("colab", "colab:\n  gpu: V100\n"));
+    assert!(err.contains("colab.gpu"), "{err}");
+}
+
+#[test]
+fn foreign_sections_rejected_for_new_vendors() {
+    let err = err_of(&manifest_with(
+        "lightning",
+        "ssh:\n  host_alias: box\ncolab: {}\n",
+    ));
+    assert!(err.contains("vendor=lightning must not have"), "{err}");
+    let err = err_of(&manifest_with("colab", "lightning: {}\n"));
+    assert!(
+        err.contains("vendor=colab must not have a [lightning] section"),
+        "{err}"
+    );
+}
+
+#[test]
+fn old_vendors_reject_lightning_and_colab_sections() {
+    let vast = "vast:\n  image: i\n  gpu: {type: RTX_4090, count: 1}\n";
+    let ssh = "ssh:\n  host_alias: box\n";
+    let kaggle = "kaggle:\n  kernel_slug: u/k\n";
+    for (vendor, base) in [
+        ("vast", vast),
+        ("kaggle", kaggle),
+        ("local", ""),
+        ("ssh", ssh),
+    ] {
+        for extra in ["lightning: {}\n", "colab: {}\n"] {
+            let err = err_of(&manifest_with(vendor, &format!("{base}{extra}")));
+            assert!(
+                err.contains(&format!("vendor={vendor} must not have")),
+                "{vendor}+{extra}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn vendor_from_str_and_all_cover_new_variants() {
+    use std::str::FromStr;
+    use xrun_core::manifest::Vendor;
+    assert_eq!(Vendor::from_str("lightning").unwrap(), Vendor::Lightning);
+    assert_eq!(Vendor::from_str("colab").unwrap(), Vendor::Colab);
+    assert!(Vendor::all().contains(&Vendor::Lightning));
+    assert!(Vendor::all().contains(&Vendor::Colab));
+}
+
+#[test]
+fn lightning_data_dst_is_home_relative() {
+    let ok = Manifest::from_yaml_str(&manifest_with(
+        "lightning",
+        "data:\n  - src: d.h5\n    dst: data/d.h5\n  - src: e.h5\n    dst: ~/data/e.h5\n",
+    ));
+    assert!(ok.is_ok(), "{:?}", ok.err());
+    let err = err_of(&manifest_with(
+        "lightning",
+        "data:\n  - src: d.h5\n    dst: /abs/d.h5\n",
+    ));
+    assert!(err.contains("relative to the Studio home"), "{err}");
+    // Colab keeps the absolute-dst rule of the other remote vendors.
+    let err = err_of(&manifest_with(
+        "colab",
+        "data:\n  - src: d.h5\n    dst: data/d.h5\n",
+    ));
+    assert!(err.contains("must start with '/'"), "{err}");
+}
+
+#[test]
+fn done_policy_lightning_colab_anchor_at_workdir_and_keep_kill_remote() {
+    use xrun_core::manifest::DonePolicy;
+    for vendor in ["lightning", "colab"] {
+        let bare = Manifest::from_yaml_str(&format!(
+            "name: s\nvendor: {vendor}\nrun:\n  cmd: python t.py\nartifacts:\n  patterns: [\"out/*\"]\n"
+        ))
+        .unwrap();
+        let p = DonePolicy::from_manifest(&bare);
+        assert!(
+            p.kill_remote,
+            "{vendor}: destroy must release the rented box"
+        );
+        assert_eq!(
+            p.pull_patterns,
+            ["out/*"],
+            "{vendor}: adapter anchors at the run dir"
+        );
+        assert!(p.anchor_dir.is_none());
+
+        // Colab requires an absolute workdir (validated), lightning a relative one.
+        let wd = if vendor == "colab" {
+            "/content/proj"
+        } else {
+            "proj"
+        };
+        let with_wd = Manifest::from_yaml_str(&format!(
+            "name: s\nvendor: {vendor}\nrun:\n  cmd: python t.py\n  workdir: {wd}\n\
+             artifacts:\n  patterns: [\"out/*\", \"/abs/x.log\"]\n"
+        ))
+        .unwrap();
+        let p = DonePolicy::from_manifest(&with_wd);
+        assert!(p.kill_remote);
+        let anchor = if vendor == "colab" {
+            "/content/proj"
+        } else {
+            "~/proj"
+        };
+        assert_eq!(p.anchor_dir.as_deref(), Some(anchor), "{vendor}");
+        assert_eq!(
+            p.pull_patterns,
+            [format!("{anchor}/out/*"), "/abs/x.log".to_string()],
+            "{vendor}"
+        );
+    }
+}

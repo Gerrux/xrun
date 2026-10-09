@@ -20,7 +20,7 @@ use clap::Args;
 
 #[derive(Debug, Args)]
 pub struct InitManifestArgs {
-    /// Vendor to target. Recognised: `vast`, `kaggle`, `local`, `ssh`.
+    /// Vendor to target. Recognised: `vast`, `kaggle`, `local`, `ssh`, `lightning`, `colab`.
     #[arg(long)]
     pub vendor: String,
 
@@ -50,7 +50,7 @@ pub struct InitManifestArgs {
 }
 
 /// Built-in vendors. Order matters for the `--vendor` parser only.
-const VENDORS: &[&str] = &["vast", "kaggle", "local", "ssh"];
+const VENDORS: &[&str] = &["vast", "kaggle", "local", "ssh", "lightning", "colab"];
 /// Built-in sinks. `none` is accepted as the "no fan-out" sentinel and
 /// behaves identically to passing zero `--sink` flags.
 const SINKS: &[&str] = &["mlflow", "wandb", "none"];
@@ -192,6 +192,8 @@ fn render_vendor_block(vendor: &str) -> String {
         "kaggle" => KAGGLE_BLOCK.to_string(),
         "local" => LOCAL_BLOCK.to_string(),
         "ssh" => SSH_BLOCK.to_string(),
+        "lightning" => LIGHTNING_BLOCK.to_string(),
+        "colab" => COLAB_BLOCK.to_string(),
         _ => unreachable!("vendor pre-validated"),
     }
 }
@@ -228,6 +230,18 @@ fn render_trailer(vendor: &str, sinks: &[String]) -> String {
         tips.push(
             "# - ssh: configure the host alias once via `xrun config set ssh.<alias>.host …`"
                 .into(),
+        );
+    }
+    if vendor == "lightning" {
+        tips.push(
+            "# - lightning: set credentials once via `xrun config set lightning.api_key …` \
+             and `xrun config set lightning.user_id …` (or run `lightning login`)."
+                .into(),
+        );
+    }
+    if vendor == "colab" {
+        tips.push(
+            "# - colab: log in once via `xrun config login colab` (needs a terminal).".into(),
         );
     }
     if sinks.iter().any(|s| s == "wandb") {
@@ -303,6 +317,35 @@ ssh:
 data:
   - src: ./data/train.h5
     dst: /home/TODO_user/xrun/data/train.h5
+
+";
+
+const LIGHTNING_BLOCK: &str = "\
+lightning:
+  machine: T4               # машина Lightning (T4, L4, A10G, ...); по умолчанию T4
+  interruptible: true       # прерываемая (spot) машина дешевле; по умолчанию true
+  # studio: TODO_my-studio  # имя Studio; по умолчанию xrun-<name>
+  # teamspace: owner/name   # по умолчанию lightning.teamspace из credentials
+  workdir: xrun             # корень на удалённой стороне, относительно домашней папки
+  # gpu: auto               # подсказка для CUDA_VISIBLE_DEVICES
+  # max_runtime_secs: 10800 # лимит времени Studio.start(max_runtime=)
+
+# data: — dst для Lightning только относительно домашней папки Studio, например:
+#   data:
+#     - src: ./data/train.h5
+#       dst: data/train.h5
+
+";
+
+const COLAB_BLOCK: &str = "\
+colab:
+  gpu: T4                   # T4 | L4 | A100 | H100 | G4 | cpu; по умолчанию T4
+  high_mem: false           # высокая память (только Colab Pro)
+  workdir: /content/xrun    # абсолютный корень на удалённой стороне
+
+data:
+  - src: ./data/train.h5
+    dst: /content/xrun/data/train.h5   # загрузка читает файл целиком в память: только небольшие данные
 
 ";
 
@@ -401,6 +444,22 @@ mod tests {
     fn ssh_trailer_warns_about_host_alias_setup() {
         let s = render("ssh", &[]);
         assert!(s.contains("# - ssh: configure the host alias once"));
+    }
+
+    #[test]
+    fn lightning_block_parses_as_a_valid_manifest() {
+        let s = render("lightning", &[]);
+        assert!(s.contains("lightning:"));
+        assert!(s.contains("# - lightning: set credentials once"));
+        xrun_core::manifest::Manifest::from_yaml_str(&s).expect("lightning skeleton validates");
+    }
+
+    #[test]
+    fn colab_block_parses_as_a_valid_manifest() {
+        let s = render("colab", &["mlflow"]);
+        assert!(s.contains("colab:"));
+        assert!(s.contains("# - colab: log in once via `xrun config login colab`"));
+        xrun_core::manifest::Manifest::from_yaml_str(&s).expect("colab skeleton validates");
     }
 
     #[test]

@@ -37,6 +37,8 @@ _VENDORS = [
     ("ssh",    "SSH hosts",     "Your own server, NAS or VPS"),
     ("vast",   "vast.ai",       "GPU cloud marketplace"),
     ("kaggle", "Kaggle",        "Notebook platform"),
+    ("lightning", "Lightning AI", "Free Studio GPUs — 15 credits/month"),
+    ("colab",  "Google Colab",  "Free notebooks — login via xrun config login colab"),
 ]
 
 
@@ -52,16 +54,74 @@ _LOGOS = {
     "ssh":    "⌁",
     "vast":   "⚡",
     "kaggle": "◆",
+    "lightning": "ϟ",
+    "colab":  "◉",
 }
 _BRAND = {
     "local":  "#9ece6a",
     "ssh":    "#bb9af7",
     "vast":   "#ff6b35",
     "kaggle": "#20beff",
+    "lightning": "#7c3aed",
+    "colab":  "#f9ab00",
 }
 
 
-_NOT_SECRET = {"kaggle.username"}
+_NOT_SECRET = {"kaggle.username", "lightning.user_id", "lightning.teamspace"}
+
+# Keys cleared by `r` per vendor (Colab has none: its token belongs to colab-cli).
+_REVOKE_KEYS = {
+    "vast": ["vast.api_key"],
+    "kaggle": ["kaggle.token", "kaggle.username", "kaggle.key"],
+    "lightning": ["lightning.api_key", "lightning.user_id", "lightning.teamspace"],
+}
+
+# Native login files: only their existence is checked, never their content.
+_LIGHTNING_NATIVE = (".lightning", "credentials.json")
+_COLAB_TOKEN = (".config", "colab-cli", "token.json")
+
+
+def _lightning_native_exists() -> bool:
+    return Path.home().joinpath(*_LIGHTNING_NATIVE).exists()
+
+
+def _colab_logged_in() -> bool:
+    return Path.home().joinpath(*_COLAB_TOKEN).exists()
+
+
+def _lightning_probe_env(section: dict) -> dict[str, str]:
+    """`XRUN_PROBE_LIGHTNING_*` env from a credentials section; empty values
+    are left out so the CLI falls back to the native file."""
+    pairs = (
+        ("XRUN_PROBE_LIGHTNING_API_KEY", "api_key"),
+        ("XRUN_PROBE_LIGHTNING_USER_ID", "user_id"),
+        ("XRUN_PROBE_LIGHTNING_TEAMSPACE", "teamspace"),
+    )
+    env: dict[str, str] = {}
+    for name, field in pairs:
+        val = str(section.get(field) or "").strip()
+        if val:
+            env[name] = val
+    return env
+
+
+def _lightning_save_ops(stored: dict, typed: dict[str, str]) -> tuple[list[tuple], str]:
+    """Credential writes for the Lightning form → (ops, warning). A blank
+    api_key keeps the stored one; a blank teamspace clears it."""
+    ops: list[tuple] = []
+    user_id = typed.get("user_id", "")
+    api_key = typed.get("api_key", "")
+    teamspace = typed.get("teamspace", "")
+    if api_key and not (user_id or stored.get("user_id")):
+        return [], "Enter the Lightning user ID for this API key"
+    if user_id and user_id != (stored.get("user_id") or ""):
+        ops.append(("set", "lightning.user_id", user_id))
+    if api_key:
+        ops.append(("set", "lightning.api_key", api_key))
+    if teamspace != (stored.get("teamspace") or ""):
+        ops.append(("set", "lightning.teamspace", teamspace) if teamspace
+                   else ("unset", "lightning.teamspace"))
+    return ops, ""
 
 
 async def _apply_ops(ops: list[tuple]) -> tuple[bool, str]:
@@ -85,7 +145,12 @@ def _vendor_configured(creds: dict, vid: str) -> bool:
         return True  # runs on this machine, nothing to configure
     if vid == "ssh":
         return bool(usable_hosts(creds))
+    if vid == "colab":
+        return _colab_logged_in()
     v = creds.get(vid, {})
+    if vid == "lightning":
+        return (bool(v.get("api_key")) and bool(v.get("user_id"))) \
+            or _lightning_native_exists()
     if vid == "kaggle":
         # Env var / access_token file takes priority (no stored creds needed)
         if os.environ.get("KAGGLE_API_TOKEN", "").strip():
@@ -112,6 +177,16 @@ def _card_info(creds: dict, vid: str) -> str:
         names = escape(", ".join(hosts))
         return (f"[#c0caf5]{n}[/] [#565f89]host{'s' if n != 1 else ''}:[/] "
                 f"[#c0caf5]{names}[/]")
+    if vid == "colab":
+        if _colab_logged_in():
+            return "[#c0caf5]Logged in[/]"
+        return ("[#565f89]Not logged in — run[/] [#c0caf5]`xrun config login colab`[/] "
+                "[#565f89]in a terminal[/]")
+    if vid == "lightning":
+        v = creds.get("lightning", {}) or {}
+        parts = [str(v[k]) for k in ("user_id", "teamspace") if v.get(k)]
+        if parts and _vendor_configured(creds, vid):
+            return f"[#c0caf5]{escape(' · '.join(parts))}[/]"
     if _vendor_configured(creds, vid):
         return ""
     return ("[#565f89]Press[/] [#c0caf5]Enter[/] "
@@ -303,6 +378,11 @@ class VendorsScreen(CardCursor, Screen):
         if vid == "ssh":
             await self.app.push_screen(SshHostsScreen())
             return
+        if vid == "colab":
+            self.notify("Run `xrun config login colab` in a terminal (Google "
+                        "sign-in needs a TTY), then press t to test",
+                        severity="information", timeout=10)
+            return
         await self.app.push_screen(VendorEditScreen(vid, vname))
 
     async def action_test(self) -> None:
@@ -315,6 +395,32 @@ class VendorsScreen(CardCursor, Screen):
             await self._check_local()
         elif vid == "ssh":
             await self._check_ssh()
+        elif vid in ("lightning", "colab"):
+            await self._check_cli_probe(vid)
+
+    async def _check_cli_probe(self, vid: str) -> None:
+        """Lightning / Colab: `xrun config probe`, shown on the card. A missing
+        or older binary yields an ok=False payload — an error card, no crash."""
+        if not _vendor_configured(self._creds, vid):
+            self.notify(
+                "Not logged in — run `xrun config login colab` in a terminal"
+                if vid == "colab" else "Lightning credentials are not set — press Enter",
+                severity="warning")
+            return
+        env = (_lightning_probe_env(self._creds.get("lightning", {}) or {})
+               if vid == "lightning" else None)
+        self._show_probe(vid, "checking", "")
+        try:
+            res = await services.probe(vid, env=env or None)
+        except Exception as exc:  # defensive: probe() already degrades itself
+            res = {"ok": False, "detail": str(exc)}
+        if not self.is_attached:
+            return
+        ok = bool(res.get("ok"))
+        detail = escape(str(res.get("detail") or ""))
+        colour = "#c0caf5" if ok else "#f7768e"
+        self._show_probe(vid, "ok" if ok else "error",
+                         f"[{colour}]{detail}[/]" if detail else _card_info(self._creds, vid))
 
     def _show_probe(self, vid: str, state: str, info: str) -> None:
         idx = _row_index(vid)
@@ -358,7 +464,8 @@ class VendorsScreen(CardCursor, Screen):
 
     async def action_import_native(self) -> None:
         vid = _VENDORS[self._cursor][0]
-        if vid in ("local", "ssh"):
+        if vid in ("local", "ssh", "lightning", "colab"):
+            # Lightning/Colab read their native login files directly.
             self.notify("Nothing to import for this vendor", severity="information")
             return
         if vid == "vast":
@@ -481,6 +588,8 @@ class VendorsScreen(CardCursor, Screen):
         urls = {
             "vast":   "https://cloud.vast.ai/billing/",
             "kaggle": "https://www.kaggle.com/settings",
+            "lightning": "https://lightning.ai/me/settings",
+            "colab":   "https://colab.research.google.com/",
         }
         url = urls.get(vid)
         if not url:
@@ -504,13 +613,16 @@ class VendorsScreen(CardCursor, Screen):
                         severity="information")
             return
 
+        if vid == "colab":
+            self.notify("The Colab login belongs to colab-cli — delete "
+                        "~/.config/colab-cli/token.json manually to log out",
+                        severity="information", timeout=8)
+            return
+
         async def _do_revoke(confirmed: bool) -> None:
             if not confirmed:
                 return
-            keys = (
-                ["vast.api_key"] if vid == "vast"
-                else ["kaggle.token", "kaggle.username", "kaggle.key"]
-            )
+            keys = _REVOKE_KEYS.get(vid) or ["kaggle.token", "kaggle.username", "kaggle.key"]
             ok, err = await _apply_ops([("unset", k) for k in keys])
             if not ok:
                 self.notify(f"Revoke failed: {err}", severity="error")
@@ -696,6 +808,45 @@ class VendorEditScreen(FormGuard, Screen):
                     "[#565f89]Native fallback:[/] [#7aa2f7]~/.kaggle/kaggle.json[/]",
                     classes="form-footer-hint",
                 )
+            elif self._vid == "lightning":
+                yield Static(
+                    "[bold #bb9af7]Lightning AI[/] "
+                    "[#565f89](User ID and API key: Settings → Keys at lightning.ai)[/]",
+                    classes="form-section",
+                )
+                with Horizontal(classes="form-row"):
+                    yield Label("User ID:", classes="form-label")
+                    yield Input(
+                        v.get("user_id") or "",
+                        id="input-lightning-user-id",
+                        placeholder="Lightning user ID…",
+                        classes="form-input",
+                    )
+                with Horizontal(classes="form-row"):
+                    yield Label("API Key:", classes="form-label")
+                    yield Input(
+                        "",
+                        id="input-lightning-api-key",
+                        password=True,
+                        placeholder=services.secret_placeholder(
+                            v.get("api_key"), "Lightning API key (Settings → Keys)…"
+                        ),
+                        classes="form-input",
+                    )
+                yield Static("", id="key-hint", classes="form-hint")
+                with Horizontal(classes="form-row"):
+                    yield Label("Teamspace:", classes="form-label")
+                    yield Input(
+                        v.get("teamspace") or "",
+                        id="input-lightning-teamspace",
+                        placeholder="owner/name (optional — default teamspace if blank)",
+                        classes="form-input",
+                    )
+                yield Static(
+                    "[#565f89]Native fallback:[/] [#7aa2f7]~/.lightning/credentials.json[/] "
+                    "[#565f89](from `lightning login`)[/]",
+                    classes="form-footer-hint",
+                )
             else:
                 # vast and others: single api_key field
                 api_key = v.get("api_key") or ""
@@ -777,6 +928,9 @@ class VendorEditScreen(FormGuard, Screen):
                 self.query_one("#token-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
             elif event.input.id == "input-kaggle-key":
+                self.query_one("#key-hint", Static).update(_masked(event.value))
+                self.query_one("#test-result", Static).update("")
+            elif event.input.id == "input-lightning-api-key":
                 self.query_one("#key-hint", Static).update(_masked(event.value))
                 self.query_one("#test-result", Static).update("")
         except Exception:
@@ -1076,6 +1230,20 @@ class VendorEditScreen(FormGuard, Screen):
             f"[#565f89]Press[/] [bold]Add key[/] [#565f89]to register.[/]{extras}"
         )
 
+    def _lightning_typed(self) -> dict[str, str]:
+        """What is in the Lightning form right now (blank api_key = keep)."""
+        return {
+            "user_id":   self.query_one("#input-lightning-user-id",   Input).value.strip(),
+            "api_key":   self.query_one("#input-lightning-api-key",   Input).value.strip(),
+            "teamspace": self.query_one("#input-lightning-teamspace", Input).value.strip(),
+        }
+
+    def _lightning_effective(self) -> dict[str, str]:
+        """Typed values, falling back to stored ones for blank fields."""
+        stored = self._creds.get("lightning", {}) or {}
+        typed = self._lightning_typed()
+        return {k: typed[k] or str(stored.get(k) or "") for k in typed}
+
     def _kaggle_effective(self) -> tuple[str, str, str]:
         """(username, key, token) to use now: what is typed, else what is
         stored. A typed legacy key outranks a stored token, as on save."""
@@ -1132,6 +1300,12 @@ class VendorEditScreen(FormGuard, Screen):
                               "username+key was entered")
             elif username and username != (stored.get("username") or ""):
                 ops = [("set", "kaggle.username", username)]
+        elif self._vid == "lightning":
+            notice = ""
+            ops, warn = _lightning_save_ops(stored, self._lightning_typed())
+            if warn:
+                self.notify(warn, severity="warning")
+                return
         else:
             api_key = self.query_one("#input-api-key", Input).value.strip()
             notice = ""
@@ -1175,6 +1349,16 @@ class VendorEditScreen(FormGuard, Screen):
             self.query_one("#input-kaggle-username", Input).value = v.get("username") or ""
         except Exception:
             pass
+        if self._vid == "lightning":
+            try:
+                inp = self.query_one("#input-lightning-api-key", Input)
+                inp.value = ""
+                inp.placeholder = services.secret_placeholder(
+                    v.get("api_key"), "Lightning API key (Settings → Keys)…")
+                self.query_one("#input-lightning-user-id", Input).value = v.get("user_id") or ""
+                self.query_one("#input-lightning-teamspace", Input).value = v.get("teamspace") or ""
+            except Exception:
+                pass
 
     async def action_test(self) -> None:
         await self._do_test()
@@ -1209,6 +1393,14 @@ class VendorEditScreen(FormGuard, Screen):
                     f"[bold #9ece6a]✓ Connected[/]  "
                     f"[#565f89]user:[/] [#c0caf5]{label}[/]  {info}"
                 )
+            elif self._vid == "lightning":
+                env = _lightning_probe_env(self._lightning_effective())
+                res = await services.probe("lightning", env=env or None)
+                detail = escape(str(res.get("detail") or ""))
+                if res.get("ok"):
+                    result.update(f"[bold #9ece6a]✓ Connected[/]  [#c0caf5]{detail}[/]")
+                else:
+                    result.update(f"[bold #f7768e]✗ {detail or 'probe failed'}[/]")
             else:
                 result.update("[#565f89]Test not available for this vendor[/]")
         except Exception as exc:

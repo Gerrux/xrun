@@ -22,7 +22,13 @@ First-run wizard. Без флагов на TTY — спавнит TUI-визар
 --kaggle-token <TOK|->    записать kaggle.token (JWT, предпочтительно)
 --kaggle-username <USR>   legacy-аутентификация (парный --kaggle-key)
 --kaggle-key <KEY|->      legacy-аутентификация (парный --kaggle-username)
+--lightning-key <KEY|->   записать lightning.api_key (парный --lightning-user-id)
+--lightning-user-id <ID>  записать lightning.user_id
+--lightning-teamspace <owner/name>   записать lightning.teamspace (необязательно)
 ```
+
+Colab отдельных флагов не имеет: токен OAuth создаётся командой
+`xrun config login colab`.
 
 Примеры:
 ```bash
@@ -241,6 +247,10 @@ xrun doctor --manifest exp/foo.yaml        # pre-flight перед launch
 xrun doctor --manifest exp/a.yaml --manifest exp/b.yaml --json
 ```
 
+### `xrun init-manifest --vendor <X> --sink <Y>`
+Генерирует скелет манифеста. Вендоры: `vast`, `kaggle`, `local`, `ssh`,
+`lightning`, `colab`. Каждое место для правки помечено `TODO_<field>`.
+
 ### `xrun tui`
 Открывает Python Textual TUI (`xrun-tui`). `xrun` без аргументов делает то же самое, если stdout — TTY; в противном случае выводит help и завершается с кодом 0.
 
@@ -248,8 +258,18 @@ xrun doctor --manifest exp/a.yaml --manifest exp/b.yaml --json
 
 ### `xrun doctor`
 Проверки сгруппированы по категориям: `core`, `vendor:vast`, `vendor:kaggle`,
-`vendor:ssh`, `vendor:local`, `sink:mlflow`, `manifest:<path>`. По умолчанию
-условные проверки скипаются, если соответствующий вендор/sink не сконфигурирован.
+`vendor:ssh`, `vendor:local`, `vendor:lightning`, `vendor:colab`, `sink:mlflow`,
+`manifest:<path>`. По умолчанию условные проверки скипаются, если
+соответствующий вендор/sink не сконфигурирован.
+
+Строки новых вендоров:
+
+| Проверка | Категория | Что проверяет |
+|----------|-----------|---------------|
+| `lightning_sdk` | `vendor:lightning` | Python-мост отвечает на ping, `lightning-sdk` импортируется (`pip install lightning-sdk`) |
+| `lightning_credentials` | `vendor:lightning` | заданы `lightning.api_key` + `lightning.user_id` либо есть файл от `lightning login` |
+| `colab_sdk` | `vendor:colab` | Python-мост отвечает на ping, `colab_cli` импортируется (`pip install google-colab-cli`) |
+| `colab_login` | `vendor:colab` | есть OAuth-токен (`xrun config login colab`) |
 
 ```
 --manifest <path>          добавить pre-flight для конкретного манифеста (повторяемый)
@@ -274,11 +294,31 @@ xrun config show                    текущая конфигурация (б�
 xrun config probe --vendor <name>   валидация переданных через
                                     XRUN_PROBE_* env vars кредов без записи на
                                     диск; используется визардом
+xrun config login colab             первый вход в Google Colab (OAuth,
+                                    copy-paste); нужен TTY
 ```
+
+`probe` для новых вендоров:
+
+- `--vendor lightning` читает `XRUN_PROBE_LIGHTNING_API_KEY`,
+  `XRUN_PROBE_LIGHTNING_USER_ID` и необязательный
+  `XRUN_PROBE_LIGHTNING_TEAMSPACE`; если env пуст — берёт файл
+  `lightning login`.
+- `--vendor colab` env не читает: проверяет токен colab-cli и запрашивает
+  сводку потребления аккаунта (compute units); без токена — `ok: false`
+  без запроса в сеть.
+
+`xrun config login colab` запускает bridge-скрипт Colab в интерактивном режиме
+с унаследованным stdio. Без TTY завершается ошибкой «requires a TTY» (как
+`xrun init`), поэтому из Claude Code его нужно выполнять в отдельном терминале.
+Консольный `colab login` под Windows не работает (`termios`), эта команда — работает.
+
+Ключи кредов Lightning: `xrun config set|unset lightning.api_key`,
+`lightning.user_id`, `lightning.teamspace` (`show` маскирует секрет).
 
 Что делает `unset`:
 
-- ключи кредов (`vast.api_key`, `kaggle.*`, `mlflow.*`, `wandb.api_key`,
+- ключи кредов (`vast.api_key`, `kaggle.*`, `lightning.*`, `mlflow.*`, `wandb.api_key`,
   `ntfy.*`, `telegram.*`, `webhook.url`) — поле очищается в `credentials.toml`;
 - `ssh.<alias>` — удаляет хост целиком, `ssh.<alias>.<field>` — очищает одно поле;
 - `vendors.<name>.<field>` — возвращает значение по умолчанию

@@ -1,7 +1,7 @@
 # xrun — ML experiment runner
 
-Rust CLI + Python Textual TUI для запуска ML-экспериментов на vast.ai, Kaggle
-и локальной машине. Один YAML-манифест → provision GPU → upload data → run
+Rust CLI + Python Textual TUI для запуска ML-экспериментов на vast.ai, Kaggle,
+Lightning AI, Google Colab, своём SSH-сервере и локальной машине. Один YAML-манифест → provision GPU → upload data → run
 training → poll events/metrics → SQLite.
 
 ## Стек
@@ -14,6 +14,9 @@ training → poll events/metrics → SQLite.
 | Kaggle адаптер | Rust | `crates/xrun-kaggle/` |
 | Local адаптер (host subprocess, без сети) | Rust | `crates/xrun-local/` |
 | SSH адаптер (свой сервер / NAS / VPS) | Rust | `crates/xrun-ssh/` |
+| Lightning AI адаптер (Studio, через Python-мост `lightning-sdk`) | Rust | `crates/xrun-lightning/` |
+| Google Colab адаптер (сессия, через Python-мост `colab_cli`) | Rust | `crates/xrun-colab/` |
+| Python-мост (`xrun_core::pybridge`, JSON-строки, постоянный процесс) | Rust | `crates/xrun-core/` |
 | Poll daemon engine | Rust | `crates/xrun-poller/` |
 | MLflow REST client | Rust | `crates/xrun-mlflow/` |
 | TUI (Python Textual) | Python | `python/xrun_tui/` |
@@ -57,6 +60,7 @@ xrun rerun <run-id> [--patch run.args.--lr=5e-4]
 xrun balance                                       # баланс vast.ai
 xrun config init|show|set <key> <val>
 xrun config probe --vendor <name>                  # валидация кредов из XRUN_PROBE_* env (для wizard)
+xrun config login colab                            # первый OAuth-вход в Colab (нужен TTY — в отдельном терминале)
 xrun doctor [--manifest path]... [--all] [--json]  # проверка окружения, group by category
 xrun gc                                            # удалить orphan инстансы
 xrun notify test|send|log|kinds                    # push-уведомления (ntfy/telegram/webhook/desktop)
@@ -83,7 +87,7 @@ Vendors, Launch, Artifacts, Compare, Settings, Doctor, Help.
 
 ```yaml
 name: my_experiment
-vendor: vast          # или kaggle
+vendor: vast          # или kaggle | lightning | colab | ssh | local
 gpu: RTX_4090
 data:
   - src: data/train.h5
@@ -132,11 +136,21 @@ printf '%s' "$KEY" | xrun init --non-interactive --mark-completed --kaggle-token
 После записи — **не** читать обратно. Никаких `xrun config show --secrets`
 / `cat ~/.config/xrun/credentials.toml`.
 
+Для `vendor: lightning` / `colab` нужны Python-библиотеки на машине
+пользователя: `pip install lightning-sdk` и `pip install google-colab-cli`
+(`xrun doctor` покажет `lightning_sdk` / `colab_sdk`). Ключи Lightning —
+`xrun init` (`--lightning-key -`, `--lightning-user-id`) или `xrun config set
+lightning.api_key|user_id|teamspace`; Colab — один раз `xrun config login
+colab` в отдельном терминале (как `xrun init`, без TTY не работает). Консольный
+`colab` под Windows не запускается (`termios`), но xrun ходит в библиотеку
+напрямую, так что вендор работает и на Windows.
+
 Шаблоны для копирования:
 - `exp/templates/quickstart.yaml` — zero-config local smoke (без кредов и данных).
 - `exp/templates/classification.yaml`, `regression.yaml` — local skeletons.
 - `exp/templates/kaggle_smoke.yaml` — минимальный Kaggle live-telemetry smoke.
 - `exp/templates/kaggle_classification.yaml` — classification на Kaggle с live metrics.
+- `exp/templates/lightning_smoke.yaml`, `exp/templates/colab_smoke.yaml` — smoke на Lightning AI Studio / Google Colab.
 
 ## Live-телеметрия Kaggle (с 0.5.3, notebook-mode parity с 0.5.4)
 
@@ -229,6 +243,7 @@ cargo fmt --check
   `--reuse-instance` без явного `on_done` — `keep`). На vast без `patterns`
   сначала тянется `**/best*`; упавший pull оставляет инстанс живым.
   local/ssh инстанс только помечается уничтоженным, без `destroy`
+  (lightning: `stop_instance` останавливает Studio, файлы остаются)
 - Push-уведомления шлёт poll-daemon (`run.done/failed`, `budget.warn` на 50/80 %
   от `--max-cost`, NaN/loss-spike, auto-destroy, cleanup failed). Каналы:
   Для человека: TUI `g n` (карточки, генерация топика, Detect chat id,
@@ -247,14 +262,16 @@ cargo fmt --check
 
 ## Безопасность кредов (для AI-ассистентов)
 
-Креды (`vast.api_key`, `kaggle.{username,key}`, `mlflow.*`, SSH-ключи) живут вне репо
+Креды (`vast.api_key`, `kaggle.{username,key}`, `lightning.{api_key,user_id,teamspace}`,
+`mlflow.*`, SSH-ключи) живут вне репо
 в `~/.config/xrun/credentials.toml` (Linux) · `~/Library/Application Support/xrun/`
 (Mac) · `%APPDATA%\xrun\` (Windows). Эти пути защищены deny-правилами в
 `.claude/settings.json`.
 
 **Правила для Claude / любого AI-агента:**
 
-1. **Не читай** `credentials.toml`, `~/.kaggle/kaggle.json`, `~/.ssh/id_*`, `.env`
+1. **Не читай** `credentials.toml`, `~/.kaggle/kaggle.json`, `~/.ssh/id_*`, `.env`,
+   `~/.lightning/credentials.json`, `~/.config/colab-cli/token.json`
    ни через `Read`, ни через `cat`/`type`/`Get-Content`. Если нужен debug конфига —
    попроси пользователя прислать redacted-версию.
 2. **Не запускай** `xrun config show --secrets`, `xrun doctor --verbose`,

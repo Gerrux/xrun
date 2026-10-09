@@ -281,7 +281,7 @@ destroy).
 
 - `vendor: ssh` (свой сервер / NAS / VPS) — попадает в v0.6 как продолжение
   vendor phase 0 (memory `project_vendor_roadmap.md`).
-- RunPod / Lambda Labs / Lightning AI — в v0.6+ соответственно.
+- RunPod / Lambda Labs — позже; Lightning AI и Google Colab — v0.11.
 
 ## v0.6 — Vendor phase 0 cont'd: `xrun-ssh`
 
@@ -472,12 +472,56 @@ artifacts API для checkpoint-uploads. TensorBoard sink — backlog.
 - Доп. каналы (Pushover, email, Matrix); launchd на macOS (сейчас cron).
 - Anomaly: overfit detection (train↓ val↑), per-manifest пороги.
 
+## v0.11 — Vendor phase 1: Lightning AI + Google Colab
+
+**Цель**: два бесплатных GPU-вендора с паритетом lifecycle по образцу ssh
+(provision → upload → execute → tail → pull → destroy). Оба говорят с
+платформой через Python-библиотеку, поэтому общий компонент — постоянный
+Python-мост.
+
+### Scope
+
+- [x] `xrun_core::pybridge`: постоянный Python-процесс, JSON-строки,
+      сентинел `<<<XRUN_BRIDGE>>>`, респавн с одним ретраем, `ping`;
+      неидемпотентные операции (старт/стоп бокса, запуск тренировки) не
+      повторяются после падения моста.
+- [x] `Vendor::Lightning` / `Vendor::Colab`, `LightningSpec`, `ColabSpec`
+      (`deny_unknown_fields`), валидация секций и путей
+      (`lightning.workdir` без ведущего `/`, `colab.workdir` абсолютный).
+- [x] `[lightning]` в credentials.toml (`api_key`, `user_id`, `teamspace`);
+      Colab — токен colab-cli, своей секции нет.
+- [x] Crate `crates/xrun-lightning/`: Studio как инстанс, `stop()` на
+      `destroy`, `--reuse-instance` переиспользует Studio.
+- [x] Crate `crates/xrun-colab/`: сессия `xrun-<run_id>`, `stop` = unassign
+      + удаление из store; работает на Windows (библиотека, не консольный
+      `colab`).
+- [x] Адаптеры обобщены по `LightningBridge` / `ColabBridge`; тесты
+      lifecycle на in-memory fake.
+- [x] CLI: `xrun config login colab`, `xrun init --lightning-key /
+      --lightning-user-id / --lightning-teamspace`, `config probe --vendor
+      lightning|colab`, `config set lightning.*`, `init-manifest --vendor
+      lightning|colab`, строки doctor `lightning_sdk`, `lightning_credentials`,
+      `colab_sdk`, `colab_login`.
+- [x] TUI: карточки Lightning AI и Google Colab на экране Vendors и в
+      визарде.
+- [x] Шаблоны `exp/templates/lightning_smoke.yaml`, `colab_smoke.yaml`
+      (`xrun_hook` уезжает через `data:`, на PyPI его нет).
+- [ ] Живой smoke на реальных аккаунтах (см. чек-лист в docs/MANIFEST.md и
+      отчёт ревью от 2026-10-09): главное — переживает ли detached-процесс
+      конец SDK-сессии на Lightning и является ли `$HOME` корнем
+      `upload_file`; на Colab — `/content`-прелюдия и выживание Popen в
+      kernel.
+
+### Не входит в v0.11
+
+- `run.notebook` для обоих вендоров.
+- Учёт стоимости (`--max-cost`): цена Studio/сессии xrun не известна.
+- Colab: потоковая загрузка больших данных (сейчас файл целиком, base64).
+
 ## v0.9+ (backlog)
 - RunPod (`crates/xrun-runpod/`): REST + SSH, копия `xrun-vast` с другим API.
 - Lambda Labs (`crates/xrun-lambda/`): REST + SSH; стабильные цены, проще
   для `--max-cost`.
-- Lightning AI (`crates/xrun-lightning/`): poll-стиль (как Kaggle), 80
-  GPU-ч/мес бесплатно — нужна проверка REST.
 - `xrun diff <run-a> <run-b>` — манифесты + метрики side-by-side.
 - Anomaly detection: plateau / overfit / per-manifest пороги (NaN и loss
   spike — уже в v0.8.1).

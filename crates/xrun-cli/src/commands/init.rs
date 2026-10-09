@@ -13,7 +13,7 @@
 //! after the user finishes (or skips) the wizard so we don't re-prompt.
 //!
 //! Credential flags (`--vast-key`, `--kaggle-token`, `--kaggle-username`,
-//! `--kaggle-key`, `--wandb-key`) accept a literal value or `-` to read one
+//! `--kaggle-key`, `--wandb-key`, `--lightning-key`) accept a literal value or `-` to read one
 //! trimmed line from stdin. Only one `-` is allowed per invocation. They
 //! require `--non-interactive`.
 
@@ -76,6 +76,19 @@ pub struct InitArgs {
     #[arg(long, value_name = "KEY")]
     pub wandb_key: Option<String>,
 
+    /// Lightning AI API key (pair with --lightning-user-id). Pass `-` to read
+    /// from stdin. Requires --non-interactive.
+    #[arg(long, value_name = "KEY")]
+    pub lightning_key: Option<String>,
+
+    /// Lightning AI user id (pair with --lightning-key). Requires --non-interactive.
+    #[arg(long, value_name = "USER_ID")]
+    pub lightning_user_id: Option<String>,
+
+    /// Default Lightning teamspace `owner/name` (optional). Requires --non-interactive.
+    #[arg(long, value_name = "OWNER/NAME")]
+    pub lightning_teamspace: Option<String>,
+
     /// Emit machine-readable JSON. Affects `--probe-local` and the summary
     /// printed at the end.
     #[arg(long)]
@@ -110,7 +123,7 @@ pub fn run(args: &InitArgs, config_dir: &Path) -> Result<()> {
     if !std::io::stdout().is_terminal() {
         bail!(
             "xrun init requires a TTY for interactive mode. \
-             Use --non-interactive (with --sink / --mark-completed / --vast-key / --kaggle-token) for scripted setup, \
+             Use --non-interactive (with --sink / --mark-completed / --vast-key / --kaggle-token / --lightning-key) for scripted setup, \
              or --probe-local --json for capability detection."
         );
     }
@@ -124,6 +137,9 @@ fn has_credential_flags(args: &InitArgs) -> bool {
         || args.kaggle_username.is_some()
         || args.kaggle_key.is_some()
         || args.wandb_key.is_some()
+        || args.lightning_key.is_some()
+        || args.lightning_user_id.is_some()
+        || args.lightning_teamspace.is_some()
 }
 
 fn spawn_wizard_tui() -> Result<()> {
@@ -204,6 +220,16 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
     let kaggle_username = resolve_credential(&args.kaggle_username, &mut stdin_used)?;
     let kaggle_key = resolve_credential(&args.kaggle_key, &mut stdin_used)?;
     let wandb_key = resolve_credential(&args.wandb_key, &mut stdin_used)?;
+    let lightning_key = resolve_credential(&args.lightning_key, &mut stdin_used)?;
+    let lightning_user_id = args.lightning_user_id.clone();
+    let lightning_teamspace = args.lightning_teamspace.clone();
+
+    // Sanity: Lightning needs the key and the user id together.
+    match (&lightning_key, &lightning_user_id) {
+        (Some(_), None) => bail!("--lightning-key requires --lightning-user-id"),
+        (None, Some(_)) => bail!("--lightning-user-id requires --lightning-key"),
+        _ => {}
+    }
 
     // Sanity: kaggle_username and kaggle_key are a pair (legacy auth).
     match (&kaggle_username, &kaggle_key) {
@@ -221,6 +247,8 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
         || kaggle_token.is_some()
         || kaggle_username.is_some()
         || wandb_key.is_some()
+        || lightning_key.is_some()
+        || lightning_teamspace.is_some()
     {
         let mut creds = Credentials::load(config_dir)?;
         if let Some(k) = vast_key {
@@ -246,6 +274,21 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
         if let Some(k) = wandb_key {
             creds.wandb.api_key = Some(k);
             creds_set.push("wandb.api_key");
+            creds_changed = true;
+        }
+        if let Some(k) = lightning_key {
+            creds.lightning.api_key = Some(k);
+            creds_set.push("lightning.api_key");
+            creds_changed = true;
+        }
+        if let Some(u) = lightning_user_id {
+            creds.lightning.user_id = Some(u);
+            creds_set.push("lightning.user_id");
+            creds_changed = true;
+        }
+        if let Some(t) = lightning_teamspace {
+            creds.lightning.teamspace = Some(t);
+            creds_set.push("lightning.teamspace");
             creds_changed = true;
         }
         if creds_changed {
@@ -281,6 +324,17 @@ fn non_interactive(args: &InitArgs, config_dir: &Path) -> Result<()> {
                 .map(|u| format!("authenticated as {u}"))
                 .map_err(|e| e.to_string());
             probe_results.push(("kaggle".into(), res));
+        }
+        let lightning_keyed =
+            creds.lightning.api_key.is_some() && creds.lightning.user_id.is_some();
+        if lightning_keyed {
+            use xrun_lightning::{LightningBridge, PyLightningBridge};
+            let bridge = PyLightningBridge::new(&creds.lightning);
+            let res = bridge
+                .whoami(creds.lightning.teamspace.as_deref())
+                .map(|w| format!("authenticated as {}", w.user))
+                .map_err(|e| e.to_string());
+            probe_results.push(("lightning".into(), res));
         }
         let any_failed = probe_results.iter().any(|(_, r)| r.is_err());
         if !any_failed && !probe_results.is_empty() && !cfg.ui.wizard_completed {

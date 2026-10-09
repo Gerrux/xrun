@@ -3,7 +3,7 @@
 ## Цели и не-цели
 
 **Цели**
-- Один манифест → один запуск на любом из поддерживаемых вендоров (vast.ai, Kaggle).
+- Один манифест → один запуск на любом из поддерживаемых вендоров (vast.ai, Kaggle, local, ssh, Lightning AI, Google Colab).
 - Полная история запусков локально, без зависимости от облачного UI.
 - Live-метрики и стадии без логин-сессий и без WandB.
 - Минимальная поверхность для Claude skill — 6–8 CLI-команд, никаких ad-hoc bash.
@@ -61,10 +61,30 @@ xrun-core      — manifest types, sqlite, event/metric model, budget, vendor tr
 xrun-poller    — polling loop engine (Poller, CancellationToken, PollerLock); used by xrun-cli
 xrun-vast      — vast.ai адаптер (provision, upload, exec, tail, pull, CREATE_NO_WINDOW on Windows)
 xrun-kaggle    — kaggle адаптер (kernels push/status/output, embedded xrun_hook wheel)
+xrun-lightning — Lightning AI адаптер (Studio как инстанс; через Python-мост `lightning-sdk`)
+xrun-colab     — Google Colab адаптер (сессия как инстанс; через Python-мост `colab_cli`)
 xrun-mlflow    — REST клиент для tracking server (metric mirror, retry, wiremock tests)
 xrun-cli       — clap-парсер, все subcommands; spawn xrun-tui при запуске без аргументов
 xrun-tui       — legacy Rust ratatui TUI (за feature-флагом, не используется по умолчанию)
 ```
+
+### Python-мост (`xrun_core::pybridge`)
+
+У Lightning AI и Google Colab нет CLI/REST, которые стоило бы вызывать
+напрямую, зато есть Python-библиотеки (`lightning-sdk`, `colab_cli`). Адаптеры
+говорят с ними через `PyBridge`: один постоянный Python-процесс на экземпляр
+адаптера, протокол — по одной JSON-строке на запрос в stdin. Ответ — строка
+stdout с префиксом-сентинелом `<<<XRUN_BRIDGE>>>` и JSON (`{"ok":true,"result":…}`
+или `{"ok":false,"error":…,"kind":"auth|not_found|busy|other"}`); остальной вывод
+библиотек игнорируется. Скрипты вендоров самодостаточны и встроены в бинарь;
+записываются во временный каталог (`xrun-bridge/<имя>-<sha256>.py`),
+интерпретатор — `XRUN_PYTHON`, затем `python`/`python3`/`py -3`.
+
+Мост постоянный, потому что холодный `import lightning_sdk` занимает ≈ 3.5 с, а
+тик поллера — 5 с: процесс на каждый вызов съел бы весь тик. При обрыве
+канала мост перезапускается один раз и повторяет запрос. Адаптеры обобщены по
+трейтам `LightningBridge` / `ColabBridge`, в тестах вместо моста стоит
+in-memory fake, поэтому полный lifecycle проверяется без сети и Python.
 
 ## Python TUI (xrun-tui)
 
@@ -105,6 +125,10 @@ python/xrun_tui/          — Python Textual TUI
 6. **Stop** — при `done` событии или ручной команде poller инициирует `vastai destroy`.
 
 Kaggle flow тот же, кроме шагов 2 и 4: provision = `kaggle kernels push`, polling = `kaggle kernels status` + финальный `kaggle kernels output` (нет live-tail). Метрики восстанавливаются после завершения, чарты постфактум.
+
+Lightning и Colab устроены как ssh: на удалённой стороне в `<workdir>/<run-id>/`
+лежат `events.jsonl`, `metrics.jsonl`, `stdout.log`, `run.pid`, поллер тейлит их
+по размеру/смещению, а вместо `ssh` и `rsync` команды идут через Python-мост.
 
 ## Граница с MLflow
 

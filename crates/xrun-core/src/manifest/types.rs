@@ -12,6 +12,8 @@ pub enum Vendor {
     Kaggle,
     Local,
     Ssh,
+    Lightning,
+    Colab,
 }
 
 impl Vendor {
@@ -23,13 +25,22 @@ impl Vendor {
             Vendor::Kaggle => "kaggle",
             Vendor::Local => "local",
             Vendor::Ssh => "ssh",
+            Vendor::Lightning => "lightning",
+            Vendor::Colab => "colab",
         }
     }
 
     /// All variants. Single source of truth — extend by adding the variant
     /// here when wiring up a new adapter.
     pub const fn all() -> &'static [Vendor] {
-        &[Vendor::Vast, Vendor::Kaggle, Vendor::Local, Vendor::Ssh]
+        &[
+            Vendor::Vast,
+            Vendor::Kaggle,
+            Vendor::Local,
+            Vendor::Ssh,
+            Vendor::Lightning,
+            Vendor::Colab,
+        ]
     }
 }
 
@@ -47,6 +58,8 @@ impl FromStr for Vendor {
             "kaggle" => Ok(Vendor::Kaggle),
             "local" => Ok(Vendor::Local),
             "ssh" => Ok(Vendor::Ssh),
+            "lightning" => Ok(Vendor::Lightning),
+            "colab" => Ok(Vendor::Colab),
             other => Err(format!(
                 "unknown vendor `{other}` (expected one of: {})",
                 Vendor::all()
@@ -79,6 +92,46 @@ pub struct SshSpec {
     /// Same `CUDA_VISIBLE_DEVICES` semantics as `LocalSpec.gpu`. `None` =
     /// inherit (typically what the remote already exports).
     pub gpu: Option<String>,
+}
+
+/// `[lightning]` section: a Lightning AI Studio driven through the Python
+/// `lightning-sdk` bridge. Every field is optional — defaults are sane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct LightningSpec {
+    /// `lightning_sdk` machine name (`T4`, `L4`, `A10G`, …). Default `T4`.
+    pub machine: Option<String>,
+    /// Spot-like cheaper machine that may be reclaimed. Default `true`.
+    pub interruptible: Option<bool>,
+    /// Studio name. Default `xrun-<manifest.name>` sanitized to `[a-z0-9-]`,
+    /// at most 40 chars.
+    pub studio: Option<String>,
+    /// `owner/name`; overrides `lightning.teamspace` from credentials.
+    pub teamspace: Option<String>,
+    /// Remote root, RELATIVE to the studio home (no leading `/`).
+    /// Default `xrun`; per-run subdir `<workdir>/<run-id>/`.
+    pub workdir: Option<String>,
+    /// Same `CUDA_VISIBLE_DEVICES` semantics as `SshSpec.gpu`.
+    pub gpu: Option<String>,
+    /// Forwarded to `Studio.start(max_runtime=)`.
+    pub max_runtime_secs: Option<u64>,
+}
+
+/// GPU names accepted by `colab.gpu` (compared case-insensitively).
+pub const COLAB_GPU_VALUES: &[&str] = &["t4", "l4", "a100", "h100", "g4", "cpu"];
+
+/// `[colab]` section: a Google Colab runtime driven through the Python
+/// `colab_cli` library bridge. Every field is optional.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ColabSpec {
+    /// One of `T4 | L4 | A100 | H100 | G4 | cpu`. Default `T4`.
+    pub gpu: Option<String>,
+    /// High-RAM runtime (Colab Pro only). Default `false`.
+    pub high_mem: Option<bool>,
+    /// Absolute remote root. Default `/content/xrun`; per-run subdir
+    /// `<workdir>/<run-id>/`.
+    pub workdir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -350,6 +403,18 @@ impl DonePolicy {
                     anchor_dir = Some(dir);
                 }
             }
+            // Same layout as ssh (training `cd`s into `run.workdir`), but the
+            // box is rented: `kill_remote` stays on so `destroy` kills the pid
+            // AND releases the Studio / session instead of leaving it to burn
+            // credits.
+            Vendor::Lightning | Vendor::Colab => {
+                if let Some(dir) = ssh_workdir_anchor(manifest.run.workdir.as_deref()) {
+                    for p in &mut pull_patterns {
+                        *p = anchor_vast_pattern(Some(&dir), p);
+                    }
+                    anchor_dir = Some(dir);
+                }
+            }
             // Kaggle's `pull` ignores the pattern and downloads the whole
             // kernel output (and re-ingests its events.jsonl): one call, not
             // one per pattern.
@@ -450,6 +515,8 @@ pub struct Manifest {
     pub kaggle: Option<KaggleSpec>,
     pub local: Option<LocalSpec>,
     pub ssh: Option<SshSpec>,
+    pub lightning: Option<LightningSpec>,
+    pub colab: Option<ColabSpec>,
     pub data: Option<Vec<DataSource>>,
     pub run: RunSpec,
     pub checkpoints: Option<Checkpoints>,

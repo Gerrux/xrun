@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use xrun_colab::ColabAdapter;
 use xrun_core::{
     config::credentials::{KaggleCredentials, VastCredentials},
     manifest::Manifest,
@@ -14,12 +15,13 @@ use xrun_core::{
     Credentials, GlobalConfig, Store, VendorAdapter,
 };
 use xrun_kaggle::KaggleAdapter;
+use xrun_lightning::LightningAdapter;
 use xrun_local::LocalAdapter;
 use xrun_ssh::SshAdapter;
 use xrun_vast::VastAdapter;
 
 /// Every vendor a run can be recorded under.
-pub const KNOWN_VENDORS: &[&str] = &["vast", "kaggle", "local", "ssh"];
+pub const KNOWN_VENDORS: &[&str] = &["vast", "kaggle", "local", "ssh", "lightning", "colab"];
 
 // ---------------------------------------------------------------------------
 // Credentials
@@ -273,7 +275,7 @@ pub fn vendor_or_vast(vendor: &str) -> &str {
     }
 }
 
-/// Build the adapter for `vendor` (vast, kaggle, local, ssh) bound to
+/// Build the adapter for `vendor` (vast, kaggle, local, ssh, lightning, colab) bound to
 /// `ctx.run_id`. Opens its own store handle where the adapter needs one.
 pub fn build_adapter(vendor: &str, ctx: &AdapterCtx<'_>) -> Result<Box<dyn VendorAdapter>> {
     ensure_vendor_supported(ctx.command, vendor, ctx.supported)?;
@@ -305,6 +307,16 @@ pub fn build_adapter(vendor: &str, ctx: &AdapterCtx<'_>) -> Result<Box<dyn Vendo
             ctx.runs_dir.to_path_buf(),
         )),
         "ssh" => build_ssh_adapter(ctx)?,
+        // Studio name and teamspace live in the stored instance handle, so
+        // neither adapter needs the manifest here.
+        "lightning" => {
+            let creds = Credentials::load(ctx.config_dir).unwrap_or_default();
+            Box::new(LightningAdapter::new(
+                open_adapter_store(ctx)?,
+                creds.lightning,
+            ))
+        }
+        "colab" => Box::new(ColabAdapter::new(open_adapter_store(ctx)?)),
         other => bail!("{}: no adapter for vendor {other}", ctx.command),
     };
     adapter.set_run_id(ctx.run_id);
@@ -580,7 +592,7 @@ mod tests {
         let err = ctx_err("runpod", KNOWN_VENDORS);
         assert_eq!(
             err,
-            "unknown vendor `runpod` (known: vast, kaggle, local, ssh)"
+            "unknown vendor `runpod` (known: vast, kaggle, local, ssh, lightning, colab)"
         );
     }
 

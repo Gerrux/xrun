@@ -52,7 +52,8 @@ pub fn home_relative(path: &str) -> String {
 
 /// Shell word for a remote path that stays correct after a `cd`: absolute
 /// paths are quoted as is, home-relative ones get an explicit `"$HOME"/`.
-fn absolute_shell_path(path: &str) -> String {
+/// Shared with the Lightning / Colab adapters, which run the same launch script.
+pub fn absolute_shell_path(path: &str) -> String {
     if path.starts_with('/') {
         cmd::shell_quote(path)
     } else {
@@ -625,8 +626,8 @@ impl SshErrorExt for SshError {
 }
 
 /// The training cwd: `run.workdir` (`~` resolved against the remote home)
-/// when set, else the per-run dir.
-fn training_dir(run_spec: &RunSpec, run_dir: &str) -> String {
+/// when set, else the per-run dir. Shared with the Lightning / Colab adapters.
+pub fn training_dir(run_spec: &RunSpec, run_dir: &str) -> String {
     run_spec
         .workdir
         .as_deref()
@@ -637,7 +638,8 @@ fn training_dir(run_spec: &RunSpec, run_dir: &str) -> String {
 
 /// Remote source for a pull: absolute patterns as is, `~/x` against the
 /// remote home (rsync's own start dir), anything else under the run dir.
-fn pull_pattern(run_dir: &str, remote: &str) -> String {
+/// Shared with the Lightning / Colab adapters.
+pub fn pull_pattern(run_dir: &str, remote: &str) -> String {
     if remote.starts_with('/') {
         remote.to_string()
     } else if remote == "~" || remote.starts_with("~/") {
@@ -647,7 +649,9 @@ fn pull_pattern(run_dir: &str, remote: &str) -> String {
     }
 }
 
-fn build_cmd_line(cmd_base: &str, run_spec: &RunSpec) -> String {
+/// `<cmd> <k> <v> …` with args sorted by key (string values unquoted).
+/// Shared with the Lightning / Colab adapters.
+pub fn build_cmd_line(cmd_base: &str, run_spec: &RunSpec) -> String {
     let Some(args) = &run_spec.args else {
         return cmd_base.to_string();
     };
@@ -670,7 +674,9 @@ fn build_cmd_line(cmd_base: &str, run_spec: &RunSpec) -> String {
     }
 }
 
-fn classify_kind(filename: &str) -> String {
+/// Artifact kind from the file extension (`checkpoint`, `figure`, `json`,
+/// `log`, else `other`). Shared with the Lightning / Colab adapters.
+pub fn classify_kind(filename: &str) -> String {
     let ext = Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())

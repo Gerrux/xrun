@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import webbrowser
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -36,6 +37,7 @@ from xrun_tui import services as _services
 from xrun_tui.screens.wizard import steps as _steps
 from xrun_tui.screens.wizard.catalog import (
     KAGGLE_FIELDS,
+    LIGHTNING_FIELDS,
     MLFLOW_FIELDS,
     SINK_BY_ID,
     SSH_FIELDS,
@@ -69,6 +71,10 @@ class WizardScreen(Screen):
         self._selected_sinks: set[str] = {"mlflow"}
         self._ssh_fields: dict[str, str] = {}
         self._kaggle_fields: dict[str, str] = {}
+        self._lightning_fields: dict[str, str] = {}
+        # What credentials.toml already holds for Lightning: the user ID is
+        # prefilled into the form while the key stays blank (= keep it).
+        self._lightning_stored: dict[str, str] = {}
         self._mlflow_fields: dict[str, str] = {}
         self._doctor_loaded = False
         self._probe_results: list[dict] = []
@@ -111,6 +117,24 @@ class WizardScreen(Screen):
             self._selected_vendors.add("kaggle")
             if usr := kag.get("username"):
                 self._kaggle_fields["username"] = usr
+
+        lit = creds.get("lightning", {}) or {}
+        if (lit.get("api_key") and lit.get("user_id")) or (
+            Path.home() / ".lightning" / "credentials.json"
+        ).exists():
+            self._existing_vendors.add("lightning")
+            self._selected_vendors.add("lightning")
+        self._lightning_stored = {
+            k: str(lit.get(k) or "") for k in ("user_id", "api_key", "teamspace")
+        }
+        if lit.get("user_id"):
+            self._lightning_fields["user_id"] = str(lit["user_id"])
+        if lit.get("teamspace"):
+            self._lightning_fields["teamspace"] = str(lit["teamspace"])
+
+        if (Path.home() / ".config" / "colab-cli" / "token.json").exists():
+            self._existing_vendors.add("colab")
+            self._selected_vendors.add("colab")
 
         ssh_section = creds.get("ssh", {}) or {}
         # First [ssh.<alias>] block wins — wizard handles a single host.
@@ -313,6 +337,15 @@ class WizardScreen(Screen):
             self._reveal_form("#wiz-kaggle-form", on,
                               [f"#wiz-kaggle-{f}" for f, *_ in KAGGLE_FIELDS],
                               self._kaggle_fields)
+        if vid == "lightning":
+            self._reveal_form("#wiz-lightning-form", on,
+                              [f"#wiz-lightning-{f}" for f, *_ in LIGHTNING_FIELDS],
+                              self._lightning_fields)
+        if vid == "colab":
+            try:
+                self.query_one("#wiz-colab-form", Vertical).display = on
+            except Exception:
+                pass
 
     def _toggle_sink(self, sid: str, on: bool) -> None:
         if on:
@@ -375,6 +408,8 @@ class WizardScreen(Screen):
             self._set_or_pop(self._ssh_fields, wid[len("wiz-ssh-"):], v)
         elif wid.startswith("wiz-kaggle-"):
             self._set_or_pop(self._kaggle_fields, wid[len("wiz-kaggle-"):], v)
+        elif wid.startswith("wiz-lightning-"):
+            self._set_or_pop(self._lightning_fields, wid[len("wiz-lightning-"):], v)
         elif wid.startswith("wiz-mlflow-"):
             self._set_or_pop(self._mlflow_fields, wid[len("wiz-mlflow-"):], v)
         elif wid == "wiz-notify-topic":
@@ -422,6 +457,19 @@ class WizardScreen(Screen):
             if tok and (usr or kk):
                 self.notify(
                     "Kaggle: pick ONE — JWT token OR username+key, not both.",
+                    severity="warning", timeout=8,
+                )
+                return False
+
+        if "lightning" in self._selected_vendors:
+            uid = self._lightning_fields.get("user_id", "")
+            lkey = self._lightning_fields.get("api_key", "")
+            # A blank key next to the prefilled user ID keeps the stored key.
+            key_kept = bool(self._lightning_stored.get("api_key"))
+            if (lkey and not uid) or (uid and not lkey and not key_kept):
+                self.notify(
+                    "Lightning needs BOTH user ID and API key "
+                    "(or leave both blank to keep what is already on disk).",
                     severity="warning", timeout=8,
                 )
                 return False
@@ -535,6 +583,24 @@ class WizardScreen(Screen):
                 await self._set(failed, "kaggle.username", usr)
                 await self._set(failed, "kaggle.key", kk, secret=True)
                 await self._replace_auth(failed, ("kaggle.token",))
+
+        # Lightning: user id + key travel together; teamspace is optional.
+        if "lightning" in self._selected_vendors:
+            uid = self._lightning_fields.get("user_id", "")
+            lkey = self._lightning_fields.get("api_key", "")
+            stored = self._lightning_stored
+            team = self._lightning_fields.get("teamspace", "")
+            if uid and lkey:
+                await self._set(failed, "lightning.user_id", uid)
+                await self._set(failed, "lightning.api_key", lkey, secret=True)
+                if team:
+                    await self._set(failed, "lightning.teamspace", team)
+            elif uid and stored.get("api_key"):
+                # Key kept as stored; write only what was edited.
+                if uid != stored.get("user_id", ""):
+                    await self._set(failed, "lightning.user_id", uid)
+                if team and team != stored.get("teamspace", ""):
+                    await self._set(failed, "lightning.teamspace", team)
 
         # SSH host fields → ssh.<alias>.<field>. `key` is a path, not a secret.
         if "ssh" in self._selected_vendors and self._ssh_fields.get("alias"):

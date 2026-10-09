@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod metric_sink;
 pub mod metrics;
 pub mod paths;
+pub mod pybridge;
 pub mod store;
 pub mod updates;
 pub mod vendor;
@@ -21,6 +22,7 @@ pub use events::{Event, EventStatus, JsonlReader};
 pub use manifest::Manifest;
 pub use metric_sink::{MetricPoint, MetricSink, MetricSinkError, OpenRunCtx, RemoteRunHandle};
 pub use metrics::{Metric, MetricsJsonlReader};
+pub use pybridge::{BridgeError, PyBridge};
 pub use store::{
     Instance, InstanceCaps, ListFilter, NewNotifyLog, NotifyLogRow, Run, RunId, RunStatus, Store,
     StoredEvent, StoredMetric,

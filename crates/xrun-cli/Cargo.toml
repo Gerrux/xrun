@@ -22,6 +22,8 @@ xrun-vast = { path = "../xrun-vast" }
 xrun-kaggle = { path = "../xrun-kaggle" }
 xrun-local = { path = "../xrun-local" }
 xrun-ssh = { path = "../xrun-ssh" }
+xrun-lightning = { path = "../xrun-lightning" }
+xrun-colab = { path = "../xrun-colab" }
 xrun-mlflow = { path = "../xrun-mlflow" }
 xrun-wandb = { path = "../xrun-wandb" }
 xrun-poller = { path = "../xrun-poller" }

@@ -10,6 +10,8 @@ members = [
     "crates/xrun-kaggle",
     "crates/xrun-local",
     "crates/xrun-ssh",
+    "crates/xrun-lightning",
+    "crates/xrun-colab",
     "crates/xrun-notify",
 ]
 resolver = "2"

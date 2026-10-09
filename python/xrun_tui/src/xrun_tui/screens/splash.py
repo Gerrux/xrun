@@ -70,6 +70,13 @@ def _configured_vendors(creds: dict) -> list[str]:
         kaggle.get("token") or (kaggle.get("username") and kaggle.get("key"))
     ):
         out.append("kaggle")
+    # Lightning / Colab also count via their native login files (existence only).
+    from xrun_tui.screens.vendors import _vendor_configured
+
+    if _vendor_configured(creds, "lightning"):
+        out.append("lightning")
+    if _vendor_configured(creds, "colab"):
+        out.append("colab")
     mlflow = creds.get("mlflow")
     if isinstance(mlflow, dict) and (
         mlflow.get("token")
@@ -402,6 +409,9 @@ class SplashScreen(Screen):
                     results.append("vast …")
             if "kaggle" in configured:
                 results.append("kaggle")
+            for extra in ("lightning", "colab"):
+                if extra in configured:
+                    results.append(extra)
             if "ssh" in configured:
                 results.append(_ssh_label(creds))
             if "mlflow" in configured:
