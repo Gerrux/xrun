@@ -273,8 +273,10 @@ def test_resize_during_load_draws_the_new_size(idle_init, monkeypatch) -> None:
             real = asyncio.to_thread
 
             async def _slow(fn, *a, **k):
-                await pilot.resize_terminal(100, 26)
-                await pilot.pause()
+                # Global stub: resize only around the mark's own load.
+                if fn.__name__ == "_load":
+                    await pilot.resize_terminal(100, 26)
+                    await pilot.pause()
                 return await real(fn, *a, **k)
 
             monkeypatch.setattr(splash.asyncio, "to_thread", _slow)
