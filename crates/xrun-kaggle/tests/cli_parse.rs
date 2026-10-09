@@ -1,6 +1,112 @@
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use xrun_kaggle::cli::{KaggleCli, KaggleProcess, KernelState, KernelStatus};
 use xrun_kaggle::error::KaggleError;
+use xrun_kaggle::KaggleAdapter;
+
+/// `datasets status` mock: records the slugs it was asked about and answers
+/// with a canned result.
+struct MockDatasetStatus {
+    reply: Result<String, ()>,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl MockDatasetStatus {
+    fn ready() -> Self {
+        Self {
+            reply: Ok("user/ds has status: ready\n".into()),
+            asked: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+    fn forbidden() -> Self {
+        Self {
+            reply: Err(()),
+            asked: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl KaggleProcess for MockDatasetStatus {
+    fn push(&self, _dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, slug: &str) -> Result<String, KaggleError> {
+        self.asked.lock().unwrap().push(slug.to_string());
+        match &self.reply {
+            Ok(s) => Ok(s.clone()),
+            Err(()) => Err(KaggleError::CliFailure {
+                exit_code: 1,
+                stderr: "403 Client Error: Forbidden for url: .../GetDatasetStatus".into(),
+            }),
+        }
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn wait_datasets_ready_passes_when_ready() {
+    let adapter = KaggleAdapter::with_process(Box::new(MockDatasetStatus::ready()));
+    let res = adapter.wait_datasets_ready(&["user/ds".to_string()], Duration::from_secs(1));
+    assert!(res.is_ok(), "{res:?}");
+}
+
+#[test]
+fn wait_datasets_ready_fails_when_status_call_errors() {
+    // The powerline-seg-v1 incident: doctor said FAIL kaggle_dataset, launch
+    // logged a warning and pushed the kernel anyway. A status error must
+    // stop the launch, with a hint that names the slug and the fix.
+    let adapter = KaggleAdapter::with_process(Box::new(MockDatasetStatus::forbidden()));
+    let err = adapter
+        .wait_datasets_ready(&["user/missing".to_string()], Duration::from_secs(1))
+        .expect_err("status error must be fatal");
+    let msg = err.to_string();
+    assert!(msg.contains("user/missing"), "{msg}");
+    assert!(msg.contains("xrun dataset push"), "{msg}");
+    assert!(msg.contains("403"), "{msg}");
+}
+
+#[test]
+fn wait_datasets_ready_strips_version_suffix_for_status() {
+    // A user-pinned `owner/name/7` is queried as `owner/name`: that is the
+    // only form `kaggle datasets status` accepts.
+    let mock = MockDatasetStatus::ready();
+    let asked = mock.asked.clone();
+    let adapter = KaggleAdapter::with_process(Box::new(mock));
+    adapter
+        .wait_datasets_ready(
+            &["user/ds/7".to_string(), "other/plain".to_string()],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    assert_eq!(
+        *asked.lock().unwrap(),
+        vec!["user/ds".to_string(), "other/plain".to_string()]
+    );
+}
 
 /// Fixture-based status deserialization test
 #[test]

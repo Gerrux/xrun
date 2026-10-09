@@ -356,6 +356,10 @@ pub struct DatasetPushArgs {
     /// Wait for the dataset to become ready before exiting (default: true)
     #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
     pub wait: bool,
+    /// After the dataset is ready, compare Kaggle's file list with the local
+    /// staging dir and exit 1 on a mismatch (default: true; needs --wait)
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+    pub verify: bool,
 }
 
 #[derive(Args)]

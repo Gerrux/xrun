@@ -2,7 +2,7 @@
 name: xrun
 description: Launch, inspect, recover, and stop ML experiments with the xrun CLI on local, SSH, Vast.ai, or Kaggle vendors. Use for xrun manifests, training runs, metrics, and artifacts.
 metadata:
-  version: "2"
+  version: "3"
 ---
 
 # xrun skill — ML experiment runner
@@ -148,19 +148,61 @@ artifacts:
 ```yaml
 name: my_experiment
 vendor: kaggle
-gpu: T4x2                        # P100, TPU also valid
-dataset:
-  - owner/my-dataset             # kaggle dataset slug
+kaggle:
+  kernel_slug: "{user}/my-experiment"  # {user} is filled from kaggle creds
+  enable_gpu: true                     # T4x2 / P100 tier; false → CPU
+  enable_internet: true                # needed to pip-install deps
+  datasets:
+    - owner/my-dataset                 # input datasets; pin with owner/my-dataset/3
 run:
   cmd: python train.py
   args:
     --lr: 5e-4
 artifacts:
   patterns: ["checkpoints/best*.pt"]
+  pull_on: done                        # the only accepted value
 ```
 
 Kaggle live telemetry depends on configured MLflow. Without it, expect limited
 status while the kernel runs and collect output after completion.
+
+## Kaggle: datasets and the kernel
+
+Stage data in a local dir, push it as a dataset, reference it from
+`kaggle.datasets`:
+
+```bash
+xrun dataset verify cache/ --marker meta.json          # each first-level subdir complete? exit 1 if not
+xrun dataset push cache/ --slug <owner>/<name> -m "v1" # create or new version; waits for ready, verifies
+xrun dataset status <owner>/<name>                     # ready + "files: N  size: M"
+```
+
+- Subdirectories: `push` uploads each first-level subdir as a tar archive
+  and relies on Kaggle to extract it. Do not assume it did; trust the
+  `Verified` line below, not the exit code. If `Upload mismatch` lists
+  `train.tar` as extra, zip the subdirs yourself and unzip in `run.cmd`.
+- The file list `push` prints is the local diff against the previous push,
+  printed before anything is uploaded. The receipt is the
+  `Verified: Kaggle lists N files …` line at the end (`--verify`, default
+  on). `Upload mismatch` + exit 1 means do not launch; read the missing and
+  extra paths it prints. `ready` from `status` is also true for an empty
+  version; compare `files: N` with the local dir when in doubt.
+- `xrun launch` refuses to start when a dataset's status cannot be fetched
+  (nonexistent slug, 403). Push it, re-run `xrun doctor --manifest <path>`,
+  then launch.
+- Inside the kernel xrun exports `XRUN_INPUT_DIR` with the mount dir of the
+  first dataset in `kaggle.datasets`. For the second and later datasets
+  locate by a marker file in `run.cmd`:
+  `find /kaggle/input -maxdepth 5 -name <marker> -print -quit`.
+- Kaggle kills a kernel at 12 h (9 h on TPU). Give the training script its
+  own wall-clock limit well under that and make it checkpoint before exiting.
+- Waiting without a TTY: `xrun events <id> --follow` exits on `done` /
+  `failed` / `cancelled` (exit code 0 either way; read the last line). For a
+  bounded wait run it in the background with a timeout. `xrun logs <id>` on
+  Kaggle lags one poller tick (60 s).
+- Smoke before a long slot: launch once with tiny args (`--epochs 1`), check
+  `xrun logs <id>` after 3–5 min for the input paths, then
+  `xrun rerun <id> --patch run.args.--epochs=<real>`.
 
 ## Budget guards (vast.ai)
 

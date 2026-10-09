@@ -205,14 +205,30 @@ xrun sweep exp/base.yaml \
 готовности, list собственных датасетов.
 
 ```bash
-xrun dataset push <local-dir> --slug <owner>/<name> [-m "msg"] [--wait]
+xrun dataset push <local-dir> --slug <owner>/<name> [-m "msg"] [--wait] [--verify]
 xrun dataset status <owner>/<name> [--json]
 xrun dataset list [--json]
 ```
 
 Используется для подготовки данных перед `xrun launch` с
 `vendor: kaggle` + `kaggle.datasets: [<slug>]`. `xrun doctor --manifest`
-проверит что слаг существует и `ready` ещё до запуска.
+проверит что слаг существует и `ready` ещё до запуска; сам `launch`
+отказывается стартовать, если статус датасета не удалось получить
+(слага нет, 403, нет kaggle CLI).
+
+`push` загружает подпапки архивами (`--dir-mode tar`), Kaggle распаковывает
+их на своей стороне. Список файлов, который `push` печатает до загрузки,
+это локальный fingerprint стейджинга (diff с прошлым push), а не
+подтверждение загрузки. Подтверждение даёт `--verify` (по умолчанию
+включён, требует `--wait`): после `ready` xrun запрашивает список файлов
+датасета и сверяет с локальным. Расхождение (пустая версия, нераспакованный
+`train.tar` вместо `train/`) печатает недостающие и лишние пути и
+завершает команду с exit 1; `--verify=false` отключает. Если Kaggle не
+отдал список, печатается предупреждение «could not verify», команда
+завершается успешно.
+
+`status` в текстовом режиме добавляет строку `files: N  size: M MiB` из
+того же списка; `ready` сам по себе пустую версию не отличает.
 
 ### `xrun doctor [--manifest <path>...]`
 Проверки окружения. `--manifest` валидирует один или несколько yaml-файлов

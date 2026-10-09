@@ -137,6 +137,68 @@ pub fn save(snapshots_dir: &Path, snap: &Snapshot) -> std::io::Result<()> {
     fs::write(path, body)
 }
 
+/// One file as Kaggle lists it for the current dataset version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFile {
+    /// Path inside the dataset, `/`-separated, no leading slash.
+    pub name: String,
+    /// Kaggle's `totalBytes`; `None` when the API omits it.
+    pub total_bytes: Option<u64>,
+}
+
+/// Result of checking a just-pushed staging dir against what Kaggle lists.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RemoteCheck {
+    pub local_count: usize,
+    pub local_bytes: u64,
+    pub remote_count: usize,
+    pub remote_bytes: u64,
+    /// Local paths Kaggle does not list.
+    pub missing: Vec<String>,
+    /// Paths Kaggle lists that are not in the staging dir (for example an
+    /// archive it did not extract).
+    pub extra: Vec<String>,
+}
+
+impl RemoteCheck {
+    /// Every local file is present remotely. Extras are reported but do not
+    /// fail the check; byte totals are informational only (Kaggle may count
+    /// differently from the local filesystem).
+    pub fn ok(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
+/// Compare the staging snapshot with Kaggle's file list for the same version.
+///
+/// Names are compared as `/`-separated relative paths; `dataset-metadata.json`
+/// is never in the snapshot and is ignored on the remote side as well.
+pub fn compare_remote(local: &Snapshot, remote: &[RemoteFile]) -> RemoteCheck {
+    let remote_names: std::collections::BTreeSet<&str> = remote
+        .iter()
+        .map(|f| f.name.trim_start_matches('/'))
+        .filter(|n| *n != "dataset-metadata.json")
+        .collect();
+    let mut check = RemoteCheck {
+        local_count: local.files.len(),
+        local_bytes: local.files.values().map(|e| e.size).sum(),
+        remote_count: remote_names.len(),
+        remote_bytes: remote.iter().filter_map(|f| f.total_bytes).sum(),
+        ..RemoteCheck::default()
+    };
+    for path in local.files.keys() {
+        if !remote_names.contains(path.as_str()) {
+            check.missing.push(path.clone());
+        }
+    }
+    for name in remote_names {
+        if !local.files.contains_key(name) {
+            check.extra.push(name.to_string());
+        }
+    }
+    check
+}
+
 pub fn diff(prev: Option<&Snapshot>, cur: &Snapshot) -> SnapshotDiff {
     let mut d = SnapshotDiff::default();
     let prev_files = prev.map(|s| &s.files);
@@ -168,6 +230,77 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(p, body).unwrap();
+    }
+
+    fn snap(files: &[(&str, u64)]) -> Snapshot {
+        Snapshot {
+            slug: "u/x".into(),
+            captured_at: String::new(),
+            files: files
+                .iter()
+                .map(|(p, s)| (p.to_string(), FileEntry { size: *s, mtime: 0 }))
+                .collect(),
+        }
+    }
+
+    fn remote(names: &[(&str, Option<u64>)]) -> Vec<RemoteFile> {
+        names
+            .iter()
+            .map(|(n, b)| RemoteFile {
+                name: n.to_string(),
+                total_bytes: *b,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compare_remote_matches_when_every_local_path_is_listed() {
+        let local = snap(&[("train/a.npz", 10), ("val/b.npz", 20)]);
+        let check = compare_remote(
+            &local,
+            &remote(&[("train/a.npz", Some(10)), ("/val/b.npz", Some(20))]),
+        );
+        assert!(check.ok(), "{check:?}");
+        assert_eq!(check.local_count, 2);
+        assert_eq!(check.remote_count, 2);
+        assert_eq!(check.remote_bytes, 30);
+        assert!(check.extra.is_empty());
+    }
+
+    #[test]
+    fn compare_remote_flags_empty_version() {
+        // The powerline-seg-v1 incident: CLI exit 0, status `ready`, zero files.
+        let local = snap(&[("train/a.npz", 10), ("val/b.npz", 20)]);
+        let check = compare_remote(&local, &[]);
+        assert!(!check.ok());
+        assert_eq!(check.missing, vec!["train/a.npz", "val/b.npz"]);
+        assert_eq!(check.remote_count, 0);
+    }
+
+    #[test]
+    fn compare_remote_reports_unextracted_archive_as_extra() {
+        let local = snap(&[("train/a.npz", 10), ("val/b.npz", 20)]);
+        let check = compare_remote(
+            &local,
+            &remote(&[("train.tar", Some(30)), ("val.tar", None)]),
+        );
+        assert!(!check.ok());
+        assert_eq!(check.missing.len(), 2);
+        assert_eq!(check.extra, vec!["train.tar", "val.tar"]);
+        // `None` bytes are skipped, not treated as zero-and-failing.
+        assert_eq!(check.remote_bytes, 30);
+    }
+
+    #[test]
+    fn compare_remote_ignores_remote_metadata_file() {
+        let local = snap(&[("a.bin", 1)]);
+        let check = compare_remote(
+            &local,
+            &remote(&[("a.bin", Some(1)), ("dataset-metadata.json", Some(99))]),
+        );
+        assert!(check.ok());
+        assert!(check.extra.is_empty());
+        assert_eq!(check.remote_count, 1);
     }
 
     #[test]

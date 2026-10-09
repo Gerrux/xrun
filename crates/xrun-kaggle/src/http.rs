@@ -25,8 +25,13 @@ use std::time::Duration;
 use reqwest::blocking::Client;
 
 use crate::error::KaggleError;
+use crate::snapshot::RemoteFile;
 
 const DEFAULT_API_BASE: &str = "https://www.kaggle.com/api/v1";
+
+/// How many 429 responses `dataset_files` absorbs (1 s, 2 s, 4 s, 8 s, 16 s
+/// unless `Retry-After` says otherwise) before giving up on the listing.
+const DATASET_LIST_429_RETRIES: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub enum Auth {
@@ -197,6 +202,100 @@ impl KaggleApiClient {
         Ok(n)
     }
 
+    /// List every file Kaggle holds for the current version of a dataset.
+    ///
+    /// Walks `GET /datasets/list/<owner>/<name>` through `nextPageToken`
+    /// until the server stops paging. Used after `xrun dataset push` to
+    /// confirm the upload actually landed: the CLI exits 0 and `datasets
+    /// status` says `ready` even when the version came out empty or holds
+    /// unextracted archives, so only the remote file list tells the truth.
+    ///
+    /// Unlike `dataset_current_version`, an HTTP error here is an `Err`:
+    /// the caller must distinguish "could not verify" from "verified empty".
+    pub fn dataset_files(&self, slug: &str) -> Result<Vec<RemoteFile>, KaggleError> {
+        let (owner, name) = slug.split_once('/').ok_or_else(|| {
+            KaggleError::ParseError(format!(
+                "expected dataset slug in <owner>/<name> form, got: {slug}"
+            ))
+        })?;
+        let url = format!("{}/datasets/list/{}/{}", self.base, owner, name);
+        let mut files = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut throttled = 0u32;
+        // Hard stop so a server that keeps returning the same token can't
+        // spin us forever. 200 files/page × 1000 pages is far beyond any
+        // dataset xrun stages.
+        for _ in 0..1000 {
+            // Kaggle's default page is 20 files; a 13 865-file cache then
+            // takes ~700 requests and trips the 429 limiter about 20 s in.
+            // 200 is the documented maximum.
+            let mut req = self.client.get(&url).query(&[("pageSize", "200")]);
+            if let Some(token) = &page_token {
+                req = req.query(&[("pageToken", token.as_str())]);
+            }
+            let resp = self
+                .with_auth(req)
+                .send()
+                .map_err(|e| KaggleError::NotFound(format!("datasets/list request: {e}")))?;
+            let status = resp.status();
+            if status.as_u16() == 429 && throttled < DATASET_LIST_429_RETRIES {
+                let wait = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(1u64 << throttled);
+                throttled += 1;
+                std::thread::sleep(Duration::from_secs(wait.min(30)));
+                continue;
+            }
+            let text = resp.text().unwrap_or_default();
+            if !status.is_success() {
+                return Err(KaggleError::CliFailure {
+                    exit_code: status.as_u16() as i32,
+                    stderr: format!("datasets/list {slug}: HTTP {status}: {text}"),
+                });
+            }
+            let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+                KaggleError::ParseError(format!("datasets/list {slug}: not JSON: {e}"))
+            })?;
+            let page = json
+                .get("datasetFiles")
+                .or_else(|| json.get("dataset_files"))
+                .or_else(|| json.get("files"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for f in &page {
+                let Some(name) = f.get("name").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let total_bytes = f
+                    .get("totalBytes")
+                    .or_else(|| f.get("total_bytes"))
+                    .and_then(|v| {
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                    });
+                files.push(RemoteFile {
+                    name: name.trim_start_matches('/').to_string(),
+                    total_bytes,
+                });
+            }
+            let next = json
+                .get("nextPageToken")
+                .or_else(|| json.get("next_page_token"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            match next {
+                Some(t) if Some(&t) != page_token.as_ref() => page_token = Some(t),
+                _ => return Ok(files),
+            }
+        }
+        Ok(files)
+    }
+
     /// Resolve session id for `<owner>/<slug>` and cancel it. Returns Ok even
     /// when no active session exists (treated as already-stopped).
     pub fn cancel_kernel(&self, kernel_slug: &str) -> Result<CancelOutcome, KaggleError> {
@@ -257,6 +356,108 @@ mod tests {
     /// asynchronous context" panic.
     fn off_runtime<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
         std::thread::spawn(f).join().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dataset_files_follows_page_tokens_and_normalises_entries() {
+        let mock = server().await;
+        // Page 1: no token → two files, one with totalBytes as a string and a
+        // leading slash, plus a nextPageToken.
+        Mock::given(method("GET"))
+            .and(path("/datasets/list/alice/cache"))
+            .and(wiremock::matchers::query_param_is_missing("pageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "datasetFiles": [
+                    {"name": "train/a.npz", "totalBytes": 10},
+                    {"name": "/val/b.npz", "totalBytes": "20"}
+                ],
+                "nextPageToken": "p2"
+            })))
+            .mount(&mock)
+            .await;
+        // Page 2: one more file, empty token → stop.
+        Mock::given(method("GET"))
+            .and(path("/datasets/list/alice/cache"))
+            .and(wiremock::matchers::query_param("pageToken", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "datasetFiles": [{"name": "val/c.npz"}],
+                "nextPageToken": ""
+            })))
+            .mount(&mock)
+            .await;
+
+        let url = mock.uri();
+        let files = off_runtime(move || {
+            KaggleApiClient::new(basic_auth())
+                .unwrap()
+                .with_base_url(url)
+                .dataset_files("alice/cache")
+                .unwrap()
+        });
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["train/a.npz", "val/b.npz", "val/c.npz"]);
+        assert_eq!(files[0].total_bytes, Some(10));
+        assert_eq!(files[1].total_bytes, Some(20));
+        assert_eq!(files[2].total_bytes, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dataset_files_requests_max_page_size_and_retries_429() {
+        let mock = server().await;
+        // First call is throttled; the retry (same request) succeeds.
+        Mock::given(method("GET"))
+            .and(path("/datasets/list/alice/cache"))
+            .and(wiremock::matchers::query_param("pageSize", "200"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_body_string(r#"{"code":429,"message":"TooManyRequests"}"#),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/datasets/list/alice/cache"))
+            .and(wiremock::matchers::query_param("pageSize", "200"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "datasetFiles": [{"name": "a.npz", "totalBytes": 1}]
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let url = mock.uri();
+        let files = off_runtime(move || {
+            KaggleApiClient::new(basic_auth())
+                .unwrap()
+                .with_base_url(url)
+                .dataset_files("alice/cache")
+                .unwrap()
+        });
+        assert_eq!(files.len(), 1);
+        mock.verify().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dataset_files_http_error_is_err_not_empty() {
+        // 403 must surface as "could not verify", never as "zero files".
+        let mock = server().await;
+        Mock::given(method("GET"))
+            .and(path("/datasets/list/alice/cache"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+            .mount(&mock)
+            .await;
+
+        let url = mock.uri();
+        let res = off_runtime(move || {
+            KaggleApiClient::new(basic_auth())
+                .unwrap()
+                .with_base_url(url)
+                .dataset_files("alice/cache")
+        });
+        let err = res.expect_err("403 must be an error");
+        assert!(err.to_string().contains("403"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

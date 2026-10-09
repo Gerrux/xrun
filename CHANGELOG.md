@@ -9,6 +9,25 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `xrun dataset push --verify` (default on, needs `--wait`): after the
+  dataset is `ready`, xrun fetches Kaggle's file list and compares it with
+  the local staging dir. A mismatch (empty version, unextracted `train.tar`
+  instead of `train/`) prints missing and extra paths and exits 1. When
+  the list cannot be fetched the command warns and still exits 0.
+- `xrun dataset status` (text mode) prints `files: N  size: M MiB` next to
+  the status, since `ready` alone does not distinguish an empty version.
+
+### Changed
+
+- `xrun launch` on Kaggle refuses to start when a dataset's status cannot
+  be fetched (missing slug, 403, no kaggle CLI). Previously it logged a
+  warning and pushed the kernel, which then died with "input not found"
+  while `xrun doctor --manifest` had already reported FAIL. The error
+  names the slug and the `xrun dataset push` / `xrun dataset status`
+  commands to run.
+
 ---
 
 ## [0.10.0] - 2026-10-05

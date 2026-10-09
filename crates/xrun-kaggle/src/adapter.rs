@@ -89,6 +89,50 @@ impl KaggleAdapter {
         }
     }
 
+    /// Block until every dataset the kernel mounts reports `ready`.
+    ///
+    /// A status call that fails outright (slug does not exist, 403, kaggle
+    /// CLI missing) is fatal, not a warning: `xrun doctor --manifest` flags
+    /// the same condition as FAIL, and a kernel pushed against a missing
+    /// dataset only dies ~40 s later with "input not found". A user-pinned
+    /// `<owner>/<name>/<N>` is queried without the version suffix, which is
+    /// the only form `kaggle datasets status` accepts.
+    pub fn wait_datasets_ready(
+        &self,
+        slugs: &[String],
+        timeout: Duration,
+    ) -> Result<(), VendorError> {
+        for slug in slugs {
+            let status_slug = strip_version_suffix(slug);
+            let started = std::time::Instant::now();
+            loop {
+                match self.cli.is_dataset_ready(status_slug) {
+                    Ok(true) => break,
+                    Ok(false) => {
+                        if started.elapsed() > timeout {
+                            return Err(VendorError::Other(format!(
+                                "dataset '{slug}' not ready after {}s; \
+                                 run `xrun dataset status {status_slug}` to check",
+                                timeout.as_secs()
+                            )));
+                        }
+                        tracing::info!("waiting for dataset '{slug}' to be ready...");
+                        std::thread::sleep(Duration::from_secs(5));
+                    }
+                    Err(e) => {
+                        return Err(VendorError::Validation(format!(
+                            "dataset '{slug}' is not usable: {e}. \
+                             Push it with `xrun dataset push <dir> --slug {status_slug}`, \
+                             or check `xrun dataset status {status_slug}` and \
+                             `xrun doctor --manifest <path>` before launching"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Configure live-log streaming via an MLflow tracking server. The URL
     /// gets baked into the kernel's main.py so xrun_hook can push log chunks
     /// from inside Kaggle; `tail()` then pulls them back.
@@ -513,30 +557,7 @@ impl VendorAdapter for KaggleAdapter {
         };
 
         // §8: Wait for each dataset to be ready before pushing the kernel.
-        for slug in &dataset_sources {
-            let timeout = Duration::from_secs(120);
-            let started = std::time::Instant::now();
-            loop {
-                match self.cli.is_dataset_ready(slug) {
-                    Ok(true) => break,
-                    Ok(false) => {
-                        if started.elapsed() > timeout {
-                            return Err(VendorError::Other(format!(
-                                "dataset '{slug}' not ready after 120s; \
-                                 run `kaggle datasets status {slug}` to check"
-                            )));
-                        }
-                        tracing::info!("waiting for dataset '{slug}' to be ready...");
-                        std::thread::sleep(Duration::from_secs(5));
-                    }
-                    Err(e) => {
-                        // Non-fatal: proceed without readiness guarantee
-                        tracing::warn!("could not check dataset status for '{slug}': {e}");
-                        break;
-                    }
-                }
-            }
-        }
+        self.wait_datasets_ready(&dataset_sources, Duration::from_secs(120))?;
 
         // §8b: Pin each dataset to its current version number.
         //
@@ -1258,6 +1279,15 @@ fn has_version_suffix(slug: &str) -> bool {
             .rsplit('/')
             .next()
             .is_some_and(|tail| tail.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// `<owner>/<name>/<N>` → `<owner>/<name>`; anything else is returned as-is.
+fn strip_version_suffix(slug: &str) -> &str {
+    if has_version_suffix(slug) {
+        slug.rsplit_once('/').map(|(head, _)| head).unwrap_or(slug)
+    } else {
+        slug
+    }
 }
 
 /// Push the kernel with up to `max_retries` retries on 409 Conflict.
