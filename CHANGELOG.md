@@ -16,6 +16,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
   and the mount probe in the generated `main.py` only handled two-part slugs. It now ignores the version
   suffix and finds `/kaggle/input/datasets/<owner>/<name>` (or the legacy
   `/kaggle/input/<name>`).
+- `xrun dataset list` failed with "failed to parse dataset list JSON: expected
+  value at line 1 column 1". xrun called `kaggle datasets list --mine -m`,
+  but on that command `-m` is just `--mine` and there is no JSON mode, so the
+  CLI printed a padded table. It now asks for `--csv` and parses the header
+  columns (`ref`, `title`, `size`, `lastUpdated`); `size` is a byte count.
 
 ---
 
