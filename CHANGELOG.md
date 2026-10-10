@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun dataset list` failed with "failed to parse dataset list JSON: expected
+  value at line 1 column 1". xrun called `kaggle datasets list --mine -m`,
+  but on that command `-m` is just `--mine` and there is no JSON mode, so the
+  CLI printed a padded table. It now asks for `--csv` and parses the header
+  columns (`ref`, `title`, `size`, `lastUpdated`); `size` is a byte count.
+
 ---
 
 ## [0.11.2] - 2026-10-10
