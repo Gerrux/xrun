@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun dataset push` of a new slug gave up waiting on the first failed
+  `datasets status` (Kaggle has not indexed the dataset yet), printed
+  "Upload verification skipped: readiness unknown." and exited 0. The wait
+  now retries status errors until the 5-minute timeout, and readiness still
+  unknown after it is an error (exit 1) instead of a skipped `--verify`.
+
 ---
 
 ## [0.11.2] - 2026-10-10
