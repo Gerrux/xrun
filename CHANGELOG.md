@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Kaggle script mode: `XRUN_INPUT_DIR` fell back to `/kaggle/input` for every
+  version-pinned dataset. xrun pins datasets to `owner/name/N` before the push,
+  and the mount probe in the generated `main.py` only handled two-part slugs. It now ignores the version
+  suffix and finds `/kaggle/input/datasets/<owner>/<name>` (or the legacy
+  `/kaggle/input/<name>`).
+
 ---
 
 ## [0.11.2] - 2026-10-10
