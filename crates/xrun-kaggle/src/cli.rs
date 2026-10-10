@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -640,6 +641,51 @@ impl KaggleCli {
     pub fn is_dataset_ready(&self, slug: &str) -> Result<bool, KaggleError> {
         let stdout = self.process.datasets_status(slug)?;
         Ok(parse_dataset_ready(&stdout))
+    }
+
+    /// Poll `datasets status` after a push until the dataset is `ready`.
+    ///
+    /// A status error is retried like "not ready yet": right after the first
+    /// push of a new slug Kaggle has not indexed the dataset, and the CLI
+    /// fails (exit 1) for a minute or so. Giving up on that first error is
+    /// what used to skip upload verification with exit 0. When `timeout`
+    /// runs out, the error says whether the dataset was seen but not ready,
+    /// or readiness stayed unknown (with the last status error).
+    ///
+    /// Not for the pre-launch check: there a status error means the dataset
+    /// does not exist and must fail fast (`KaggleAdapter::wait_datasets_ready`).
+    pub fn wait_dataset_ready(
+        &self,
+        slug: &str,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<(), KaggleError> {
+        let started = std::time::Instant::now();
+        loop {
+            let last_err = match self.is_dataset_ready(slug) {
+                Ok(true) => return Ok(()),
+                Ok(false) => None,
+                Err(e) => {
+                    tracing::info!("dataset '{slug}' status not available yet: {e}");
+                    Some(e)
+                }
+            };
+            if started.elapsed() >= timeout {
+                let secs = timeout.as_secs();
+                return Err(KaggleError::Other(match last_err {
+                    None => format!(
+                        "dataset '{slug}' not ready after {secs}s; \
+                         check status with `xrun dataset status {slug}`"
+                    ),
+                    Some(e) => format!(
+                        "dataset '{slug}' readiness unknown after {secs}s, \
+                         last status error: {e}; \
+                         check status with `xrun dataset status {slug}`"
+                    ),
+                }));
+            }
+            std::thread::sleep(poll_interval);
+        }
     }
 
     /// Push a local directory as a Kaggle dataset.

@@ -189,37 +189,15 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
+    // A brand-new slug is not indexed yet and `datasets status` fails for a
+    // while; the wait retries that instead of skipping verification, and
+    // readiness still unknown after the timeout is an error (exit 1).
     eprintln!("Waiting for dataset '{slug}' to be ready…");
-    let timeout = Duration::from_secs(300);
-    let started = std::time::Instant::now();
-    let mut ready = false;
-    loop {
-        match cli.is_dataset_ready(&slug) {
-            Ok(true) => {
-                eprintln!("Dataset '{slug}' is ready.");
-                ready = true;
-                break;
-            }
-            Ok(false) => {
-                if started.elapsed() > timeout {
-                    anyhow::bail!(
-                        "dataset '{slug}' not ready after 5 minutes; \
-                         check status with `xrun dataset status {slug}`"
-                    );
-                }
-                std::thread::sleep(Duration::from_secs(5));
-            }
-            Err(e) => {
-                eprintln!("Warning: could not check dataset status: {e}");
-                break;
-            }
-        }
-    }
+    cli.wait_dataset_ready(&slug, Duration::from_secs(300), Duration::from_secs(5))?;
+    eprintln!("Dataset '{slug}' is ready.");
 
-    if args.verify && ready {
+    if args.verify {
         verify_upload(&creds, &slug, &cur_snap)?;
-    } else if args.verify {
-        eprintln!("Upload verification skipped: readiness unknown.");
     }
     Ok(())
 }
