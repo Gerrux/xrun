@@ -108,6 +108,109 @@ fn wait_datasets_ready_strips_version_suffix_for_status() {
     );
 }
 
+/// `datasets status` mock for the push-time wait: the first `fail_first`
+/// calls fail the way a not-yet-indexed new dataset does (`kaggle CLI failed
+/// (exit 1)`), every later call reports `ready`.
+struct MockDatasetIndexing {
+    fail_first: u32,
+    calls: Arc<Mutex<u32>>,
+}
+
+impl MockDatasetIndexing {
+    fn new(fail_first: u32) -> Self {
+        Self {
+            fail_first,
+            calls: Arc::new(Mutex::new(0)),
+        }
+    }
+}
+
+impl KaggleProcess for MockDatasetIndexing {
+    fn push(&self, _dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        let mut n = self.calls.lock().unwrap();
+        *n += 1;
+        if *n <= self.fail_first {
+            return Err(KaggleError::CliFailure {
+                exit_code: 1,
+                stderr: "404 Client Error: Not Found for url: .../GetDatasetStatus".into(),
+            });
+        }
+        Ok("user/ds has status: ready\n".into())
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn wait_dataset_ready_retries_status_errors_until_ready() {
+    // arboforge-itd-test, 2026-10-10: right after the first push of a new
+    // slug `datasets status` failed, the wait gave up on the first error and
+    // verification was skipped with exit 0. A minute later it was `ready`.
+    let mock = MockDatasetIndexing::new(2);
+    let calls = mock.calls.clone();
+    let cli = KaggleCli::with_process(Box::new(mock));
+    let res = cli.wait_dataset_ready("user/ds", Duration::from_secs(5), Duration::ZERO);
+    assert!(res.is_ok(), "{res:?}");
+    assert_eq!(*calls.lock().unwrap(), 3, "two failures, then ready");
+}
+
+#[test]
+fn wait_dataset_ready_fails_when_readiness_never_known() {
+    // Status never succeeds before the timeout: that is an error, not a
+    // silent "verification skipped".
+    let mock = MockDatasetIndexing::new(u32::MAX);
+    let calls = mock.calls.clone();
+    let cli = KaggleCli::with_process(Box::new(mock));
+    let err = cli
+        .wait_dataset_ready("user/ds", Duration::from_millis(300), Duration::ZERO)
+        .expect_err("unknown readiness must be an error");
+    let msg = err.to_string();
+    assert!(msg.contains("user/ds"), "{msg}");
+    assert!(msg.contains("readiness unknown"), "{msg}");
+    assert!(msg.contains("404"), "{msg}");
+    assert!(msg.contains("xrun dataset status user/ds"), "{msg}");
+    assert!(*calls.lock().unwrap() > 1, "must retry before giving up");
+}
+
+#[test]
+fn wait_dataset_ready_times_out_when_never_ready() {
+    let cli = KaggleCli::with_process(Box::new(MockDatasetStatus {
+        reply: Ok("user/ds has status: pending\n".into()),
+        asked: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let err = cli
+        .wait_dataset_ready("user/ds", Duration::from_millis(50), Duration::ZERO)
+        .expect_err("never ready must be an error");
+    let msg = err.to_string();
+    assert!(msg.contains("not ready"), "{msg}");
+    assert!(msg.contains("user/ds"), "{msg}");
+}
+
 /// Fixture-based status deserialization test
 #[test]
 fn test_deserialize_complete_status() {
