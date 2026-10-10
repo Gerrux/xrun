@@ -567,6 +567,7 @@ impl VendorAdapter for KaggleAdapter {
         // kernels sometimes mount the previous snapshot and crash on missing
         // files (Issue 1 in field-issues log). Slugs that already carry a
         // `/N` suffix are left alone — the user explicitly pinned them.
+        // main.py's mount probe drops the suffix: the mount path is unversioned.
         if let Some(auth) = http::auth_from_credentials(&self.credentials) {
             if let Ok(client) = KaggleApiClient::new(auth) {
                 for slug in dataset_sources.iter_mut() {
@@ -1394,12 +1395,13 @@ fn build_script_main(
          os.makedirs({workdir_repr}, exist_ok=True)\n\
          os.chdir({workdir_repr})\n\
          \n\
-         # Probe dataset mount path (old and new Kaggle API)\n\
+         # Probe dataset mount path (old and new Kaggle API). Slugs may carry\n\
+         # a pinned `/N` version, but Kaggle mounts without it.\n\
          def _find_input_dir(datasets):\n\
          \x20\x20\x20\x20for ds in datasets:\n\
          \x20\x20\x20\x20    parts = ds.split('/')\n\
-         \x20\x20\x20\x20    if len(parts) == 2:\n\
-         \x20\x20\x20\x20        owner, name = parts\n\
+         \x20\x20\x20\x20    if len(parts) >= 2:\n\
+         \x20\x20\x20\x20        owner, name = parts[0], parts[1]\n\
          \x20\x20\x20\x20        for candidate in [\n\
          \x20\x20\x20\x20            f'/kaggle/input/datasets/{{owner}}/{{name}}',\n\
          \x20\x20\x20\x20            f'/kaggle/input/{{name}}',\n\
@@ -1651,6 +1653,93 @@ mod slug_tests {
         // than uploading under a literal {user} namespace.
         let s = expand_kernel_slug("{user}/foo", None, None);
         assert_eq!(s, "{user}/foo");
+    }
+}
+
+#[cfg(test)]
+mod input_dir_probe_tests {
+    use super::build_script_main;
+    use xrun_core::pybridge::python_argv;
+
+    /// Run the generated `_find_input_dir` against a fake filesystem where
+    /// only `existing` dirs pass `os.path.isdir`. The candidate paths are
+    /// absolute `/kaggle/input/...`, so a temp-dir tree can't stand in for
+    /// them on Windows — monkeypatching `isdir` keeps the test portable.
+    /// `None` when no Python interpreter is available.
+    fn probe(datasets: &[&str], existing: &[&str]) -> Option<String> {
+        let Some((python, lead)) = python_argv() else {
+            eprintln!("skip: no python interpreter");
+            return None;
+        };
+        let slugs: Vec<String> = datasets.iter().map(|s| s.to_string()).collect();
+        let src = build_script_main("", None, "", "", "/kaggle/working", &slugs);
+        let start = src.find("def _find_input_dir").expect("probe function");
+        let end = src.find("_DATASETS =").expect("datasets literal");
+        let line_end = start_of_next_line(&src, end);
+        let script = format!(
+            "import os, json\n\
+             _existing = set(json.loads(os.environ['XRUN_TEST_EXISTING']))\n\
+             os.path.isdir = lambda p: p in _existing\n\
+             {probe}\
+             print(_find_input_dir(_DATASETS))\n",
+            probe = &src[start..line_end],
+        );
+        let existing_json = serde_json::to_string(existing).unwrap();
+        let out = std::process::Command::new(python)
+            .args(&lead)
+            .arg("-c")
+            .arg(script)
+            .env("XRUN_TEST_EXISTING", existing_json)
+            .output()
+            .expect("run python");
+        assert!(
+            out.status.success(),
+            "probe script failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn start_of_next_line(s: &str, from: usize) -> usize {
+        s[from..].find('\n').map_or(s.len(), |i| from + i + 1)
+    }
+
+    /// §8b pins `owner/name` to `owner/name/N` before the push, but Kaggle
+    /// mounts the dataset without the version. Run 01M4KE9YW69KSX3CSXK67G36HR
+    /// got XRUN_INPUT_DIR=/kaggle/input because the probe skipped 3-part slugs.
+    #[test]
+    fn pinned_slug_resolves_to_unversioned_mount() {
+        let Some(dir) = probe(
+            &["owner/name/3"],
+            &["/kaggle/input", "/kaggle/input/datasets/owner/name"],
+        ) else {
+            return;
+        };
+        assert_eq!(dir, "/kaggle/input/datasets/owner/name");
+    }
+
+    #[test]
+    fn pinned_slug_falls_back_to_legacy_mount() {
+        let Some(dir) = probe(&["owner/name/3"], &["/kaggle/input/name"]) else {
+            return;
+        };
+        assert_eq!(dir, "/kaggle/input/name");
+    }
+
+    #[test]
+    fn unpinned_slug_still_resolves() {
+        let Some(dir) = probe(&["owner/name"], &["/kaggle/input/datasets/owner/name"]) else {
+            return;
+        };
+        assert_eq!(dir, "/kaggle/input/datasets/owner/name");
+    }
+
+    #[test]
+    fn nothing_mounted_falls_back_to_input_root() {
+        let Some(dir) = probe(&["owner/name/3"], &[]) else {
+            return;
+        };
+        assert_eq!(dir, "/kaggle/input");
     }
 }
 

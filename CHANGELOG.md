@@ -11,6 +11,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Kaggle script mode: `XRUN_INPUT_DIR` fell back to `/kaggle/input` for every
+  version-pinned dataset. xrun pins datasets to `owner/name/N` before the push,
+  and the mount probe in the generated `main.py` only handled two-part slugs. It now ignores the version
+  suffix and finds `/kaggle/input/datasets/<owner>/<name>` (or the legacy
+  `/kaggle/input/<name>`).
 - `xrun dataset push` of a new slug gave up waiting on the first failed
   `datasets status` (Kaggle has not indexed the dataset yet), printed
   "Upload verification skipped: readiness unknown." and exited 0. The wait
