@@ -9,7 +9,7 @@ use crate::error::KaggleError;
 
 pub type KernelSlug = String;
 
-/// One entry from `kaggle datasets list --mine -m`.
+/// One entry from `kaggle datasets list --mine --csv`.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct DatasetListItem {
     #[serde(rename = "ref")]
@@ -82,7 +82,7 @@ pub trait KaggleProcess: Send + Sync {
     fn datasets_create(&self, local_dir: &Path) -> Result<String, KaggleError>;
     /// Run `kaggle datasets version -p <local_dir> -m <message>` and return stdout.
     fn datasets_version(&self, local_dir: &Path, message: &str) -> Result<String, KaggleError>;
-    /// Run `kaggle datasets list --mine -m` and return stdout.
+    /// Run `kaggle datasets list --mine --csv` and return stdout.
     fn datasets_list_mine(&self) -> Result<String, KaggleError>;
 
     /// Authenticate via the Python `kaggle` module (`KaggleApi().authenticate()`)
@@ -415,8 +415,11 @@ impl KaggleProcess for KaggleProcessReal {
     }
 
     fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        // Same trap as `list_mine`: on `datasets list` `-m` is `--mine`, not
+        // a machine-readable flag, and there is no `--json`. Without `--csv`
+        // the CLI prints a padded-column table that the parser can't read.
         let out = self
-            .cmd(&["datasets", "list", "--mine", "-m"])
+            .cmd(&["datasets", "list", "--mine", "--csv"])
             .output()
             .map_err(|e| KaggleError::NotFound(e.to_string()))?;
         if !out.status.success() {
@@ -1124,11 +1127,61 @@ fn parse_dataset_list(stdout: &str) -> Result<Vec<DatasetListItem>, KaggleError>
     if trimmed.is_empty() || trimmed == "[]" {
         return Ok(vec![]);
     }
-    serde_json::from_str(trimmed).map_err(|e| {
-        KaggleError::ParseError(format!(
-            "failed to parse dataset list JSON: {e}\nInput: {trimmed}"
-        ))
-    })
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        return serde_json::from_str(trimmed).map_err(|e| {
+            KaggleError::ParseError(format!(
+                "failed to parse dataset list JSON: {e}\nInput: {trimmed}"
+            ))
+        });
+    }
+    parse_dataset_list_csv(trimmed)
+}
+
+/// Parse `kaggle datasets list --mine --csv` output.
+///
+/// Layout (kaggle CLI 1.8.3):
+/// ```text
+/// ref,title,size,lastUpdated,downloadCount,voteCount,usabilityRating
+/// user/ds-a,My Dataset,426350800,2023-06-24 14:55:49.680000,177,1,0.625
+/// ```
+///
+/// `size` is a raw byte count here (the table view prints the same number).
+fn parse_dataset_list_csv(body: &str) -> Result<Vec<DatasetListItem>, KaggleError> {
+    let mut lines = body.lines().filter(|l| !l.trim().is_empty());
+    let header = match lines.next() {
+        Some(h) => h,
+        None => return Ok(vec![]),
+    };
+    let cols: Vec<&str> = header.split(',').map(str::trim).collect();
+    let col = |name: &str| cols.iter().position(|c| *c == name);
+    let (ref_idx, title_idx, size_idx, updated_idx) =
+        (col("ref"), col("title"), col("size"), col("lastUpdated"));
+
+    let mut out = Vec::new();
+    for row in lines {
+        let fields = split_csv_row(row);
+        let field = |idx: Option<usize>| {
+            idx.and_then(|i| fields.get(i))
+                .filter(|s| !s.is_empty())
+                .cloned()
+        };
+        let slug = match field(ref_idx) {
+            Some(s) => s,
+            // Same permissive fallback as `parse_kernel_list_csv`: slugs are
+            // always `<owner>/<name>`, so survive header drift.
+            None => match fields.iter().find(|f| f.contains('/')) {
+                Some(s) => s.clone(),
+                None => continue,
+            },
+        };
+        out.push(DatasetListItem {
+            slug_ref: slug,
+            title: field(title_idx),
+            size: field(size_idx),
+            last_updated: field(updated_idx),
+        });
+    }
+    Ok(out)
 }
 
 /// Write `dataset-metadata.json` into `local_dir` if not already present.
@@ -1151,7 +1204,9 @@ fn ensure_dataset_metadata(local_dir: &Path, slug: &str) -> Result<(), KaggleErr
 
 #[cfg(test)]
 mod cli_unit_tests {
-    use super::{annotate_kaggle_cli_failure, parse_kernel_list, strip_kaggle_cli_noise};
+    use super::{
+        annotate_kaggle_cli_failure, parse_dataset_list, parse_kernel_list, strip_kaggle_cli_noise,
+    };
 
     #[test]
     fn strip_drops_leading_warning_line() {
@@ -1244,5 +1299,64 @@ mod cli_unit_tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].status.as_deref(), Some("running"));
         assert_eq!(items[0].run_seconds, Some(42));
+    }
+
+    // `kaggle datasets list` has no JSON mode either: `-m` is `--mine`, and
+    // without `--csv` the CLI prints a padded table. `xrun dataset list`
+    // crashed with "failed to parse dataset list JSON: expected value at
+    // line 1 column 1". Fixture layout captured from kaggle CLI 1.8.3.
+
+    #[test]
+    fn parse_dataset_list_handles_csv() {
+        let csv = "ref,title,size,lastUpdated,downloadCount,voteCount,usabilityRating\n\
+                   user/arh-df,Construction equipment,426350800,2023-06-24 14:55:49.680000,177,1,0.625\n\
+                   user/final-yaml,final_yaml,244,2023-11-11 06:51:11.063000,4,0,0.1875\n";
+        let items = parse_dataset_list(csv).expect("CSV must parse");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].slug_ref, "user/arh-df");
+        assert_eq!(items[0].title.as_deref(), Some("Construction equipment"));
+        assert_eq!(items[0].size.as_deref(), Some("426350800"));
+        assert_eq!(
+            items[0].last_updated.as_deref(),
+            Some("2023-06-24 14:55:49.680000")
+        );
+        assert_eq!(items[1].slug_ref, "user/final-yaml");
+    }
+
+    #[test]
+    fn parse_dataset_list_csv_with_kaggle_warning_prefix() {
+        let csv = "Warning: Looks like you're using an outdated `kaggle`` version \
+                   (installed: {current_version}), please consider upgrading...\n\
+                   ref,title,size,lastUpdated\n\
+                   user/ds1,Title,273,2023-11-24 01:00:13.207000\n";
+        let items = parse_dataset_list(csv).expect("warning prefix must not break CSV parse");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].slug_ref, "user/ds1");
+    }
+
+    #[test]
+    fn parse_dataset_list_csv_quoted_field_with_comma() {
+        let csv = "ref,title,size,lastUpdated\n\
+                   user/ds1,\"Trees, plots\",244,2023-11-11 06:51:11\n";
+        let items = parse_dataset_list(csv).expect("must respect quoted commas");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("Trees, plots"));
+        assert_eq!(items[0].size.as_deref(), Some("244"));
+    }
+
+    #[test]
+    fn parse_dataset_list_csv_header_only_is_empty() {
+        let csv = "ref,title,size,lastUpdated,downloadCount,voteCount,usabilityRating\n";
+        let items = parse_dataset_list(csv).expect("header-only CSV must parse");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn parse_dataset_list_still_accepts_json() {
+        let json = r#"[{"ref":"user/ds1","title":"DS1","size":"1MB","lastUpdated":"2026-01-01"}]"#;
+        let items = parse_dataset_list(json).expect("JSON path must still work");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].slug_ref, "user/ds1");
+        assert_eq!(items[0].size.as_deref(), Some("1MB"));
     }
 }

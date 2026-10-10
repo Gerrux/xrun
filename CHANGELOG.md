@@ -16,6 +16,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
   "Upload verification skipped: readiness unknown." and exited 0. The wait
   now retries status errors until the 5-minute timeout, and readiness still
   unknown after it is an error (exit 1) instead of a skipped `--verify`.
+- `xrun dataset list` failed with "failed to parse dataset list JSON: expected
+  value at line 1 column 1". xrun called `kaggle datasets list --mine -m`,
+  but on that command `-m` is just `--mine` and there is no JSON mode, so the
+  CLI printed a padded table. It now asks for `--csv` and parses the header
+  columns (`ref`, `title`, `size`, `lastUpdated`); `size` is a byte count.
 
 ---
 
