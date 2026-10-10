@@ -83,7 +83,7 @@ irm https://raw.githubusercontent.com/Gerrux/xrun/master/install.ps1 | iex
 
 The script drops the `xrun` binary (`~/.local/bin` or `%LOCALAPPDATA%\xrun\bin`)
 and installs the TUI with `pip --user` — that needs Python 3.11+. `--no-tui` /
-`-NoTui` installs the CLI only, `--version v0.11.2` pins a release,
+`-NoTui` installs the CLI only, `--version v0.11.3` pins a release,
 `--install-pip` / `-InstallPip` tries `ensurepip` when pip is missing.
 
 From source:
