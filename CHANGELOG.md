@@ -9,6 +9,28 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun dataset push` to an existing slug uploaded nothing and still printed
+  "Verified". kaggle CLI 1.8 checks the slug before uploading and, for an
+  existing one, prints "Dataset creation error: ... already in use" to stdout
+  with exit 0; xrun took that for success and never ran `datasets version`.
+  It now falls back to `datasets version` on that line, and treats any
+  `Dataset (version) creation error` printed with exit 0 as a failure.
+- `--verify` compared file names only, so the previous version still being
+  served passed as the new one. It now waits for the dataset version number
+  to grow past the one read before the push, lists that version and compares
+  sizes too: a different size is an `Upload mismatch` with exit 1.
+- The local dataset snapshot was written right after the push, before
+  anything was confirmed, so a push that never landed made the next one
+  report "unchanged". It is now written only after a successful `--verify`.
+  When the snapshot says unchanged but Kaggle serves different files, `push`
+  says the last push did not land, and `rerun --bump-dataset` pushes instead
+  of skipping; the bump is now verified like `push` before the launch.
+- Release: the workflow refuses a tag that does not match the
+  `[workspace.package]` version in `Cargo.toml` or has no CHANGELOG section
+  (v0.11.3 was tagged before the bump and its binaries report 0.11.2).
+
 ---
 
 ## [0.11.3] - 2026-10-10

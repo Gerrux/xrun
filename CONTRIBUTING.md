@@ -92,6 +92,17 @@ pip install -e python/xrun_tui && (cd python/xrun_tui && python -m pytest tests/
   [docs/CLI.md](docs/CLI.md), а если это меняет поведение агента — скилл
   `claude/skill.md`.
 
+## Релиз
+
+1. PR `release/vX.Y.Z`: `version` в `[workspace.package]` корневого
+   `Cargo.toml`, `[Unreleased]` в CHANGELOG переименован в
+   `## [X.Y.Z] - <дата>`.
+2. Мерж этого PR в `master`.
+3. Тег `vX.Y.Z` — на коммит после мержа, в котором уже есть бамп, а не на
+   предыдущий мерж. Release workflow сверяет тег с `Cargo.toml` и CHANGELOG и
+   не собирает бинарники при расхождении (v0.11.3 протегирован до бампа, его
+   бинарники сообщают 0.11.2).
+
 ## Чего в проект не приносят
 
 Телеметрию и аналитику в любом виде. Наружу `xrun` ходит только к вендорам и

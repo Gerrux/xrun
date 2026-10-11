@@ -158,14 +158,26 @@ pub struct RemoteCheck {
     /// Paths Kaggle lists that are not in the staging dir (for example an
     /// archive it did not extract).
     pub extra: Vec<String>,
+    /// Paths present on both sides whose sizes differ — Kaggle is still
+    /// serving another version of the file.
+    pub size_mismatch: Vec<SizeMismatch>,
+}
+
+/// One file whose remote size differs from the staging copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SizeMismatch {
+    pub path: String,
+    pub local: u64,
+    pub remote: u64,
 }
 
 impl RemoteCheck {
-    /// Every local file is present remotely. Extras are reported but do not
-    /// fail the check; byte totals are informational only (Kaggle may count
-    /// differently from the local filesystem).
+    /// Every local file is present remotely with the same size. A version
+    /// that only matches by name is the previous one still being served.
+    /// Extras are reported but do not fail the check; a file whose remote
+    /// size Kaggle omits is not counted as a mismatch.
     pub fn ok(&self) -> bool {
-        self.missing.is_empty()
+        self.missing.is_empty() && self.size_mismatch.is_empty()
     }
 }
 
@@ -174,24 +186,30 @@ impl RemoteCheck {
 /// Names are compared as `/`-separated relative paths; `dataset-metadata.json`
 /// is never in the snapshot and is ignored on the remote side as well.
 pub fn compare_remote(local: &Snapshot, remote: &[RemoteFile]) -> RemoteCheck {
-    let remote_names: std::collections::BTreeSet<&str> = remote
+    let remote_files: BTreeMap<&str, Option<u64>> = remote
         .iter()
-        .map(|f| f.name.trim_start_matches('/'))
-        .filter(|n| *n != "dataset-metadata.json")
+        .map(|f| (f.name.trim_start_matches('/'), f.total_bytes))
+        .filter(|(n, _)| *n != "dataset-metadata.json")
         .collect();
     let mut check = RemoteCheck {
         local_count: local.files.len(),
         local_bytes: local.files.values().map(|e| e.size).sum(),
-        remote_count: remote_names.len(),
+        remote_count: remote_files.len(),
         remote_bytes: remote.iter().filter_map(|f| f.total_bytes).sum(),
         ..RemoteCheck::default()
     };
-    for path in local.files.keys() {
-        if !remote_names.contains(path.as_str()) {
-            check.missing.push(path.clone());
+    for (path, entry) in &local.files {
+        match remote_files.get(path.as_str()) {
+            None => check.missing.push(path.clone()),
+            Some(Some(remote)) if *remote != entry.size => check.size_mismatch.push(SizeMismatch {
+                path: path.clone(),
+                local: entry.size,
+                remote: *remote,
+            }),
+            Some(_) => {}
         }
     }
-    for name in remote_names {
+    for name in remote_files.into_keys() {
         if !local.files.contains_key(name) {
             check.extra.push(name.to_string());
         }
@@ -289,6 +307,38 @@ mod tests {
         assert_eq!(check.extra, vec!["train.tar", "val.tar"]);
         // `None` bytes are skipped, not treated as zero-and-failing.
         assert_eq!(check.remote_bytes, 30);
+    }
+
+    #[test]
+    fn compare_remote_flags_stale_version_with_same_names() {
+        // The ArboForge incident: same file names, Kaggle still serving the
+        // previous version (36.0 KiB) while staging held 45.1 KiB.
+        let local = snap(&[("eval_logo.py", 39_587), ("classes.json", 6_639)]);
+        let check = compare_remote(
+            &local,
+            &remote(&[
+                ("eval_logo.py", Some(30_500)),
+                ("classes.json", Some(6_639)),
+            ]),
+        );
+        assert!(!check.ok(), "{check:?}");
+        assert!(check.missing.is_empty());
+        assert_eq!(
+            check.size_mismatch,
+            vec![SizeMismatch {
+                path: "eval_logo.py".into(),
+                local: 39_587,
+                remote: 30_500,
+            }]
+        );
+    }
+
+    #[test]
+    fn compare_remote_unknown_remote_size_is_not_a_mismatch() {
+        let local = snap(&[("a.bin", 10)]);
+        let check = compare_remote(&local, &remote(&[("a.bin", None)]));
+        assert!(check.ok(), "{check:?}");
+        assert!(check.size_mismatch.is_empty());
     }
 
     #[test]

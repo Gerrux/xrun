@@ -165,75 +165,178 @@ pub fn run_push(args: &DatasetPushArgs, config_dir: &Path) -> Result<()> {
         eprintln!("No prior snapshot found — treating all files as added.");
     }
     eprintln!("{}", diff.render());
+    let api = api_client(&creds);
     if prev_snap.is_some() && diff.is_empty() {
-        eprintln!(
-            "No file changes detected. Kaggle may skip creating a new version. \
-             Push will run anyway."
-        );
+        if remote_differs(api.as_ref(), &slug, &cur_snap) {
+            eprintln!(
+                "The last pushed snapshot matches the staging dir, but Kaggle serves \
+                 different files: that push did not land. Pushing again."
+            );
+        } else {
+            eprintln!("No file changes since the last verified push. Pushing anyway.");
+        }
     }
+
+    let version_before = current_version(api.as_ref(), &slug);
 
     cli.dataset_push(&args.local_dir, &slug, args.message.as_deref())
         .with_context(|| format!("failed to push dataset '{slug}'"))?;
 
-    if let Some(dir) = snapshots_dir.as_deref() {
-        if let Err(e) = snapshot::save(dir, &cur_snap) {
-            tracing::warn!("could not save dataset snapshot for {slug}: {e}");
-        }
-    }
-
     if !args.wait {
         eprintln!("Dataset push submitted. Check status with: xrun dataset status {slug}");
         if args.verify {
-            eprintln!("Upload verification skipped (needs --wait).");
+            eprintln!(
+                "Upload verification skipped (needs --wait); \
+                 the local snapshot is not updated either."
+            );
         }
         return Ok(());
     }
 
+    finish_push(
+        cli,
+        api.as_ref(),
+        &slug,
+        &cur_snap,
+        version_before,
+        args.verify,
+        snapshots_dir.as_deref(),
+    )
+}
+
+/// Kaggle's current version number for `slug`, read before a push: on an
+/// existing slug only a higher number afterwards shows that the push
+/// produced a new version.
+pub(crate) fn current_version(client: Option<&http::KaggleApiClient>, slug: &str) -> Option<u32> {
+    client.and_then(|c| c.dataset_current_version(slug).ok().flatten())
+}
+
+/// `true` when Kaggle's file list for `slug` was fetched and does not match
+/// `snap`. A snapshot left by an older xrun (written before verification)
+/// may describe a push that never landed, so "unchanged" is checked against
+/// Kaggle instead of trusted. An unreachable API counts as "no evidence".
+pub(crate) fn remote_differs(
+    client: Option<&http::KaggleApiClient>,
+    slug: &str,
+    snap: &snapshot::Snapshot,
+) -> bool {
+    client
+        .and_then(|c| c.dataset_files(slug).ok())
+        .is_some_and(|remote| !snapshot::compare_remote(snap, &remote).ok())
+}
+
+/// After `dataset_push`: wait until Kaggle reports the dataset ready, verify
+/// the served files against `snap` (exit 1 on a mismatch) and only then
+/// record `snap` as the last pushed state. The snapshot is what the next
+/// push diffs against and what `rerun --bump-dataset` uses to skip a push,
+/// so an unverified one is never written.
+pub(crate) fn finish_push(
+    cli: &xrun_kaggle::KaggleCli,
+    client: Option<&http::KaggleApiClient>,
+    slug: &str,
+    snap: &snapshot::Snapshot,
+    version_before: Option<u32>,
+    verify: bool,
+    snapshots_dir: Option<&Path>,
+) -> Result<()> {
     // A brand-new slug is not indexed yet and `datasets status` fails for a
     // while; the wait retries that instead of skipping verification, and
     // readiness still unknown after the timeout is an error (exit 1).
     eprintln!("Waiting for dataset '{slug}' to be ready…");
-    cli.wait_dataset_ready(&slug, Duration::from_secs(300), Duration::from_secs(5))?;
+    cli.wait_dataset_ready(slug, Duration::from_secs(300), Duration::from_secs(5))?;
     eprintln!("Dataset '{slug}' is ready.");
 
-    if args.verify {
-        verify_upload(&creds, &slug, &cur_snap)?;
+    if !verify {
+        return Ok(());
+    }
+    if verify_upload(client, slug, snap, version_before)? == Verification::Verified {
+        if let Some(dir) = snapshots_dir {
+            if let Err(e) = snapshot::save(dir, snap) {
+                tracing::warn!("could not save dataset snapshot for {slug}: {e}");
+            }
+        }
     }
     Ok(())
 }
 
-/// Compare what Kaggle lists for `slug` with the staging snapshot we just
-/// pushed. A mismatch is an error (exit 1): the CLI reports success and
-/// `status` says `ready` even for an empty version, which is how a 917 MB
-/// cache once reached a kernel as zero files. When the file list cannot be
-/// fetched at all, warn and return Ok — "could not verify" is not "empty".
-fn verify_upload(creds: &KaggleCredentials, slug: &str, local: &snapshot::Snapshot) -> Result<()> {
-    let Some(auth) = http::auth_from_credentials(creds) else {
-        eprintln!("Upload verification skipped: no Kaggle credentials for the API.");
-        return Ok(());
-    };
-    let client = match http::KaggleApiClient::new(auth) {
-        Ok(c) => c,
+/// The Kaggle REST client, or `None` (with the reason logged) when there are
+/// no usable credentials for it.
+pub(crate) fn api_client(creds: &KaggleCredentials) -> Option<http::KaggleApiClient> {
+    let auth = http::auth_from_credentials(creds)?;
+    match http::KaggleApiClient::new(auth) {
+        Ok(c) => Some(c),
         Err(e) => {
-            eprintln!("Warning: could not verify upload (HTTP client): {e}");
-            return Ok(());
+            tracing::warn!("Kaggle HTTP client unavailable: {e}");
+            None
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Verification {
+    Verified,
+    CouldNotVerify,
+}
+
+/// Compare what Kaggle serves for `slug` with the staging snapshot we just
+/// pushed. A mismatch is an error (exit 1): the CLI reports success and
+/// `status` says `ready` even for an empty version (a 917 MB cache once
+/// reached a kernel as zero files) and for the previous version when the
+/// push never reached Kaggle (same names, old sizes). When the file list
+/// cannot be fetched at all, warn and return `CouldNotVerify` — "could not
+/// verify" is not "empty".
+fn verify_upload(
+    client: Option<&http::KaggleApiClient>,
+    slug: &str,
+    local: &snapshot::Snapshot,
+    version_before: Option<u32>,
+) -> Result<Verification> {
+    let Some(client) = client else {
+        eprintln!("Upload verification skipped: no Kaggle credentials for the API.");
+        return Ok(Verification::CouldNotVerify);
+    };
+
+    let (version, stuck) = match client.wait_dataset_version_above(
+        slug,
+        version_before,
+        Duration::from_secs(300),
+        Duration::from_secs(5),
+    ) {
+        http::VersionWait::Reached(n) => (Some(n), false),
+        http::VersionWait::Stuck(n) => (Some(n), true),
+        http::VersionWait::Unknown => {
+            eprintln!("Warning: Kaggle did not report a version number; checking the files only.");
+            (None, false)
         }
     };
-    let remote = match client.dataset_files(slug) {
+    let version_label = match (version_before, version) {
+        (Some(b), Some(n)) if n > b => format!("version {b} → {n}"),
+        (_, Some(n)) => format!("version {n}"),
+        (_, None) => "current version".to_string(),
+    };
+
+    let remote = match client.dataset_files_at(slug, version) {
         Ok(files) => files,
         Err(e) => {
             eprintln!(
                 "Warning: could not verify upload, Kaggle did not return the file list: {e}\n\
                  Check the dataset page by hand before launching."
             );
-            return Ok(());
+            return Ok(Verification::CouldNotVerify);
         }
     };
 
     let check = snapshot::compare_remote(local, &remote);
     if check.ok() {
+        if stuck {
+            eprintln!(
+                "Warning: Kaggle did not create a new version (still {version_label}), \
+                 but the files it serves match the staging dir."
+            );
+        }
         eprintln!(
-            "Verified: Kaggle lists {} files ({}); all {} local files present.",
+            "Verified: Kaggle {} lists {} files ({}); all {} local files match by name and size.",
+            version_label,
             check.remote_count,
             fmt_size(check.remote_bytes),
             check.local_count
@@ -245,21 +348,49 @@ fn verify_upload(creds: &KaggleCredentials, slug: &str, local: &snapshot::Snapsh
                 preview(&check.extra)
             );
         }
-        return Ok(());
+        return Ok(Verification::Verified);
     }
 
     eprintln!(
-        "Upload mismatch: Kaggle lists {} files ({}), local staging has {} ({}).",
+        "Upload mismatch: Kaggle {} lists {} files ({}), local staging has {} ({}).",
+        version_label,
         check.remote_count,
         fmt_size(check.remote_bytes),
         check.local_count,
         fmt_size(check.local_bytes)
     );
-    eprintln!(
-        "  missing on Kaggle: {} files, e.g. {}",
-        check.missing.len(),
-        preview(&check.missing)
-    );
+    if stuck {
+        eprintln!(
+            "  Kaggle did not create a new version: it still serves {version_label}, \
+             the push never reached it."
+        );
+    }
+    if !check.missing.is_empty() {
+        eprintln!(
+            "  missing on Kaggle: {} files, e.g. {}",
+            check.missing.len(),
+            preview(&check.missing)
+        );
+    }
+    if !check.size_mismatch.is_empty() {
+        let shown: Vec<String> = check
+            .size_mismatch
+            .iter()
+            .take(5)
+            .map(|m| format!("{} (local {} B, Kaggle {} B)", m.path, m.local, m.remote))
+            .collect();
+        let more = check.size_mismatch.len().saturating_sub(shown.len());
+        eprintln!(
+            "  size differs: {} files, e.g. {}{}",
+            check.size_mismatch.len(),
+            shown.join(", "),
+            if more > 0 {
+                format!(" … (+{more})")
+            } else {
+                String::new()
+            }
+        );
+    }
     if !check.extra.is_empty() {
         eprintln!(
             "  present on Kaggle but not local: {} files, e.g. {}",

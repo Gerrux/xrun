@@ -11,8 +11,31 @@ env:
   XRUN_KAGGLE_AUTO_BUILD_WHEEL: "1"
 
 jobs:
+  # v0.11.3 was tagged on the merge commit before the release PR with the
+  # version bump: the binaries reported 0.11.2 and the release body missed its
+  # CHANGELOG section. Refuse to build from a tag the tree does not match.
+  check-version:
+    name: Tag matches Cargo.toml and CHANGELOG
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tag with workspace version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          CARGO_VERSION=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml [workspace.package] version is '$CARGO_VERSION'. Tag the commit that contains the version bump."
+            exit 1
+          fi
+          if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section at $GITHUB_REF_NAME."
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: check-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
