@@ -13,7 +13,7 @@ use xrun_kaggle::{snapshot, KaggleAdapter};
 
 use crate::cli::{LaunchArgs, RerunArgs};
 use crate::commands::common::{open_store, resolve_run};
-use crate::commands::{launch, patch};
+use crate::commands::{dataset, launch, patch};
 
 pub fn run(args: &RerunArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
     let store = open_store(db_path)?;
@@ -82,12 +82,23 @@ fn bump_dataset(manifest: &Manifest, staging: &Path, config_dir: &Path) -> Resul
         .and_then(|d| snapshot::load(d, slug));
     let diff = snapshot::diff(prev.as_ref(), &cur);
 
+    let creds = Credentials::load(config_dir)
+        .map(|c| c.kaggle)
+        .unwrap_or_default();
+    let api = dataset::api_client(&creds);
+
     if prev.is_some() && diff.is_empty() {
+        if !dataset::remote_differs(api.as_ref(), slug, &cur) {
+            eprintln!(
+                "[bump-dataset] {} unchanged vs last pushed snapshot — skipping push.",
+                slug
+            );
+            return Ok(());
+        }
         eprintln!(
-            "[bump-dataset] {} unchanged vs last pushed snapshot — skipping push.",
-            slug
+            "[bump-dataset] {slug} unchanged vs last pushed snapshot, but Kaggle serves \
+             different files — that push did not land, pushing again."
         );
-        return Ok(());
     }
 
     eprintln!("[bump-dataset] pushing new version of {slug}…");
@@ -95,19 +106,23 @@ fn bump_dataset(manifest: &Manifest, staging: &Path, config_dir: &Path) -> Resul
         eprintln!("{}", diff.render());
     }
 
-    let creds = Credentials::load(config_dir)
-        .map(|c| c.kaggle)
-        .unwrap_or_default();
     let adapter = KaggleAdapter::new().with_credentials(creds);
     let cli = adapter.cli();
+    let version_before = dataset::current_version(api.as_ref(), slug);
     cli.dataset_push(staging, slug, Some("bumped via xrun rerun --bump-dataset"))
         .with_context(|| format!("failed to push dataset '{slug}'"))?;
 
-    if let Some(dir) = snapshots_dir.as_deref() {
-        if let Err(e) = snapshot::save(dir, &cur) {
-            tracing::warn!("could not save dataset snapshot for {slug}: {e}");
-        }
-    }
+    // The launch that follows mounts whatever Kaggle serves, so a push that
+    // did not land must stop it here.
+    dataset::finish_push(
+        cli,
+        api.as_ref(),
+        slug,
+        &cur,
+        version_before,
+        true,
+        snapshots_dir.as_deref(),
+    )?;
     eprintln!("[bump-dataset] {slug} pushed.");
     Ok(())
 }

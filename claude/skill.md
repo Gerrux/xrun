@@ -183,10 +183,13 @@ xrun dataset status <owner>/<name>                     # ready + "files: N  size
   `train.tar` as extra, zip the subdirs yourself and unzip in `run.cmd`.
 - The file list `push` prints is the local diff against the previous push,
   printed before anything is uploaded. The receipt is the
-  `Verified: Kaggle lists N files …` line at the end (`--verify`, default
-  on). `Upload mismatch` + exit 1 means do not launch; read the missing and
-  extra paths it prints. `ready` from `status` is also true for an empty
-  version; compare `files: N` with the local dir when in doubt.
+  `Verified: Kaggle version A → B lists N files …; all N local files match
+  by name and size` line at the end (`--verify`, default on). `Upload
+  mismatch` + exit 1 means do not launch; read the missing, size-differs
+  and extra paths it prints ("did not create a new version" = the push
+  never reached Kaggle, it still serves the old one). `ready` from `status`
+  is also true for an empty or a stale version; compare `files: N` and
+  `size` with the local dir when in doubt.
 - `xrun launch` refuses to start when a dataset's status cannot be fetched
   (nonexistent slug, 403). Push it, re-run `xrun doctor --manifest <path>`,
   then launch.

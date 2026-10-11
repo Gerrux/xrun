@@ -62,6 +62,14 @@ impl Default for KernelStatus {
     }
 }
 
+/// Which path `KaggleCli::dataset_push` took: a new dataset (version 1) or a
+/// new version of an existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatasetPushOutcome {
+    Created,
+    Versioned,
+}
+
 /// Abstraction over the kaggle subprocess — enables testing without a real `kaggle` binary.
 pub trait KaggleProcess: Send + Sync {
     /// Run `kaggle kernels push -p <dir>` and return stdout.
@@ -691,9 +699,11 @@ impl KaggleCli {
     /// Push a local directory as a Kaggle dataset.
     ///
     /// Ensures `dataset-metadata.json` exists in `local_dir` (generates one from
-    /// `slug` if absent), then calls `kaggle datasets create`. On "already exists"
-    /// conflict (exit non-zero + "already" in stderr), falls back to
-    /// `kaggle datasets version`. Transient errors (timeout, 5xx, connection
+    /// `slug` if absent), then calls `kaggle datasets create`. On an "already
+    /// exists" conflict (an error line with "already" on stdout with exit 0 in
+    /// CLI 1.8, or in stderr with a non-zero exit in older CLIs), falls back to
+    /// `kaggle datasets version`. An error line on stdout is a failure even
+    /// when the CLI exits 0. Transient errors (timeout, 5xx, connection
     /// reset on the final `CreateDatasetVersion` commit) are retried up to
     /// `XRUN_KAGGLE_DATASET_RETRIES` times (default 2 — total 3 attempts).
     pub fn dataset_push(
@@ -701,7 +711,7 @@ impl KaggleCli {
         local_dir: &Path,
         slug: &str,
         message: Option<&str>,
-    ) -> Result<(), KaggleError> {
+    ) -> Result<DatasetPushOutcome, KaggleError> {
         ensure_dataset_metadata(local_dir, slug)?;
         let msg = message.unwrap_or("Updated via xrun");
 
@@ -712,18 +722,30 @@ impl KaggleCli {
 
         let mut attempt = 0u32;
         loop {
+            // kaggle CLI 1.8 checks the slug before uploading: for an existing
+            // one `datasets create` prints "Dataset creation error: ... already
+            // in use" to stdout and exits 0. Older CLIs exited non-zero.
+            let version = || {
+                self.process
+                    .datasets_version(local_dir, msg)
+                    .and_then(|out| reject_stdout_error(&out))
+                    .map(|_| DatasetPushOutcome::Versioned)
+            };
             let result = match self.process.datasets_create(local_dir) {
-                Ok(_) => Ok(()),
+                Ok(out) => match stdout_dataset_error(&out) {
+                    Some(line) if line.to_lowercase().contains("already") => version(),
+                    _ => reject_stdout_error(&out).map(|_| DatasetPushOutcome::Created),
+                },
                 Err(KaggleError::CliFailure { ref stderr, .. })
                     if stderr.to_lowercase().contains("already") =>
                 {
-                    self.process.datasets_version(local_dir, msg).map(|_| ())
+                    version()
                 }
                 Err(e) => Err(e),
             };
 
             match result {
-                Ok(()) => return Ok(()),
+                Ok(outcome) => return Ok(outcome),
                 Err(e) if is_transient_kaggle_error(&e) && attempt < max_retries => {
                     let base_secs: u64 = std::env::var("XRUN_KAGGLE_DATASET_BACKOFF_BASE_SECS")
                         .ok()
@@ -759,6 +781,27 @@ impl KaggleCli {
 impl Default for KaggleCli {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The error line `kaggle datasets create|version` prints to stdout when the
+/// server refuses the request. The CLI still exits 0 in that case, so the
+/// exit code alone says nothing about whether a version was created.
+fn stdout_dataset_error(stdout: &str) -> Option<&str> {
+    stdout.lines().map(str::trim).find(|l| {
+        l.starts_with("Dataset creation error") || l.starts_with("Dataset version creation error")
+    })
+}
+
+/// Turn an exit-0 run whose stdout carries a dataset error into a
+/// `CliFailure`, so the retry heuristic and the caller see it as a failure.
+fn reject_stdout_error(stdout: &str) -> Result<(), KaggleError> {
+    match stdout_dataset_error(stdout) {
+        None => Ok(()),
+        Some(_) => Err(KaggleError::CliFailure {
+            exit_code: 0,
+            stderr: format!("stdout: {}", stdout.trim()),
+        }),
     }
 }
 

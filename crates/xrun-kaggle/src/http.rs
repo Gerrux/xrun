@@ -41,6 +41,17 @@ pub enum Auth {
     Bearer(String),
 }
 
+/// What `KaggleApiClient::wait_dataset_version_above` saw before giving up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionWait {
+    /// The number rose above the previous one.
+    Reached(u32),
+    /// The API kept answering with this number, not above the previous one.
+    Stuck(u32),
+    /// The API never returned a version number.
+    Unknown,
+}
+
 #[derive(Clone)]
 pub struct KaggleApiClient {
     client: Client,
@@ -213,6 +224,50 @@ impl KaggleApiClient {
     /// Unlike `dataset_current_version`, an HTTP error here is an `Err`:
     /// the caller must distinguish "could not verify" from "verified empty".
     pub fn dataset_files(&self, slug: &str) -> Result<Vec<RemoteFile>, KaggleError> {
+        self.dataset_files_at(slug, None)
+    }
+
+    /// Poll `dataset_current_version` until it rises above `previous` (any
+    /// number counts when `previous` is `None`, i.e. a new slug).
+    ///
+    /// `datasets status` answers `ready` for the version Kaggle already
+    /// serves, so on an existing slug it says nothing about whether the push
+    /// produced a new one; the version number does. An error or a missing
+    /// number from the API is retried like "not there yet".
+    pub fn wait_dataset_version_above(
+        &self,
+        slug: &str,
+        previous: Option<u32>,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> VersionWait {
+        let started = std::time::Instant::now();
+        let mut last_seen: Option<u32> = None;
+        loop {
+            match self.dataset_current_version(slug) {
+                Ok(Some(n)) if previous.is_none_or(|p| n > p) => return VersionWait::Reached(n),
+                Ok(Some(n)) => last_seen = Some(n),
+                Ok(None) => {}
+                Err(e) => tracing::info!("dataset '{slug}' version not available yet: {e}"),
+            }
+            if started.elapsed() >= timeout {
+                return match last_seen {
+                    Some(n) => VersionWait::Stuck(n),
+                    None => VersionWait::Unknown,
+                };
+            }
+            std::thread::sleep(poll_interval);
+        }
+    }
+
+    /// `dataset_files` for a given version (`None` — the current one).
+    /// Pinning the number avoids reading the old version's list while the
+    /// listing for the new one is still catching up.
+    pub fn dataset_files_at(
+        &self,
+        slug: &str,
+        version: Option<u32>,
+    ) -> Result<Vec<RemoteFile>, KaggleError> {
         let (owner, name) = slug.split_once('/').ok_or_else(|| {
             KaggleError::ParseError(format!(
                 "expected dataset slug in <owner>/<name> form, got: {slug}"
@@ -230,6 +285,9 @@ impl KaggleApiClient {
             // takes ~700 requests and trips the 429 limiter about 20 s in.
             // 200 is the documented maximum.
             let mut req = self.client.get(&url).query(&[("pageSize", "200")]);
+            if let Some(v) = version {
+                req = req.query(&[("datasetVersionNumber", v.to_string())]);
+            }
             if let Some(token) = &page_token {
                 req = req.query(&[("pageToken", token.as_str())]);
             }
@@ -437,6 +495,92 @@ mod tests {
         });
         assert_eq!(files.len(), 1);
         mock.verify().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dataset_files_at_pins_the_version() {
+        let mock = server().await;
+        Mock::given(method("GET"))
+            .and(path("/datasets/list/alice/cache"))
+            .and(wiremock::matchers::query_param("datasetVersionNumber", "4"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "datasetFiles": [{"name": "a.npz", "totalBytes": 1}]
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let url = mock.uri();
+        let files = off_runtime(move || {
+            KaggleApiClient::new(basic_auth())
+                .unwrap()
+                .with_base_url(url)
+                .dataset_files_at("alice/cache", Some(4))
+                .unwrap()
+        });
+        assert_eq!(files.len(), 1);
+        mock.verify().await;
+    }
+
+    async fn mount_version(mock: &MockServer, n: u32, times: Option<u64>) {
+        let m = Mock::given(method("GET"))
+            .and(path("/datasets/view/alice/cache"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "currentVersionNumber": n })),
+            );
+        match times {
+            Some(t) => m.up_to_n_times(t).mount(mock).await,
+            None => m.mount(mock).await,
+        }
+    }
+
+    fn wait_version(url: String, previous: Option<u32>) -> VersionWait {
+        off_runtime(move || {
+            KaggleApiClient::new(basic_auth())
+                .unwrap()
+                .with_base_url(url)
+                .wait_dataset_version_above(
+                    "alice/cache",
+                    previous,
+                    Duration::from_millis(300),
+                    Duration::from_millis(10),
+                )
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_dataset_version_reports_stuck_when_number_does_not_grow() {
+        // The ArboForge incident: the push never reached Kaggle, the number
+        // stays where it was before the push.
+        let mock = server().await;
+        mount_version(&mock, 3, None).await;
+        assert_eq!(wait_version(mock.uri(), Some(3)), VersionWait::Stuck(3));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_dataset_version_returns_the_new_number() {
+        let mock = server().await;
+        mount_version(&mock, 3, Some(2)).await;
+        mount_version(&mock, 4, None).await;
+        assert_eq!(wait_version(mock.uri(), Some(3)), VersionWait::Reached(4));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_dataset_version_new_slug_accepts_first_number() {
+        let mock = server().await;
+        mount_version(&mock, 1, None).await;
+        assert_eq!(wait_version(mock.uri(), None), VersionWait::Reached(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_dataset_version_unknown_when_api_gives_no_number() {
+        let mock = server().await;
+        Mock::given(method("GET"))
+            .and(path("/datasets/view/alice/cache"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&mock)
+            .await;
+        assert_eq!(wait_version(mock.uri(), Some(3)), VersionWait::Unknown);
     }
 
     #[tokio::test(flavor = "multi_thread")]

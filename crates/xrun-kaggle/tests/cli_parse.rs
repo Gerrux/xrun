@@ -552,6 +552,11 @@ struct MockDatasetRetry {
     create_already_stderr: Option<String>,
     /// Number of leading version attempts that should fail with a transient error.
     version_fail_count: u32,
+    /// Stdout of a successful (exit 0) create; kaggle CLI 1.8 prints its
+    /// errors here and still exits 0.
+    create_stdout: String,
+    /// Stdout of a successful (exit 0) version.
+    version_stdout: String,
 }
 
 impl MockDatasetRetry {
@@ -563,6 +568,8 @@ impl MockDatasetRetry {
             create_succeeds: true,
             create_already_stderr: None,
             version_fail_count: 0,
+            create_stdout: String::new(),
+            version_stdout: String::new(),
         }
     }
 }
@@ -605,7 +612,7 @@ impl KaggleProcess for MockDatasetRetry {
             });
         }
         if self.create_succeeds {
-            Ok(String::new())
+            Ok(self.create_stdout.clone())
         } else {
             Err(KaggleError::CliFailure {
                 exit_code: 2,
@@ -622,7 +629,7 @@ impl KaggleProcess for MockDatasetRetry {
                 stderr: "stderr: connection reset by peer during commit".to_string(),
             });
         }
-        Ok(String::new())
+        Ok(self.version_stdout.clone())
     }
     fn datasets_list_mine(&self) -> Result<String, KaggleError> {
         unimplemented!()
@@ -667,6 +674,79 @@ fn test_dataset_push_does_not_retry_permanent_failure() {
         1,
         "must not retry on permanent error"
     );
+}
+
+// kaggle CLI 1.8.3 checks the slug before uploading anything; for an existing
+// slug `datasets create` prints this to stdout and exits 0. Taking that for
+// success meant `datasets version` never ran and nothing was uploaded.
+const CREATE_ALREADY_STDOUT: &str = "Dataset creation error: The requested title \
+     \"ArboForge code\" is already in use by a dataset. Please choose another title.\n";
+
+#[test]
+fn test_dataset_push_existing_slug_exit_zero_runs_version() {
+    let mut mock = MockDatasetRetry::new(0);
+    mock.create_stdout = CREATE_ALREADY_STDOUT.to_string();
+    mock.version_stdout = "Dataset version is being created. Please check progress at \
+                           https://www.kaggle.com/datasets/user/slug\n"
+        .to_string();
+    let mock = Box::new(mock);
+    let version_calls = mock.version_calls.clone();
+    let cli = KaggleCli::with_process(mock);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let outcome = cli
+        .dataset_push(tmp.path(), "user/slug", Some("msg"))
+        .expect("existing slug must go through `datasets version`");
+
+    assert_eq!(*version_calls.lock().unwrap(), 1);
+    assert_eq!(outcome, xrun_kaggle::cli::DatasetPushOutcome::Versioned);
+}
+
+#[test]
+fn test_dataset_push_new_slug_reports_created() {
+    let mut mock = MockDatasetRetry::new(0);
+    mock.create_stdout = "Your private Dataset is being created. Please check progress at \
+                          https://www.kaggle.com/datasets/user/slug\n"
+        .to_string();
+    let mock = Box::new(mock);
+    let version_calls = mock.version_calls.clone();
+    let cli = KaggleCli::with_process(mock);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let outcome = cli.dataset_push(tmp.path(), "user/slug", None).unwrap();
+
+    assert_eq!(*version_calls.lock().unwrap(), 0);
+    assert_eq!(outcome, xrun_kaggle::cli::DatasetPushOutcome::Created);
+}
+
+#[test]
+fn test_dataset_push_version_error_on_stdout_is_err() {
+    let mut mock = MockDatasetRetry::new(0);
+    mock.create_stdout = CREATE_ALREADY_STDOUT.to_string();
+    mock.version_stdout = "Dataset version creation error: quota exceeded\n".to_string();
+    let cli = KaggleCli::with_process(Box::new(mock));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let err = cli
+        .dataset_push(tmp.path(), "user/slug", None)
+        .expect_err("a version error printed with exit 0 is still a failure");
+    assert!(err.to_string().contains("quota exceeded"), "{err}");
+}
+
+#[test]
+fn test_dataset_push_other_create_error_on_stdout_is_err() {
+    let mut mock = MockDatasetRetry::new(0);
+    mock.create_stdout = "Dataset creation error: invalid license\n".to_string();
+    let mock = Box::new(mock);
+    let version_calls = mock.version_calls.clone();
+    let cli = KaggleCli::with_process(mock);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let err = cli
+        .dataset_push(tmp.path(), "user/slug", None)
+        .expect_err("a create error printed with exit 0 is still a failure");
+    assert!(err.to_string().contains("invalid license"), "{err}");
+    assert_eq!(*version_calls.lock().unwrap(), 0);
 }
 
 #[test]
