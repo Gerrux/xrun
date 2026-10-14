@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.4] - 2026-10-14
+
+Kaggle: `dataset push` to an existing slug really uploads and verifies the new
+version; `xrun show --vendor-status` tells a queued kernel from a running one.
+
 ### Added
 
 - `xrun show <run-id> --vendor-status` asks the vendor once for its own state

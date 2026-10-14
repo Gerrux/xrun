@@ -64,6 +64,7 @@ xrun launch exp/foo.yaml --detach        # run experiment (background)
 xrun launch exp/foo.yaml --dry-run       # validate manifest, no action
 xrun ls [--status running] [--json]      # list runs
 xrun show <id> [--json]                  # run card
+xrun show <id> --vendor-status           # + vendor's raw state (Kaggle: QUEUED vs RUNNING, failure msg)
 xrun logs <id> [--follow]                # stdout; --follow streams via SSH
 xrun events <id> [--follow]              # stages: provision/upload/train/done
 xrun metrics <id> [--key val_f1] [--ascii] [--json] [--png out.png] [--per-key]
