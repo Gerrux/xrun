@@ -17,10 +17,10 @@ use xrun_core::{
 };
 use xrun_mlflow::{Auth as MlflowAuth, MlflowClient};
 
-use crate::cli::{KaggleCli, KaggleProcess, KernelState};
+use crate::cli::{KaggleCli, KaggleProcess, KernelState, KernelStatus};
 use crate::embed;
 use crate::error::KaggleError;
-use crate::http::{self, CancelOutcome, KaggleApiClient};
+use crate::http::{self, KaggleApiClient};
 use crate::ingest::ingest_post_run;
 use crate::kernel_metadata::KernelMetadata;
 use crate::log_stream::{
@@ -62,6 +62,9 @@ pub struct KaggleAdapter {
     /// `xrun_run_id` tag. Filled lazily on the first `tail()` call so a
     /// kernel that's slow to start doesn't make `set_run_id()` block.
     mlflow_run_cache: Mutex<Option<(String, String)>>,
+    /// Mock server for the REST client (tests only).
+    #[cfg(any(test, feature = "mock"))]
+    api_base: Option<String>,
 }
 
 impl KaggleAdapter {
@@ -74,19 +77,23 @@ impl KaggleAdapter {
             credentials: KaggleCredentials::default(),
             mlflow: None,
             mlflow_run_cache: Mutex::new(None),
+            #[cfg(any(test, feature = "mock"))]
+            api_base: None,
         }
     }
 
     pub fn with_process(process: Box<dyn KaggleProcess>) -> Self {
         Self {
             cli: KaggleCli::with_process(process),
-            run_id: std::sync::RwLock::new(None),
-            store_path: None,
-            last_kernel_state: Mutex::new(None),
-            credentials: KaggleCredentials::default(),
-            mlflow: None,
-            mlflow_run_cache: Mutex::new(None),
+            ..Self::new()
         }
+    }
+
+    /// Send the REST calls to a mock server instead of Kaggle.
+    #[cfg(any(test, feature = "mock"))]
+    pub fn with_api_base(mut self, base: impl Into<String>) -> Self {
+        self.api_base = Some(base.into());
+        self
     }
 
     /// Block until every dataset the kernel mounts reports `ready`.
@@ -371,55 +378,85 @@ impl KaggleAdapter {
         }
     }
 
-    fn cancel_kernel_remote(&self, h: &InstanceHandle) -> Result<(), VendorError> {
-        // §4: Cancel the running kernel via the Kaggle REST API.
-        //
-        // Kaggle CLI 1.8.x removed `kaggle kernels cancel` entirely (and
-        // Kaggle's own PR #967 to add it back was closed un-merged), so we
-        // POST directly to /api/v1/kernels/cancel-session/{id}. The two-step
-        // dance (resolve session id → cancel) is unavoidable: `cancel-session`
-        // takes the integer session id, not the slug.
+    /// The kernel's state as Kaggle sees it: the `GetKernelSessionStatus`
+    /// RPC first, `kaggle kernels status` when REST is unavailable (no
+    /// credentials in xrun, an auth form the RPC refuses, an outage). A 429
+    /// skips the fallback — the CLI would hit the same throttled API.
+    fn remote_kernel_status(&self, slug: &str) -> Result<KernelStatus, String> {
+        let rest_err = match http::auth_from_credentials(&self.credentials) {
+            Some(auth) => match KaggleApiClient::new(auth).map(|c| self.point_at_api(c)) {
+                Ok(client) => match client.kernel_session_status(slug) {
+                    Ok(st) => return Ok(st),
+                    Err(KaggleError::CliFailure { exit_code: 429, .. }) => {
+                        return Err("Kaggle API rate limit (HTTP 429)".to_string());
+                    }
+                    Err(e) => e.to_string(),
+                },
+                Err(e) => e.to_string(),
+            },
+            None => "no Kaggle credentials in xrun".to_string(),
+        };
+        tracing::info!("kaggle kernel '{slug}': REST status failed ({rest_err}); asking the CLI");
+        self.cli
+            .status(slug)
+            .map_err(|cli_err| format!("{rest_err}; kaggle CLI: {cli_err}"))
+    }
+
+    #[cfg(any(test, feature = "mock"))]
+    fn point_at_api(&self, client: KaggleApiClient) -> KaggleApiClient {
+        match &self.api_base {
+            Some(base) => client.with_base_url(base.clone()),
+            None => client,
+        }
+    }
+
+    #[cfg(not(any(test, feature = "mock")))]
+    fn point_at_api(&self, client: KaggleApiClient) -> KaggleApiClient {
+        client
+    }
+
+    /// Release the kernel side of a run, as far as Kaggle allows.
+    ///
+    /// Kaggle's public API cannot cancel a running kernel: the cancel RPC
+    /// wants a session id that no public response exposes (see `http.rs`).
+    /// So this only finds out whether the kernel is still alive. Returns
+    /// whether the instance may be marked destroyed — only once Kaggle
+    /// reports a finished kernel. A live or unknown kernel keeps its row
+    /// active, so the Instances view keeps showing it; the next `xrun stop
+    /// <run>` re-checks and clears it.
+    fn release_kernel(&self, h: &InstanceHandle) -> bool {
         let slug = h.id.strip_prefix("kaggle:").unwrap_or(&h.id);
-
-        let auth = match http::auth_from_credentials(&self.credentials) {
-            Some(a) => a,
-            None => {
-                tracing::warn!(
-                    "kaggle destroy: no credentials configured — cannot cancel kernel '{slug}'. \
-                     Stop the kernel via https://www.kaggle.com/code or run \
-                     `xrun config set kaggle.username/.key`."
+        let page = format!("https://www.kaggle.com/code/{slug}");
+        match self.remote_kernel_status(slug) {
+            Ok(st) if matches!(st.status, KernelState::Complete | KernelState::Error) => {
+                tracing::info!(
+                    "kaggle kernel '{slug}' already finished ({}) — nothing to cancel",
+                    st.raw_state.as_deref().unwrap_or("terminal")
                 );
-                return Ok(());
+                true
             }
-        };
-
-        let client = match KaggleApiClient::new(auth) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("kaggle destroy: HTTP client init failed: {e}");
-                return Ok(());
-            }
-        };
-
-        match client.cancel_kernel(slug) {
-            Ok(CancelOutcome::Cancelled(id)) => {
-                tracing::info!("kaggle kernel '{slug}' cancelled (session {id})");
-            }
-            Ok(CancelOutcome::NoActiveSession) => {
-                tracing::info!("kaggle kernel '{slug}' already finished — nothing to cancel");
+            Ok(st) => {
+                let state = st.raw_state.unwrap_or_else(|| format!("{:?}", st.status));
+                tracing::warn!(
+                    "Kaggle kernel '{slug}' is still {state} and keeps holding a Kaggle GPU slot. \
+                     xrun cannot stop it: Kaggle's public API has no way to cancel a running \
+                     kernel. Stop it in the Kaggle web UI: {page} — otherwise Kaggle ends it \
+                     at its 12 h session limit. The local run is marked cancelled; the instance \
+                     stays listed as active until `xrun stop` sees the kernel finished."
+                );
+                false
             }
             Err(e) => {
-                // Don't fail the stop: the run is marked Cancelled in the
-                // local DB either way. A surfaced warn is more useful than
-                // an opaque exit 1.
                 tracing::warn!(
-                    "could not cancel kaggle kernel '{slug}' via REST: {e}\n\
-                     The kernel will auto-terminate after its session limit (≤12 h). \
-                     Local run marked as stopped."
+                    "Could not check Kaggle kernel '{slug}' ({e}). It may still be running and \
+                     holding a Kaggle GPU slot — xrun cannot cancel Kaggle kernels. Check and \
+                     stop it in the Kaggle web UI: {page}. The local run is marked cancelled; \
+                     the instance stays listed as active until `xrun stop` sees the kernel \
+                     finished."
                 );
+                false
             }
         }
-        Ok(())
     }
 }
 
@@ -835,14 +872,13 @@ impl VendorAdapter for KaggleAdapter {
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {
-        let result = self.cancel_kernel_remote(h);
-        // The kernel is either cancelled or already finished: either way the
-        // instance row must stop counting as active (otherwise `xrun
-        // watchdog` / `gc` report it as a billable orphan forever).
-        if result.is_ok() {
+        // Never an error: `xrun stop` must still cancel the local run when
+        // Kaggle can't be reached. The warning in `release_kernel` is what
+        // tells the user the kernel may outlive the run.
+        if self.release_kernel(h) {
             self.mark_instance_destroyed(h);
         }
-        result
+        Ok(())
     }
 
     // §5: vendor_status() — confirm credentials and return account name
@@ -1575,6 +1611,58 @@ mod terminal_detection_tests {
 #[cfg(test)]
 mod destroy_tests {
     use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const STATUS_RPC: &str = "/kernels.KernelsApiService/GetKernelSessionStatus";
+
+    /// `kaggle kernels status` stand-in: a fixed answer (or failure) plus a
+    /// call counter, so tests can tell whether the CLI fallback ran.
+    struct CliStatus {
+        answer: Result<&'static str, &'static str>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl KaggleProcess for CliStatus {
+        fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.answer
+                .map(str::to_string)
+                .map_err(|e| KaggleError::NotFound(e.to_string()))
+        }
+        fn push(&self, _: &Path) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn output(&self, _: &str, _: &Path) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn cancel(&self, _: &str) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn list_mine(&self) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn config_view(&self) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_status(&self, _: &str) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_create(&self, _: &Path) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_version(&self, _: &Path, _: &str) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+    }
+
+    const CLI_COMPLETE: &str = "alice/demo has status \"KernelWorkerStatus.COMPLETE\"";
 
     fn handle() -> InstanceHandle {
         InstanceHandle {
@@ -1587,33 +1675,148 @@ mod destroy_tests {
         }
     }
 
-    /// A finished kernel has nothing to cancel, but the instance row must
-    /// still stop counting as active.
+    fn fake_creds() -> KaggleCredentials {
+        KaggleCredentials {
+            token: None,
+            username: Some("alice".into()),
+            key: Some("test-key-abc".into()),
+        }
+    }
+
+    struct Outcome {
+        destroyed: bool,
+        cli_calls: usize,
+    }
+
+    /// Run `destroy` against one stored instance and report whether its row
+    /// was marked destroyed. `api` is the mock server's URI, `None` = no
+    /// credentials (REST skipped).
+    fn destroy_with(api: Option<String>, cli: Result<&'static str, &'static str>) -> Outcome {
+        std::thread::spawn(move || {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let mut store = Store::open(&tmp.path().join("runs.db")).unwrap();
+            store
+                .insert_instance("kaggle:alice/demo", "kaggle", None, None, None, Utc::now())
+                .unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut adapter = KaggleAdapter::with_process(Box::new(CliStatus {
+                answer: cli,
+                calls: calls.clone(),
+            }))
+            .with_store_path(tmp.path().to_path_buf());
+            if let Some(base) = api {
+                // Not `with_credentials`: it swaps the mock process for the
+                // real `kaggle` binary.
+                adapter.credentials = fake_creds();
+                adapter = adapter.with_api_base(base);
+            }
+            adapter
+                .destroy(&handle())
+                .expect("destroy never fails a stop");
+            let inst = store.get_instance("kaggle:alice/demo").unwrap().unwrap();
+            Outcome {
+                destroyed: inst.destroyed_at.is_some(),
+                cli_calls: calls.load(Ordering::SeqCst),
+            }
+        })
+        .join()
+        .unwrap()
+    }
+
+    async fn status_server(resp: ResponseTemplate) -> MockServer {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(STATUS_RPC))
+            .and(body_json(
+                json!({"userName": "alice", "kernelSlug": "demo"}),
+            ))
+            .respond_with(resp)
+            .expect(1)
+            .mount(&mock)
+            .await;
+        mock
+    }
+
+    /// The bug behind this test: the run was marked cancelled and the
+    /// instance destroyed while Kaggle kept the kernel RUNNING on a GPU slot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn running_kernel_keeps_the_instance_active() {
+        let mock =
+            status_server(ResponseTemplate::new(200).set_body_json(json!({"status": "RUNNING"})))
+                .await;
+        let out = destroy_with(Some(mock.uri()), Err("must not be asked"));
+        assert!(!out.destroyed, "a RUNNING kernel was marked destroyed");
+        assert_eq!(out.cli_calls, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_kernel_keeps_the_instance_active() {
+        let mock = status_server(ResponseTemplate::new(200).set_body_json(json!({}))).await;
+        let out = destroy_with(Some(mock.uri()), Err("must not be asked"));
+        assert!(!out.destroyed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finished_kernel_marks_the_instance_destroyed() {
+        for body in [
+            json!({"status": "COMPLETE"}),
+            json!({"status": "ERROR", "failureMessage": "OOM"}),
+            json!({"status": "CANCEL_ACKNOWLEDGED"}),
+        ] {
+            let mock = status_server(ResponseTemplate::new(200).set_body_json(body.clone())).await;
+            let out = destroy_with(Some(mock.uri()), Err("must not be asked"));
+            assert!(out.destroyed, "{body}");
+            assert_eq!(out.cli_calls, 0);
+        }
+    }
+
+    /// The live failure: Kaggle answered the old REST path with a 404 HTML
+    /// page. A failed REST call falls back to the CLI's status.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rest_error_falls_back_to_the_cli_status() {
+        let mock =
+            status_server(ResponseTemplate::new(404).set_body_string("<!DOCTYPE html><html/>"))
+                .await;
+        let out = destroy_with(Some(mock.uri()), Ok(CLI_COMPLETE));
+        assert!(out.destroyed);
+        assert_eq!(out.cli_calls, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_state_keeps_the_instance_and_does_not_fail() {
+        let mock = status_server(ResponseTemplate::new(500).set_body_string("boom")).await;
+        let out = destroy_with(Some(mock.uri()), Err("kaggle: command not found"));
+        assert!(!out.destroyed);
+        assert_eq!(out.cli_calls, 1);
+    }
+
+    /// One status request on 429 and no CLI fallback: the CLI would hit the
+    /// same throttled account.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rate_limit_is_not_retried() {
+        let mock =
+            status_server(ResponseTemplate::new(429).insert_header("Retry-After", "30")).await;
+        let out = destroy_with(Some(mock.uri()), Ok(CLI_COMPLETE));
+        assert!(!out.destroyed);
+        assert_eq!(out.cli_calls, 0);
+    }
+
     #[test]
-    fn destroy_marks_instance_destroyed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut store = Store::open(&tmp.path().join("runs.db")).unwrap();
-        store
-            .insert_instance("kaggle:alice/demo", "kaggle", None, None, None, Utc::now())
-            .unwrap();
-        assert!(store
-            .get_instance("kaggle:alice/demo")
-            .unwrap()
-            .unwrap()
-            .destroyed_at
-            .is_none());
-
-        // No credentials -> no REST call, `destroy` returns Ok.
-        let adapter = KaggleAdapter::new().with_store_path(tmp.path().to_path_buf());
-        adapter.destroy(&handle()).unwrap();
-
-        let inst = store.get_instance("kaggle:alice/demo").unwrap().unwrap();
-        assert!(inst.destroyed_at.is_some());
+    fn without_credentials_the_cli_decides() {
+        let out = destroy_with(None, Ok(CLI_COMPLETE));
+        assert!(out.destroyed);
+        assert_eq!(out.cli_calls, 1);
     }
 
     #[test]
     fn destroy_without_store_path_still_succeeds() {
-        KaggleAdapter::new().destroy(&handle()).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        KaggleAdapter::with_process(Box::new(CliStatus {
+            answer: Ok(CLI_COMPLETE),
+            calls,
+        }))
+        .destroy(&handle())
+        .unwrap();
     }
 }
 

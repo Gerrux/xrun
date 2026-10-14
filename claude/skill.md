@@ -200,6 +200,14 @@ xrun dataset status <owner>/<name>                     # ready + "files: N  size
   `find /kaggle/input -maxdepth 5 -name <marker> -print -quit`.
 - Kaggle kills a kernel at 12 h (9 h on TPU). Give the training script its
   own wall-clock limit well under that and make it checkpoint before exiting.
+- `xrun stop` does NOT stop a running Kaggle kernel: Kaggle's public API has
+  no cancel for it. The run becomes `cancelled`, but the kernel keeps one of
+  the account's two GPU slots until the 12 h limit. `stop` warns with the
+  kernel's kaggle.com URL when it is still `RUNNING`/`QUEUED` — pass that
+  URL to the user and ask them to stop the kernel there. Check with
+  `xrun show <id> --vendor-status`; once it is no longer running, a second
+  `xrun stop <id>` clears the instance. So don't stop a run just to relaunch
+  it.
 - Waiting without a TTY: `xrun events <id> --follow` exits on `done` /
   `failed` / `cancelled` (exit code 0 either way; read the last line). For a
   bounded wait run it in the background with a timeout. `xrun logs <id>` on

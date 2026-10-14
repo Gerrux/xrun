@@ -9,6 +9,29 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun stop` on a Kaggle run failed to check the kernel and printed
+  `kaggle CLI failed (exit 404): POST /kernels/status → 404 Not Found` with
+  Kaggle's whole HTML page. That REST path is gone; xrun now asks
+  `GetKernelSessionStatus` on `api.kaggle.com` (the RPC `kagglesdk` uses),
+  falling back to `kaggle kernels status`. A failed check prints one line
+  with the HTTP code instead of the page; a 429 is reported, not retried.
+- `xrun stop` marked a Kaggle instance destroyed while the kernel kept
+  running, so nothing showed that it still held one of the account's two GPU
+  slots. The instance now stays active until Kaggle reports the kernel
+  finished; the next `xrun stop <run-id>` re-checks and clears it.
+
+### Changed
+
+- `xrun stop` no longer claims to cancel a running Kaggle kernel — Kaggle's
+  public API cannot: the cancel call needs a session id that no public
+  response returns (Kaggle closed the CLI PRs adding `kernels cancel` for
+  that reason). It warns that the kernel is still `RUNNING`/`QUEUED` and
+  holds a GPU slot, and points to the kernel's page on kaggle.com to stop it
+  there; otherwise Kaggle ends it at its 12 h limit. The run is still marked
+  `cancelled` and `stop` still exits 0.
+
 ---
 
 ## [0.11.4] - 2026-10-14
