@@ -16,5 +16,5 @@ pub use cli::{
     DatasetListItem, KaggleCli, KaggleProcess, KernelListItem, KernelState, KernelStatus,
 };
 pub use error::KaggleError;
-pub use http::{auth_from_credentials, Auth, CancelOutcome, KaggleApiClient};
+pub use http::{auth_from_credentials, Auth, KaggleApiClient};
 pub use kernel_metadata::KernelMetadata;

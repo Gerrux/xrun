@@ -94,11 +94,7 @@ fn stop_one(
                     if let Some(state_json) = instance.state_json.as_deref() {
                         let handle: InstanceHandle = serde_json::from_str(state_json)
                             .context("failed to deserialize instance handle")?;
-                        let mut ctx =
-                            AdapterCtx::new("stop", db_path, runs_dir, config_dir, &run.id);
-                        // Kaggle destroy goes through REST; it needs neither
-                        // the data dir nor MLflow.
-                        ctx.kaggle_store_path = false;
+                        let ctx = AdapterCtx::new("stop", db_path, runs_dir, config_dir, &run.id);
                         let adapter = build_adapter(&handle.vendor, &ctx)?;
                         adapter.destroy(&handle).with_context(|| {
                             format!("destroy failed for instance {}", handle.id)

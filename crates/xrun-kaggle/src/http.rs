@@ -1,33 +1,33 @@
 #![deny(unsafe_code)]
 
-//! HTTPS client for Kaggle endpoints the upstream `kaggle` CLI doesn't expose.
+//! HTTPS client for Kaggle endpoints xrun calls without the `kaggle` CLI.
 //!
-//! Today's only consumer is `xrun stop` — Kaggle CLI 1.8.x dropped the
-//! `kaggle kernels cancel` subcommand and Kaggle's own PR #967 to add it back
-//! was closed un-merged, so we have to call the REST endpoint directly.
+//! Two surfaces, both with Basic (`username:api_key`) or Bearer auth:
 //!
-//! Endpoints (Basic auth with `username:api_key`):
+//!   * `https://www.kaggle.com/api/v1/datasets/...` — dataset view/list,
+//!     plain REST paths.
+//!   * `https://api.kaggle.com/v1/<service>/<Method>` — the RPC form
+//!     `kagglesdk` uses for everything (`KaggleHttpClient._get_request_url`),
+//!     always `POST` with a camelCase JSON body. The kernel status lives
+//!     here; the old `www.kaggle.com/api/v1/kernels/status` path answers
+//!     404 with an HTML page.
 //!
-//!   POST /api/v1/kernels/status
-//!     body: {"userName": "<owner>", "kernelSlug": "<slug>"}
-//!     → `kernelSessionId` (int) when the kernel has an active session
-//!
-//!   POST /api/v1/kernels/cancel-session/{kernel_session_id}
-//!     body: {}
-//!     → 200 + `{"errorMessage": null}` on success
-//!
-//! These aren't in the public OpenAPI surface — the source of truth is the
-//! `kagglesdk` package on GitHub. If the schema drifts, the wiremock tests
-//! lock the request shape we send so the failure mode stays loud.
+//! A running kernel cannot be cancelled from here. `CancelKernelSession`
+//! takes a `kernelSessionId`, and no public response carries it: Kaggle
+//! closed kaggle-api PRs #1170/#1173/#1174 (Aug 2026) saying the session id
+//! "is not currently exposed outside the server". `xrun stop` therefore only
+//! asks for the status and tells the user to stop the kernel in the web UI.
 
 use std::time::Duration;
 
 use reqwest::blocking::Client;
 
+use crate::cli::{KernelState, KernelStatus};
 use crate::error::KaggleError;
 use crate::snapshot::RemoteFile;
 
 const DEFAULT_API_BASE: &str = "https://www.kaggle.com/api/v1";
+const DEFAULT_RPC_BASE: &str = "https://api.kaggle.com/v1";
 
 /// How many 429 responses `dataset_files` absorbs (1 s, 2 s, 4 s, 8 s, 16 s
 /// unless `Retry-After` says otherwise) before giving up on the listing.
@@ -56,6 +56,7 @@ pub enum VersionWait {
 pub struct KaggleApiClient {
     client: Client,
     base: String,
+    rpc_base: String,
     auth: Auth,
 }
 
@@ -71,14 +72,17 @@ impl KaggleApiClient {
         Ok(Self {
             client,
             base: DEFAULT_API_BASE.to_string(),
+            rpc_base: DEFAULT_RPC_BASE.to_string(),
             auth,
         })
     }
 
-    /// Override the API base URL (test-only).
+    /// Point both the REST and the RPC surface at one mock server (test-only;
+    /// their paths don't overlap).
     #[cfg(any(test, feature = "mock"))]
     pub fn with_base_url(mut self, base: impl Into<String>) -> Self {
         self.base = base.into();
+        self.rpc_base = self.base.clone();
         self
     }
 
@@ -93,17 +97,22 @@ impl KaggleApiClient {
         }
     }
 
-    /// Resolve `<owner>/<slug>` to the active kernel session id.
-    /// Returns `Ok(None)` when the kernel exists but has no active session
-    /// (already finished, never started, …) — the caller treats that as a
-    /// successful no-op cancel.
-    pub fn kernel_session_id(&self, kernel_slug: &str) -> Result<Option<i64>, KaggleError> {
+    /// State of the kernel's latest session via the `GetKernelSessionStatus`
+    /// RPC — the call behind `kaggle kernels status`.
+    ///
+    /// Exactly one request: a 429 comes back as an `Err` carrying the code,
+    /// not a retry. `xrun stop` and the poller's early-fail path call this
+    /// once per stop, and looping on a throttled account only digs deeper.
+    pub fn kernel_session_status(&self, kernel_slug: &str) -> Result<KernelStatus, KaggleError> {
         let (owner, slug) = kernel_slug.split_once('/').ok_or_else(|| {
             KaggleError::ParseError(format!(
                 "expected kernel slug in <owner>/<name> form, got: {kernel_slug}"
             ))
         })?;
-        let url = format!("{}/kernels/status", self.base);
+        let url = format!(
+            "{}/kernels.KernelsApiService/GetKernelSessionStatus",
+            self.rpc_base
+        );
         let body = serde_json::json!({
             "userName": owner,
             "kernelSlug": slug,
@@ -112,66 +121,66 @@ impl KaggleApiClient {
             .with_auth(self.client.post(&url))
             .json(&body)
             .send()
-            .map_err(|e| KaggleError::NotFound(format!("kernels/status request: {e}")))?;
+            .map_err(|e| KaggleError::NotFound(format!("GetKernelSessionStatus request: {e}")))?;
         let status = resp.status();
-        let text = resp
-            .text()
-            .map_err(|e| KaggleError::ParseError(format!("read response body: {e}")))?;
+        let text = resp.text().unwrap_or_default();
         if !status.is_success() {
             return Err(KaggleError::CliFailure {
                 exit_code: status.as_u16() as i32,
-                stderr: format!("POST /kernels/status → {status}: {text}"),
+                stderr: format!(
+                    "GetKernelSessionStatus {kernel_slug} → {status}: {}",
+                    error_excerpt(&text)
+                ),
             });
         }
         let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-            KaggleError::ParseError(format!("kernels/status JSON parse: {e}\nbody: {text}"))
+            KaggleError::ParseError(format!(
+                "GetKernelSessionStatus {kernel_slug}: not JSON: {e}"
+            ))
         })?;
-
-        // The endpoint also exposes camelCase variants — try both.
-        let session_id = json
-            .get("kernelSessionId")
-            .or_else(|| json.get("kernel_session_id"))
-            .and_then(|v| v.as_i64())
-            .filter(|id| *id > 0);
-        Ok(session_id)
-    }
-
-    /// Cancel an active kernel session by id. Idempotent — a 404 / already-
-    /// cancelled response is folded into Ok(()).
-    pub fn cancel_session(&self, kernel_session_id: i64) -> Result<(), KaggleError> {
-        let url = format!("{}/kernels/cancel-session/{}", self.base, kernel_session_id);
-        let resp = self
-            .with_auth(self.client.post(&url))
-            .json(&serde_json::json!({}))
-            .send()
-            .map_err(|e| KaggleError::NotFound(format!("cancel-session request: {e}")))?;
-        let status = resp.status();
-        let text = resp.text().unwrap_or_default();
-
-        if status.is_success() {
-            // Body may contain {"errorMessage": "..."} even on 200 if the
-            // session was already terminal. Treat any non-empty errorMessage
-            // as informational, not fatal — the kernel is no longer running
-            // either way.
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(msg) = v.get("errorMessage").and_then(|m| m.as_str()) {
-                    if !msg.is_empty() {
-                        tracing::info!(
-                            "kaggle cancel-session {kernel_session_id}: {msg} (treating as success)"
-                        );
-                    }
-                }
-            }
-            return Ok(());
-        }
-        if status.as_u16() == 404 {
-            // Session expired / never existed — caller asked to cancel a run
-            // that's already gone. Idempotent no-op.
-            return Ok(());
-        }
-        Err(KaggleError::CliFailure {
-            exit_code: status.as_u16() as i32,
-            stderr: format!("POST /kernels/cancel-session/{kernel_session_id} → {status}: {text}"),
+        // kagglesdk's EnumSerializer writes the bare name ("RUNNING"); the
+        // ordinal is accepted too in case the server ever sends it.
+        let raw = match json.get("status") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => match n.as_u64() {
+                Some(0) => "QUEUED".into(),
+                Some(1) => "RUNNING".into(),
+                Some(2) => "COMPLETE".into(),
+                Some(3) => "ERROR".into(),
+                Some(4) => "CANCEL_REQUESTED".into(),
+                Some(5) => "CANCEL_ACKNOWLEDGED".into(),
+                Some(6) => "NEW_SCRIPT".into(),
+                _ => n.to_string(),
+            },
+            // Proto3 JSON omits a field at its default, and the default of
+            // KernelWorkerStatus is QUEUED.
+            None => "QUEUED".into(),
+            Some(other) => other.to_string(),
+        };
+        let raw = raw.trim_start_matches("KernelWorkerStatus.").to_string();
+        let state = match raw.as_str() {
+            "QUEUED" => KernelState::Queued,
+            "RUNNING" => KernelState::Running,
+            "COMPLETE" => KernelState::Complete,
+            // Same fold as the CLI parser: a cancel is a terminal failure.
+            "ERROR" | "CANCEL_REQUESTED" | "CANCEL_ACKNOWLEDGED" => KernelState::Error,
+            _ => KernelState::Unknown,
+        };
+        let failure_message = json
+            .get("failureMessage")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        Ok(KernelStatus {
+            error_message: if state == KernelState::Error {
+                failure_message.clone()
+            } else {
+                None
+            },
+            status: state,
+            run_seconds: None,
+            raw_state: Some(format!("KernelWorkerStatus.{raw}")),
+            failure_message,
         })
     }
 
@@ -353,24 +362,27 @@ impl KaggleApiClient {
         }
         Ok(files)
     }
-
-    /// Resolve session id for `<owner>/<slug>` and cancel it. Returns Ok even
-    /// when no active session exists (treated as already-stopped).
-    pub fn cancel_kernel(&self, kernel_slug: &str) -> Result<CancelOutcome, KaggleError> {
-        match self.kernel_session_id(kernel_slug)? {
-            Some(id) => {
-                self.cancel_session(id)?;
-                Ok(CancelOutcome::Cancelled(id))
-            }
-            None => Ok(CancelOutcome::NoActiveSession),
-        }
-    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum CancelOutcome {
-    Cancelled(i64),
-    NoActiveSession,
+/// A short, single-line form of an error body for warnings: the RPC error's
+/// `message` when it is JSON, a size note for an HTML page (Kaggle answers an
+/// unknown path with its whole site), otherwise the first 200 characters.
+fn error_excerpt(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.starts_with('<') {
+        return format!("<HTML page, {} bytes>", trimmed.len());
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let msg = v
+            .pointer("/error/message")
+            .or_else(|| v.get("message"))
+            .and_then(|m| m.as_str());
+        if let Some(m) = msg {
+            return m.to_string();
+        }
+    }
+    let line = trimmed.lines().next().unwrap_or("");
+    line.chars().take(200).collect()
 }
 
 /// Convert credentials stored in xrun config into the auth variant the API
@@ -394,7 +406,7 @@ pub fn auth_from_credentials(
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{body_json, method, path, path_regex};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn basic_auth() -> Auth {
@@ -604,203 +616,128 @@ mod tests {
         assert!(err.to_string().contains("403"), "{err}");
     }
 
+    const STATUS_RPC: &str = "/kernels.KernelsApiService/GetKernelSessionStatus";
+
+    fn session_status(url: String, auth: Auth) -> Result<KernelStatus, KaggleError> {
+        off_runtime(move || {
+            KaggleApiClient::new(auth)
+                .unwrap()
+                .with_base_url(url)
+                .kernel_session_status("alice/my-kernel")
+        })
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn kernel_session_id_returns_some_when_active() {
+    async fn kernel_session_status_posts_the_rpc_and_reads_running() {
         let mock = server().await;
         Mock::given(method("POST"))
-            .and(path("/kernels/status"))
+            .and(path(STATUS_RPC))
             .and(body_json(json!({
                 "userName": "alice",
                 "kernelSlug": "my-kernel",
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "kernelSessionId": 12345,
-                "status": "running",
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "RUNNING"})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let st = session_status(mock.uri(), basic_auth()).unwrap();
+        assert_eq!(st.status, KernelState::Running);
+        assert_eq!(st.raw_state.as_deref(), Some("KernelWorkerStatus.RUNNING"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kernel_session_status_maps_terminal_states() {
+        for (body, state) in [
+            (json!({"status": "COMPLETE"}), KernelState::Complete),
+            (
+                json!({"status": "ERROR", "failureMessage": "OOM"}),
+                KernelState::Error,
+            ),
+            (json!({"status": "CANCEL_ACKNOWLEDGED"}), KernelState::Error),
+            // Proto3 JSON drops the enum default, QUEUED.
+            (json!({}), KernelState::Queued),
+            (json!({"status": 1}), KernelState::Running),
+        ] {
+            let mock = server().await;
+            Mock::given(method("POST"))
+                .and(path(STATUS_RPC))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body.clone()))
+                .mount(&mock)
+                .await;
+            let st = session_status(mock.uri(), basic_auth()).unwrap();
+            assert_eq!(st.status, state, "{body}");
+            if state == KernelState::Error && body.get("failureMessage").is_some() {
+                assert_eq!(st.error_message.as_deref(), Some("OOM"));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kernel_session_status_html_404_is_a_short_error() {
+        let mock = server().await;
+        let page = format!("<!DOCTYPE html><html>{}</html>", "x".repeat(5000));
+        Mock::given(method("POST"))
+            .and(path(STATUS_RPC))
+            .respond_with(ResponseTemplate::new(404).set_body_string(page))
+            .mount(&mock)
+            .await;
+
+        let err = session_status(mock.uri(), basic_auth())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("404"), "{err}");
+        assert!(err.contains("<HTML page"), "{err}");
+        assert!(err.len() < 300, "whole page leaked into the error: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kernel_session_status_surfaces_the_rpc_error_message() {
+        let mock = server().await;
+        Mock::given(method("POST"))
+            .and(path(STATUS_RPC))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {"code": 403, "message": "Permission 'kernels.get' was denied"}
             })))
             .mount(&mock)
             .await;
 
-        let url = mock.uri();
-        let id = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .kernel_session_id("alice/my-kernel")
-                .unwrap()
-        });
-        assert_eq!(id, Some(12345));
+        let err = session_status(mock.uri(), basic_auth())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("403"), "{err}");
+        assert!(err.contains("kernels.get"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn kernel_session_id_returns_none_when_no_active_session() {
+    async fn kernel_session_status_does_not_retry_429() {
         let mock = server().await;
         Mock::given(method("POST"))
-            .and(path("/kernels/status"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "kernelSessionId": null,
-                "status": "complete",
-            })))
+            .and(path(STATUS_RPC))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .expect(1)
             .mount(&mock)
             .await;
 
-        let url = mock.uri();
-        let id = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .kernel_session_id("alice/my-kernel")
-                .unwrap()
-        });
-        assert_eq!(id, None);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn kernel_session_id_propagates_auth_errors() {
-        let mock = server().await;
-        Mock::given(method("POST"))
-            .and(path("/kernels/status"))
-            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
-            .mount(&mock)
-            .await;
-
-        let url = mock.uri();
-        let result = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .kernel_session_id("alice/my-kernel")
-        });
-        let err = result.unwrap_err();
-        assert!(format!("{err}").contains("401"), "got: {err}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn cancel_session_succeeds_on_200() {
-        let mock = server().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"/kernels/cancel-session/\d+"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .mount(&mock)
-            .await;
-
-        let url = mock.uri();
-        let res = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .cancel_session(12345)
-        });
-        assert!(res.is_ok());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn cancel_session_treats_404_as_success() {
-        let mock = server().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"/kernels/cancel-session/\d+"))
-            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
-            .mount(&mock)
-            .await;
-
-        let url = mock.uri();
-        let res = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .cancel_session(99)
-        });
-        assert!(res.is_ok(), "404 should be idempotent no-op");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn cancel_session_propagates_500() {
-        let mock = server().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"/kernels/cancel-session/\d+"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
-            .mount(&mock)
-            .await;
-
-        let url = mock.uri();
-        let res = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .cancel_session(1)
-        });
-        let err = res.unwrap_err();
-        assert!(format!("{err}").contains("500"), "got: {err}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn cancel_kernel_resolves_then_cancels() {
-        let mock = server().await;
-        Mock::given(method("POST"))
-            .and(path("/kernels/status"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"kernelSessionId": 4242})),
-            )
-            .mount(&mock)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/kernels/cancel-session/4242"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .mount(&mock)
-            .await;
-
-        let url = mock.uri();
-        let outcome = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .cancel_kernel("alice/x")
-                .unwrap()
-        });
-        assert_eq!(outcome, CancelOutcome::Cancelled(4242));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn cancel_kernel_no_active_session_is_noop() {
-        let mock = server().await;
-        Mock::given(method("POST"))
-            .and(path("/kernels/status"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .mount(&mock)
-            .await;
-
-        let url = mock.uri();
-        let outcome = off_runtime(move || {
-            KaggleApiClient::new(basic_auth())
-                .unwrap()
-                .with_base_url(url)
-                .cancel_kernel("alice/x")
-                .unwrap()
-        });
-        assert_eq!(outcome, CancelOutcome::NoActiveSession);
+        let err = session_status(mock.uri(), basic_auth()).unwrap_err();
+        assert!(err.to_string().contains("429"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn bearer_auth_uses_authorization_header() {
         let mock = server().await;
         Mock::given(method("POST"))
-            .and(path("/kernels/status"))
+            .and(path(STATUS_RPC))
             .and(wiremock::matchers::header(
                 "authorization",
                 "Bearer my-token",
             ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "COMPLETE"})))
             .mount(&mock)
             .await;
 
-        let url = mock.uri();
-        let id = off_runtime(move || {
-            KaggleApiClient::new(Auth::Bearer("my-token".to_string()))
-                .unwrap()
-                .with_base_url(url)
-                .kernel_session_id("alice/x")
-                .unwrap()
-        });
-        assert_eq!(id, None);
+        let st = session_status(mock.uri(), Auth::Bearer("my-token".to_string())).unwrap();
+        assert_eq!(st.status, KernelState::Complete);
     }
 
     #[test]

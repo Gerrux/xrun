@@ -11,6 +11,38 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.11.5] - 2026-10-14
+
+Kaggle: `xrun stop` asks the right endpoint and says plainly that a running
+kernel keeps its GPU slot until you stop it on kaggle.com.
+
+### Fixed
+
+- `xrun stop` on a Kaggle run failed to check the kernel and printed
+  `kaggle CLI failed (exit 404): POST /kernels/status → 404 Not Found` with
+  Kaggle's whole HTML page. That REST path is gone; xrun now asks
+  `GetKernelSessionStatus` on `api.kaggle.com` (the RPC `kagglesdk` uses),
+  falling back to `kaggle kernels status`. A failed check prints one line
+  with the HTTP code instead of the page; a 429 is reported, not retried.
+- The Kaggle instance row did not follow the kernel. The poller's early-fail
+  path marked it destroyed while the kernel kept running and holding one of
+  the account's two GPU slots, and `xrun stop` could never mark it at all
+  (its adapter had no path to `runs.db`). Now any `destroy` marks it exactly
+  when Kaggle reports the kernel finished; until then it stays active, and
+  the next `xrun stop <run-id>` re-checks and clears it.
+
+### Changed
+
+- `xrun stop` no longer claims to cancel a running Kaggle kernel — Kaggle's
+  public API cannot: the cancel call needs a session id that no public
+  response returns (Kaggle closed the CLI PRs adding `kernels cancel` for
+  that reason). It warns that the kernel is still `RUNNING`/`QUEUED` and
+  holds a GPU slot, and points to the kernel's page on kaggle.com to stop it
+  there; otherwise Kaggle ends it at its 12 h limit. The run is still marked
+  `cancelled` and `stop` still exits 0.
+
+---
+
 ## [0.11.4] - 2026-10-14
 
 Kaggle: `dataset push` to an existing slug really uploads and verifies the new

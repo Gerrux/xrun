@@ -5,6 +5,45 @@ Source-of-truth for ROADMAP planning. Newest first.
 
 ---
 
+## 2026-10-14: `xrun stop` cannot cancel a running Kaggle kernel (closed in 0.11.5 as "warn", not "cancel")
+
+**Symptom**: `xrun stop 01M4XCXCW931EP7KPZYTDDZKTC` printed
+`could not cancel kaggle kernel 'fakefentus/powerline-seg-v4-smoke' via REST:
+kaggle CLI failed (exit 404): POST /kernels/status → 404 Not Found: <HTML>`,
+and marked the run cancelled. `xrun show --vendor-status` kept saying
+`KernelWorkerStatus.RUNNING`: the kernel held one of the account's two GPU
+slots while xrun said the run was over. (The instance row was not touched:
+`stop` built the adapter without the DB path, so it could never retire a
+Kaggle instance — finished or not. The poller's early-fail path, which has
+the path, marked it destroyed even with the kernel running.)
+
+**Root cause**: two layers.
+1. `POST www.kaggle.com/api/v1/kernels/status` no longer exists (404 + the
+   site's HTML). `kagglesdk` calls every method as
+   `POST https://api.kaggle.com/v1/<service>/<Method>` with a JSON body
+   (`KaggleHttpClient._get_request_url`); the status is
+   `kernels.KernelsApiService/GetKernelSessionStatus`
+   `{"userName","kernelSlug"}` → `{"status": "RUNNING", "failureMessage"?}`.
+2. Even on the right URL there is nothing to cancel with:
+   `CancelKernelSession` needs `kernelSessionId`, and no public response
+   carries it (checked live: `GetKernelSessionStatus`, `GetKernel`,
+   `ListKernelSessionOutput`; kagglesdk 0.1.37 / kaggle 2.2.4 types agree).
+   Kaggle closed kaggle-api PRs #1170, #1173, #1174 (Aug 2026): the session
+   id "is not currently exposed outside the server", and the `versionNumber`
+   from `kernels push` is not it. The old xrun code read `kernelSessionId`
+   from the status reply — a field that was never there.
+
+**Fix (0.11.5)**: status via the RPC (CLI fallback), honest warning with the
+kernel's kaggle.com URL, instance stays active until Kaggle reports the
+kernel finished. Guessing an id (kernel id, version number) into
+`CancelKernelSession` was rejected: an irreversible call on a number that
+may name another session.
+
+**Reopen when**: Kaggle exposes a session id (watch kaggle-api issue #1169)
+or adds cancel-by-slug. Then `stop` can cancel for real.
+
+---
+
 ## 2026-05-06: `{user}` placeholder not expanded in `datasets:` list (open)
 
 **Symptom**: in a manifest with
