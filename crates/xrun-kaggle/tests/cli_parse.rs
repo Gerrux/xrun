@@ -793,3 +793,153 @@ fn test_status_strips_literal_template_warning() {
     let status = cli.status("user/slug").expect("should ignore the warning");
     assert_eq!(status.status, KernelState::Running);
 }
+
+// Raw vendor state (`xrun show --vendor-status`): the parser keeps Kaggle's
+// own token next to the folded `KernelState`, so QUEUED and RUNNING stay
+// distinguishable and CANCEL_ACKNOWLEDGED is not hidden behind `Error`.
+
+#[test]
+fn test_cli_status_keeps_raw_queued_token() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.QUEUED\"\n".to_string(),
+    });
+    let status = KaggleCli::with_process(mock).status("user/slug").unwrap();
+    assert_eq!(status.status, KernelState::Queued);
+    assert_eq!(
+        status.raw_state.as_deref(),
+        Some("KernelWorkerStatus.QUEUED")
+    );
+    assert!(status.failure_message.is_none());
+}
+
+#[test]
+fn test_cli_status_raw_cancel_acknowledged_stays_error() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.CANCEL_ACKNOWLEDGED\"".to_string(),
+    });
+    let status = KaggleCli::with_process(mock).status("user/slug").unwrap();
+    // Lifecycle mapping unchanged.
+    assert_eq!(status.status, KernelState::Error);
+    assert_eq!(
+        status.raw_state.as_deref(),
+        Some("KernelWorkerStatus.CANCEL_ACKNOWLEDGED")
+    );
+}
+
+#[test]
+fn test_cli_status_raw_error_carries_failure_message() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: "user/slug has status \"KernelWorkerStatus.ERROR\"\n\
+                      Failure message: \"CUDA out of memory\"\n"
+            .to_string(),
+    });
+    let status = KaggleCli::with_process(mock).status("user/slug").unwrap();
+    assert_eq!(
+        status.raw_state.as_deref(),
+        Some("KernelWorkerStatus.ERROR")
+    );
+    assert_eq!(
+        status.failure_message.as_deref(),
+        Some("CUDA out of memory")
+    );
+}
+
+#[test]
+fn test_cli_status_raw_from_legacy_json() {
+    let mock = Box::new(MockStatusProcess {
+        status_json: r#"{"status":"Error","failureMessage":"GPU OOM"}"#.to_string(),
+    });
+    let status = KaggleCli::with_process(mock).status("user/slug").unwrap();
+    assert_eq!(status.raw_state.as_deref(), Some("Error"));
+    assert_eq!(status.failure_message.as_deref(), Some("GPU OOM"));
+}
+
+/// `kernels status` mock that counts calls and answers with a canned
+/// stdout or a CLI failure.
+struct MockRawStatus {
+    reply: Result<String, String>,
+    calls: Arc<Mutex<u32>>,
+}
+
+impl KaggleProcess for MockRawStatus {
+    fn push(&self, _dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+        *self.calls.lock().unwrap() += 1;
+        match &self.reply {
+            Ok(s) => Ok(s.clone()),
+            Err(stderr) => Err(KaggleError::CliFailure {
+                exit_code: 1,
+                stderr: stderr.clone(),
+            }),
+        }
+    }
+    fn output(&self, _slug: &str, _into: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+}
+
+fn kaggle_handle() -> xrun_core::vendor::InstanceHandle {
+    xrun_core::vendor::InstanceHandle {
+        id: "kaggle:user/slug".into(),
+        vendor: "kaggle".into(),
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: String::new(),
+        run_dir: None,
+    }
+}
+
+#[test]
+fn test_adapter_raw_run_status_one_call_queued() {
+    use xrun_core::vendor::VendorAdapter;
+    let calls = Arc::new(Mutex::new(0));
+    let adapter = KaggleAdapter::with_process(Box::new(MockRawStatus {
+        reply: Ok("user/slug has status \"KernelWorkerStatus.QUEUED\"\n".into()),
+        calls: calls.clone(),
+    }));
+    let s = adapter
+        .raw_run_status(&kaggle_handle())
+        .unwrap()
+        .expect("kaggle supports raw status");
+    assert_eq!(s.raw, "KernelWorkerStatus.QUEUED");
+    assert!(s.message.is_none());
+    assert_eq!(*calls.lock().unwrap(), 1);
+}
+
+#[test]
+fn test_adapter_raw_run_status_429_is_one_call_and_an_error() {
+    use xrun_core::vendor::VendorAdapter;
+    let calls = Arc::new(Mutex::new(0));
+    let adapter = KaggleAdapter::with_process(Box::new(MockRawStatus {
+        reply: Err(
+            "429 Client Error: Too Many Requests for url: .../GetKernelSessionStatus".into(),
+        ),
+        calls: calls.clone(),
+    }));
+    let err = adapter.raw_run_status(&kaggle_handle()).unwrap_err();
+    assert!(err.to_string().contains("429"), "{err}");
+    assert_eq!(*calls.lock().unwrap(), 1, "must not retry on 429");
+}

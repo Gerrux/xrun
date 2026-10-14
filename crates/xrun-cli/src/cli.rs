@@ -199,6 +199,10 @@ pub struct ShowArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+    /// Also ask the vendor once for its raw state of the run (Kaggle:
+    /// QUEUED vs RUNNING, failure message). Read-only; one network call.
+    #[arg(long)]
+    pub vendor_status: bool,
 }
 
 #[derive(Args)]

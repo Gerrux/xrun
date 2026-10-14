@@ -71,6 +71,32 @@ Exit 0 при `status=done`, 1 при `failed`, 2 при cancellation, 130 пр�
 ### `xrun show <run-id>`
 Полная карточка run: манифест, события, последние метрики, артефакты, ссылки.
 
+```
+--json            машинный вывод
+--vendor-status   один раз спросить у вендора его собственный статус run
+```
+
+Без `--vendor-status` команда работает только с локальной БД. С флагом xrun
+делает **один** запрос к вендору (Kaggle: `kaggle kernels status`) и печатает
+под `status:` сырое состояние и время запроса:
+
+```
+  status:        running
+  vendor_status: KernelWorkerStatus.QUEUED (queried 2026-10-14T09:30:00Z)
+  vendor_message: <Failure message от Kaggle, если есть>
+```
+
+Так видно, ждёт ли kernel в очереди (`QUEUED`) или уже работает (`RUNNING`):
+xrun держит оба в `running`, и `fix-status` пишет только «still running».
+Отменённый kernel виден как `CANCEL_ACKNOWLEDGED`, хотя в xrun он `failed`.
+Статус run в БД команда не меняет и событий не пишет. В `--json` то же лежит в
+`vendor_status: {raw, message, queried_at}`; если запрос не удался —
+`vendor_status: {error, queried_at}`, а остальная карточка печатается как
+обычно. На HTTP 429 (Kaggle ограничивает частоту запросов аккаунта) xrun не
+повторяет запрос и пишет `kaggle rate limit (HTTP 429)…` — повторите через
+несколько минут. Пока поддерживается только Kaggle; для остальных вендоров —
+`not supported for vendor <name>`.
+
 ### `xrun logs <run-id> [flags]`
 stdout/stderr.
 
@@ -207,6 +233,8 @@ xrun sweep exp/base.yaml \
 Для Kaggle делает один-shot `kaggle kernels status` и переводит в
 `done`/`failed`. Для vast.ai проверяет, что инстанс ещё «жив» в
 `vastai show instances`; если исчез — помечает run как `failed`.
+Сырой статус Kaggle (очередь или работа, сообщение об ошибке) показывает
+`xrun show <run-id> --vendor-status`.
 
 ### `xrun dataset push|status|list`
 Управление Kaggle-датасетами: push (create или новая версия), polling
