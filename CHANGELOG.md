@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.5] - 2026-10-14
+
+Kaggle: `xrun stop` asks the right endpoint and says plainly that a running
+kernel keeps its GPU slot until you stop it on kaggle.com.
+
 ### Fixed
 
 - `xrun stop` on a Kaggle run failed to check the kernel and printed
