@@ -205,8 +205,9 @@ impl KaggleAdapter {
     /// adapter can derive sibling paths like `runs/<id>/artifacts`. The
     /// SQLite store itself lives at `<data_dir>/runs.db` — every callsite
     /// that opens it must go through this helper rather than passing
-    /// `store_path` directly.
-    fn db_path(&self) -> Option<PathBuf> {
+    /// `store_path` directly. `None` without `with_store_path`, and then
+    /// `destroy` cannot mark the instance row.
+    pub fn db_path(&self) -> Option<PathBuf> {
         self.store_path.as_ref().map(|p| p.join("runs.db"))
     }
 
@@ -441,8 +442,8 @@ impl KaggleAdapter {
                     "Kaggle kernel '{slug}' is still {state} and keeps holding a Kaggle GPU slot. \
                      xrun cannot stop it: Kaggle's public API has no way to cancel a running \
                      kernel. Stop it in the Kaggle web UI: {page} — otherwise Kaggle ends it \
-                     at its 12 h session limit. The local run is marked cancelled; the instance \
-                     stays listed as active until `xrun stop` sees the kernel finished."
+                     at its 12 h session limit. The xrun run is closed; the instance stays \
+                     listed as active until `xrun stop` sees the kernel finished."
                 );
                 false
             }
@@ -450,8 +451,8 @@ impl KaggleAdapter {
                 tracing::warn!(
                     "Could not check Kaggle kernel '{slug}' ({e}). It may still be running and \
                      holding a Kaggle GPU slot — xrun cannot cancel Kaggle kernels. Check and \
-                     stop it in the Kaggle web UI: {page}. The local run is marked cancelled; \
-                     the instance stays listed as active until `xrun stop` sees the kernel \
+                     stop it in the Kaggle web UI: {page}. The xrun run is closed; the \
+                     instance stays listed as active until `xrun stop` sees the kernel \
                      finished."
                 );
                 false
@@ -1039,17 +1040,18 @@ impl VendorAdapter for KaggleAdapter {
                 // Streamed events from xrun_hook have already latched a
                 // terminal status (e.g. `train:fail` on a CUDA error) while
                 // Kaggle's coarse-grained kernel state is still Running.
-                // Promote the run now and cancel the kernel so the user
-                // doesn't keep paying for compute that's already toast.
+                // Promote the run now. Kaggle can't cancel the kernel
+                // (see `release_kernel`); `destroy` re-checks it and warns
+                // with the kernel's URL so the user can stop it by hand.
                 if let Some(terminal) = streamed_terminal {
                     tracing::info!(
                         "kaggle poll_completion {slug}: promoting run to {} from streamed events \
-                         (kernel state still {:?}); cancelling kernel",
+                         (kernel state still {:?})",
                         terminal.as_str(),
                         new_state,
                     );
                     if let Err(e) = self.destroy(h) {
-                        tracing::warn!("kaggle poll_completion: cancel after early-fail: {e}");
+                        tracing::warn!("kaggle poll_completion: release after early-fail: {e}");
                     }
                     return Some(PollCompletion {
                         terminal_status: Some(terminal),

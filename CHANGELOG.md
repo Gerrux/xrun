@@ -17,10 +17,12 @@ Versions follow [Semantic Versioning](https://semver.org/).
   `GetKernelSessionStatus` on `api.kaggle.com` (the RPC `kagglesdk` uses),
   falling back to `kaggle kernels status`. A failed check prints one line
   with the HTTP code instead of the page; a 429 is reported, not retried.
-- `xrun stop` marked a Kaggle instance destroyed while the kernel kept
-  running, so nothing showed that it still held one of the account's two GPU
-  slots. The instance now stays active until Kaggle reports the kernel
-  finished; the next `xrun stop <run-id>` re-checks and clears it.
+- The Kaggle instance row did not follow the kernel. The poller's early-fail
+  path marked it destroyed while the kernel kept running and holding one of
+  the account's two GPU slots, and `xrun stop` could never mark it at all
+  (its adapter had no path to `runs.db`). Now any `destroy` marks it exactly
+  when Kaggle reports the kernel finished; until then it stays active, and
+  the next `xrun stop <run-id>` re-checks and clears it.
 
 ### Changed
 

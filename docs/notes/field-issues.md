@@ -10,9 +10,12 @@ Source-of-truth for ROADMAP planning. Newest first.
 **Symptom**: `xrun stop 01M4XCXCW931EP7KPZYTDDZKTC` printed
 `could not cancel kaggle kernel 'fakefentus/powerline-seg-v4-smoke' via REST:
 kaggle CLI failed (exit 404): POST /kernels/status → 404 Not Found: <HTML>`,
-marked the run cancelled and the instance destroyed. `xrun show --vendor-status`
-kept saying `KernelWorkerStatus.RUNNING`: the kernel held one of the account's
-two GPU slots while xrun said it was gone.
+and marked the run cancelled. `xrun show --vendor-status` kept saying
+`KernelWorkerStatus.RUNNING`: the kernel held one of the account's two GPU
+slots while xrun said the run was over. (The instance row was not touched:
+`stop` built the adapter without the DB path, so it could never retire a
+Kaggle instance — finished or not. The poller's early-fail path, which has
+the path, marked it destroyed even with the kernel running.)
 
 **Root cause**: two layers.
 1. `POST www.kaggle.com/api/v1/kernels/status` no longer exists (404 + the

@@ -217,9 +217,6 @@ pub struct AdapterCtx<'a> {
     /// the command. Defaults to all of [`KNOWN_VENDORS`].
     pub supported: &'a [&'a str],
     pub ssh: SshSource,
-    /// Kaggle: hand the adapter the data dir (parent of `runs.db`), which
-    /// its post-download ingest and telemetry backfill need. Default on.
-    pub kaggle_store_path: bool,
     /// Kaggle: wire MLflow (when `mlflow.url` is configured) so live-log /
     /// telemetry chunks can be read back. Default off.
     pub kaggle_mlflow: bool,
@@ -241,7 +238,6 @@ impl<'a> AdapterCtx<'a> {
             run_id,
             supported: KNOWN_VENDORS,
             ssh: SshSource::SavedManifest,
-            kaggle_store_path: true,
             kaggle_mlflow: false,
         }
     }
@@ -275,6 +271,28 @@ pub fn vendor_or_vast(vendor: &str) -> &str {
     }
 }
 
+/// The Kaggle adapter for an existing run. It always gets the data dir
+/// (parent of `runs.db`): ingest and telemetry backfill read it, and
+/// `destroy` marks the instance row through it — `xrun stop` once built the
+/// adapter without it, and a Kaggle instance row was never retired.
+fn kaggle_adapter(ctx: &AdapterCtx<'_>) -> KaggleAdapter {
+    let creds = resolve_kaggle_credentials(ctx.config_dir);
+    let data_dir = ctx.db_path.parent().unwrap_or(ctx.db_path);
+    let mut adapter = KaggleAdapter::new()
+        .with_credentials(creds)
+        .with_store_path(data_dir.to_path_buf());
+    if ctx.kaggle_mlflow {
+        if let Ok(g) = GlobalConfig::load(ctx.config_dir) {
+            if let Some(url) = g.mlflow.url.clone() {
+                let creds = Credentials::load(ctx.config_dir).unwrap_or_default();
+                let auth = crate::commands::launch::mlflow_auth_from_creds(&creds.mlflow);
+                adapter = adapter.with_mlflow(url, auth);
+            }
+        }
+    }
+    adapter
+}
+
 /// Build the adapter for `vendor` (vast, kaggle, local, ssh, lightning, colab) bound to
 /// `ctx.run_id`. Opens its own store handle where the adapter needs one.
 pub fn build_adapter(vendor: &str, ctx: &AdapterCtx<'_>) -> Result<Box<dyn VendorAdapter>> {
@@ -284,24 +302,7 @@ pub fn build_adapter(vendor: &str, ctx: &AdapterCtx<'_>) -> Result<Box<dyn Vendo
             let creds = resolve_vast_credentials(ctx.config_dir);
             Box::new(VastAdapter::new(creds, open_adapter_store(ctx)?))
         }
-        "kaggle" => {
-            let creds = resolve_kaggle_credentials(ctx.config_dir);
-            let mut adapter = KaggleAdapter::new().with_credentials(creds);
-            if ctx.kaggle_store_path {
-                let data_dir = ctx.db_path.parent().unwrap_or(ctx.db_path);
-                adapter = adapter.with_store_path(data_dir.to_path_buf());
-            }
-            if ctx.kaggle_mlflow {
-                if let Ok(g) = GlobalConfig::load(ctx.config_dir) {
-                    if let Some(url) = g.mlflow.url.clone() {
-                        let creds = Credentials::load(ctx.config_dir).unwrap_or_default();
-                        let auth = crate::commands::launch::mlflow_auth_from_creds(&creds.mlflow);
-                        adapter = adapter.with_mlflow(url, auth);
-                    }
-                }
-            }
-            Box::new(adapter)
-        }
+        "kaggle" => Box::new(kaggle_adapter(ctx)),
         "local" => Box::new(LocalAdapter::with_store_and_runs_dir(
             open_adapter_store(ctx)?,
             ctx.runs_dir.to_path_buf(),
@@ -381,6 +382,18 @@ fn build_ssh_adapter(ctx: &AdapterCtx<'_>) -> Result<Box<dyn VendorAdapter>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `xrun stop` used to build the Kaggle adapter without the data dir, so
+    /// `destroy` could never mark the instance row and a finished kernel's
+    /// instance stayed "active" forever.
+    #[test]
+    fn kaggle_adapter_always_writes_to_the_runs_db() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = tmp.path().join("runs.db");
+        let run_id = RunId::new();
+        let ctx = AdapterCtx::new("stop", &db, tmp.path(), tmp.path(), &run_id);
+        assert_eq!(kaggle_adapter(&ctx).db_path(), Some(db));
+    }
 
     #[test]
     fn pull_ssh_target_prefers_the_runs_own_host() {
