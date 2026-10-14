@@ -9,6 +9,18 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `xrun show <run-id> --vendor-status` asks the vendor once for its own state
+  of the run and prints it under `status:` with the query time, plus the
+  vendor's failure message when there is one (`vendor_status` object in
+  `--json`). For Kaggle this is the raw `KernelWorkerStatus.*` token, so a
+  kernel waiting in the queue (`QUEUED`) is no longer indistinguishable from
+  one that is running: xrun keeps both as `running` and `fix-status` only
+  says "still running". Read-only: the run status and events are not touched.
+  A 429 from Kaggle is reported as a rate limit, without a retry. Kaggle only
+  for now; other vendors print `not supported`.
+
 ### Fixed
 
 - `xrun dataset push` to an existing slug uploaded nothing and still printed

@@ -112,6 +112,18 @@ pub struct PollCompletion {
     pub events: Vec<SyntheticEvent>,
 }
 
+/// One read-only look at the vendor's own state of a run, before xrun maps it
+/// to a [`RunStatus`] (e.g. Kaggle's `KernelWorkerStatus.QUEUED`, which xrun
+/// keeps as `running`). Returned by `VendorAdapter::raw_run_status`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RawRunStatus {
+    /// The state string exactly as the vendor reported it.
+    pub raw: String,
+    /// The vendor's failure / status message, when it gave one.
+    pub message: Option<String>,
+    pub queried_at: DateTime<Utc>,
+}
+
 pub trait VendorAdapter {
     fn name(&self) -> &'static str;
     /// Associate a run ID so the adapter can link events/instances to the run.
@@ -135,6 +147,12 @@ pub trait VendorAdapter {
     /// Default: always `None` (vast uses the normal `tail()` path).
     fn poll_completion(&self, _h: &InstanceHandle, _run_dir: &Path) -> Option<PollCompletion> {
         None
+    }
+    /// Ask the vendor once for the run's own state, without touching the
+    /// store or the run lifecycle (`xrun show --vendor-status`). `Ok(None)`
+    /// means the adapter has no such query.
+    fn raw_run_status(&self, _h: &InstanceHandle) -> Result<Option<RawRunStatus>, VendorError> {
+        Ok(None)
     }
     fn provision(&self, manifest: &Manifest) -> Result<InstanceHandle, VendorError>;
     fn upload(&self, h: &InstanceHandle, sources: &[DataSource]) -> Result<(), VendorError>;

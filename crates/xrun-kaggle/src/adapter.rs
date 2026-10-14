@@ -11,7 +11,7 @@ use xrun_core::{
     manifest::{DataSource, Manifest, RunSpec},
     store::{RunId, RunStatus, Store},
     vendor::{
-        DryRunPlan, InstanceHandle, PollCompletion, SyntheticEvent, VendorAdapter,
+        DryRunPlan, InstanceHandle, PollCompletion, RawRunStatus, SyntheticEvent, VendorAdapter,
         VendorRemoteInstance, VendorStatus,
     },
 };
@@ -890,6 +890,21 @@ impl VendorAdapter for KaggleAdapter {
             })
             .collect();
         Ok(instances)
+    }
+
+    /// One `kernels status` call, nothing else: no events, no telemetry
+    /// ingest, no `last_kernel_state` update. No retry either — the caller
+    /// shows a 429 as is instead of adding to the rate limit.
+    fn raw_run_status(&self, h: &InstanceHandle) -> Result<Option<RawRunStatus>, VendorError> {
+        let slug = h.id.strip_prefix("kaggle:").unwrap_or(&h.id);
+        let status = self.cli.status(slug).map_err(kaggle_err)?;
+        Ok(Some(RawRunStatus {
+            raw: status
+                .raw_state
+                .unwrap_or_else(|| format!("{:?}", status.status)),
+            message: status.failure_message,
+            queried_at: Utc::now(),
+        }))
     }
 
     // §2: poll_completion() — emit synthetic lifecycle events and detect kernel termination

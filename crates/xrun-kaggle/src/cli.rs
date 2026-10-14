@@ -50,6 +50,15 @@ pub struct KernelStatus {
     pub error_message: Option<String>,
     #[serde(rename = "totalRunningTimeSec")]
     pub run_seconds: Option<u64>,
+    /// The state exactly as Kaggle reported it, before it is folded into
+    /// [`KernelState`] (e.g. `KernelWorkerStatus.CANCEL_ACKNOWLEDGED`, which
+    /// maps to `Error`). Filled by the status parser, not by serde.
+    #[serde(skip)]
+    pub raw_state: Option<String>,
+    /// Kaggle's `Failure message:` line, whatever the state. `error_message`
+    /// stays limited to `Error` so the lifecycle code is unchanged.
+    #[serde(skip)]
+    pub failure_message: Option<String>,
 }
 
 impl Default for KernelStatus {
@@ -58,6 +67,8 @@ impl Default for KernelStatus {
             status: KernelState::Unknown,
             error_message: None,
             run_seconds: None,
+            raw_state: None,
+            failure_message: None,
         }
     }
 }
@@ -948,7 +959,11 @@ fn parse_status(stdout: &str) -> Result<KernelStatus, KaggleError> {
     // Older Kaggle CLI versions emitted JSON via `-m`. Tolerate that path
     // first so callers built against an old kaggle-api still work.
     if trimmed.starts_with('{') {
-        if let Ok(parsed) = serde_json::from_str::<KernelStatus>(trimmed) {
+        if let Ok(mut parsed) = serde_json::from_str::<KernelStatus>(trimmed) {
+            parsed.raw_state = serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from));
+            parsed.failure_message = parsed.error_message.clone();
             return Ok(parsed);
         }
     }
@@ -1001,7 +1016,24 @@ fn parse_status(stdout: &str) -> Result<KernelStatus, KaggleError> {
             None
         },
         run_seconds: None,
+        raw_state: Some(extract_raw_state(trimmed)),
+        failure_message: extract_failure_message(trimmed),
     })
+}
+
+/// The quoted token after `has status` (`KernelWorkerStatus.QUEUED`), or the
+/// first line of the output when that shape is missing.
+fn extract_raw_state(stdout: &str) -> String {
+    for line in stdout.lines() {
+        if let Some(idx) = line.find("has status") {
+            let rest = line[idx + "has status".len()..].trim();
+            let token = rest.trim_matches('"').trim();
+            if !token.is_empty() {
+                return token.to_string();
+            }
+        }
+    }
+    stdout.lines().next().unwrap_or("").trim().to_string()
 }
 
 /// Pull the quoted Failure message: line out of the kaggle status text so the
