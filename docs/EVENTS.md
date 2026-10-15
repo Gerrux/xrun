@@ -108,10 +108,14 @@ import xrun_hook   # на импорте устанавливает sys.exceptho
 ### Файловые пути
 
 `xrun_hook` определяет run dir в порядке:
-1. `$XRUN_RUN_DIR` (адаптер ставит)
+1. `$XRUN_RUN_DIR` (адаптер ставит; Kaggle-ядру — `/kaggle/working/run`)
 2. `/workspace/run/` (default на vast)
-3. `/kaggle/working/run/` (default на kaggle)
+3. `/kaggle/working/run/`
 4. `./run/` (для локального dev)
+
+На Kaggle `/workspace` тоже доступен на запись, поэтому без `XRUN_RUN_DIR`
+хук выбирал бы его, и `events.jsonl`/`metrics.jsonl` не попадали бы в output
+ядра (туда идёт только `/kaggle/working`).
 
 Если ни один не доступен — пишет в stdout как fallback (структурный JSON с маркером `[xrun-event] {...}`), poller умеет это парсить тоже (для Kaggle, где SSH нет).
 

@@ -19,8 +19,11 @@ Activation contract (env vars set by the launching adapter):
     MLFLOW_TRACKING_TOKEN     — optional Bearer token (takes precedence over
                                  username/password).
 
-Failure mode: silent except for one warning line at start. Streaming is
-best-effort; the run continues even if MLflow is unreachable.
+Failure mode: streaming is best-effort; the run continues even if MLflow is
+unreachable. A failed MLflow init at start is retried with backoff for the
+whole run — one network blip at kernel start used to switch telemetry off
+for all ten hours of it. Status lines go to stderr and, when it exists, to
+the tailed log file, so they reach `xrun logs` too.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 _log = logging.getLogger(__name__)
 
@@ -47,6 +51,8 @@ ARTIFACT_PREFIX = "logs"
 EVENTS_PREFIX = "events"
 METRICS_PREFIX = "metrics"
 HTTP_TIMEOUT_SEC = 15
+# Ceiling for the pause between MLflow init retries.
+INIT_RETRY_MAX_SEC = 120.0
 
 # Tag keys the poller searches by.
 TAG_RUN_ID = "xrun_run_id"
@@ -56,6 +62,26 @@ TAG_STREAM_MARKER = "xrun_log_stream"
 def _is_rank_zero() -> bool:
     """DDP guard: only rank 0 streams unless explicitly overridden."""
     return int(os.environ.get("RANK", "0")) == 0 or os.environ.get("XRUN_HOOK_ALL_RANKS") == "1"
+
+
+def _say(msg: str, log_path: "Path | None" = None) -> None:
+    """Status line to stderr and, if it already exists, the tailed log.
+
+    On Kaggle stderr only reaches the kernel's own log, which no API returns
+    while the kernel runs; the tailed file is what `xrun logs` shows. Never
+    creates the file — other vendors may not tail one.
+    """
+    line = f"[xrun_hook] {msg}\n"
+    try:
+        sys.stderr.write(line)
+    except Exception:
+        pass
+    if log_path is not None and log_path.exists():
+        try:
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -262,15 +288,24 @@ class LogStreamer:
     def __init__(
         self,
         client: _MlflowClient,
-        run_id: str,
+        run_id: "str | None",
         log_path: Path,
         interval_sec: float,
         artifact_path: str = "",
         run_dir: "Path | None" = None,
+        init: "Callable[[], tuple[str, str]] | None" = None,
     ) -> None:
+        """`run_id=None` + `init` starts the streamer without an MLflow run:
+        every tick calls `init()` (with backoff) until it returns
+        `(run_id, artifact_path)`. Files are not read meanwhile, so the
+        backlog goes out in full once the run exists."""
         self._client = client
         self._run_id = run_id
         self._artifact_path = artifact_path
+        self._init = init
+        self._init_failures = 0
+        self._next_init_at = 0.0
+        self._log_path = log_path
         # Tests pass tiny intervals; production callers go through
         # start_if_configured() which clamps the env-var floor at 0.5 s.
         self._interval = max(0.01, interval_sec)
@@ -285,6 +320,44 @@ class LogStreamer:
         self._started = False
         self._lock = threading.Lock()
 
+    @property
+    def mlflow_run_id(self) -> "str | None":
+        return self._run_id
+
+    def _ensure_run(self, force: bool = False) -> bool:
+        """True once an MLflow run exists. `force` ignores the backoff —
+        the final drain at exit gets one last attempt."""
+        if self._run_id is not None:
+            return True
+        if self._init is None:
+            return False
+        now = time.monotonic()
+        if not force and now < self._next_init_at:
+            return False
+        try:
+            run_id, artifact_path = self._init()
+        except Exception as e:  # noqa: BLE001 — best-effort
+            self._init_failures += 1
+            delay = min(INIT_RETRY_MAX_SEC, self._interval * 2 ** min(self._init_failures, 8))
+            self._next_init_at = now + delay
+            # First failure is reported by start_if_configured(); then every
+            # 10th, so a ten-hour outage leaves a trail without flooding.
+            if self._init_failures % 10 == 0:
+                _say(
+                    f"MLflow init still failing after {self._init_failures} attempts ({e}); "
+                    f"retrying every {delay:.0f}s",
+                    self._log_path,
+                )
+            return False
+        self._run_id = run_id
+        self._artifact_path = artifact_path
+        _say(
+            f"log streamer active → MLflow run {run_id} "
+            f"(init succeeded on retry {self._init_failures + 1})",
+            self._log_path,
+        )
+        return True
+
     def start(self) -> None:
         if self._started:
             return
@@ -298,7 +371,7 @@ class LogStreamer:
         # Final drain on the calling thread so atexit gets the last bytes
         # even if the worker is mid-sleep.
         try:
-            self._flush_once()
+            self._flush_once(force_init=True)
         except Exception as e:
             _log.warning("xrun_hook log streamer final flush failed: %s", e)
         self._thread.join(timeout=timeout)
@@ -311,8 +384,10 @@ class LogStreamer:
                 # Single warning per session keeps logs tidy.
                 _log.warning("xrun_hook log streamer flush failed: %s", e)
 
-    def _flush_once(self) -> None:
+    def _flush_once(self, force_init: bool = False) -> None:
         with self._lock:
+            if not self._ensure_run(force=force_init):
+                return
             for t in self._tailers:
                 new_bytes = t.read_new()
                 if not new_bytes:
@@ -330,6 +405,9 @@ class LogStreamer:
 
     def _mirror_metrics_to_mlflow(self, raw: bytes) -> None:
         """Parse a metrics-chunk byte buffer and POST in ≤1000-entry batches."""
+        run_id = self._run_id
+        if run_id is None:
+            return
         batch: list[dict] = []
         for line in raw.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
@@ -350,10 +428,10 @@ class LogStreamer:
             except (KeyError, TypeError, ValueError):
                 continue
             if len(batch) >= 1000:
-                self._client.log_batch(self._run_id, batch)
+                self._client.log_batch(run_id, batch)
                 batch = []
         if batch:
-            self._client.log_batch(self._run_id, batch)
+            self._client.log_batch(run_id, batch)
 
 
 # ---------------------------------------------------------------------------
@@ -391,19 +469,28 @@ def start_if_configured() -> "LogStreamer | None":
     )
     experiment = os.environ.get("XRUN_LOG_STREAM_EXPERIMENT", DEFAULT_EXPERIMENT)
 
-    try:
-        client = _MlflowClient(base)
+    client = _MlflowClient(base)
+    tags = [
+        {"key": TAG_RUN_ID, "value": run_id},
+        {"key": TAG_STREAM_MARKER, "value": "true"},
+    ]
+
+    def init() -> "tuple[str, str]":
         exp_id = client.get_or_create_experiment(experiment)
-        tags = [
-            {"key": TAG_RUN_ID, "value": run_id},
-            {"key": TAG_STREAM_MARKER, "value": "true"},
-        ]
-        mlflow_run_id, artifact_path = client.create_run(exp_id, tags)
+        return client.create_run(exp_id, tags)
+
+    # A failed init no longer disables streaming for the whole run: the
+    # streamer starts without a run and keeps retrying in its thread.
+    mlflow_run_id: "str | None" = None
+    artifact_path = ""
+    try:
+        mlflow_run_id, artifact_path = init()
     except Exception as e:  # noqa: BLE001 — best-effort
-        sys.stderr.write(
-            f"[xrun_hook] log streamer disabled: MLflow init failed ({e})\n"
+        _say(
+            f"MLflow init failed ({e}); streaming is paused and will retry "
+            "in the background",
+            log_path,
         )
-        return None
 
     # Resolve the run dir the writer is using so events/metrics streaming
     # tails the same files xrun_hook.metric/.epoch/.done write to.
@@ -422,27 +509,30 @@ def start_if_configured() -> "LogStreamer | None":
         interval,
         artifact_path=artifact_path,
         run_dir=run_dir,
+        init=init,
     )
     streamer.start()
-    atexit.register(_atexit_drain, streamer, client, mlflow_run_id)
+    atexit.register(_atexit_drain, streamer, client)
     _streamer = streamer
-    sys.stderr.write(
-        f"[xrun_hook] log streamer active → MLflow run {mlflow_run_id} "
-        f"(experiment={experiment}, interval={interval}s)\n"
-    )
+    if mlflow_run_id is not None:
+        _say(
+            f"log streamer active → MLflow run {mlflow_run_id} "
+            f"(experiment={experiment}, interval={interval}s)",
+            log_path,
+        )
     return streamer
 
 
-def _atexit_drain(
-    streamer: LogStreamer, client: _MlflowClient, mlflow_run_id: str
-) -> None:
+def _atexit_drain(streamer: LogStreamer, client: _MlflowClient) -> None:
     try:
         streamer.stop()
     finally:
-        try:
-            client.update_run(mlflow_run_id, "FINISHED")
-        except Exception:
-            pass
+        run_id = streamer.mlflow_run_id
+        if run_id is not None:
+            try:
+                client.update_run(run_id, "FINISHED")
+            except Exception:
+                pass
 
 
 def _iso_to_ms(s: "str | None") -> "int | None":
