@@ -485,8 +485,14 @@ fn py_str(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 || c == '\x7f' => {
+            c if (c as u32) < 0x20 || ('\x7f'..='\u{9f}').contains(&c) => {
                 out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            // Python's tokenizer keeps these inside a literal, but
+            // `str.splitlines()` breaks on them — and IPython splits a cell
+            // that way before running it (the notebook bootstrap cell).
+            '\u{2028}' | '\u{2029}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
         }
@@ -2302,9 +2308,36 @@ mod main_py_bootstrap_tests {
         "tab\there\r\nwindows line",
         "echo {} {{x}} $HOME `date` %s",
         "echo 'Привет, мир' # кириллица",
-        "nul\0esc\x1bdel\x7fls\u{2028}nel\u{85}",
+        "nul\0esc\x1bdel\x7fls\u{2028}nel\u{85}ps\u{2029}vt\x0bff\x0cfs\x1c",
+        "bom\u{feff}mid c1\u{9f}",
         "",
     ];
+
+    /// Every char `str.splitlines()` breaks on. IPython splits a cell with
+    /// it before running, so none may appear raw inside a generated literal.
+    const SPLITLINES: &[char] = &[
+        '\n', '\r', '\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\u{85}', '\u{2028}', '\u{2029}',
+    ];
+
+    /// Python-free check: whatever the input, the literal is one line by
+    /// `splitlines()` rules and holds no raw C0/C1 control or DEL.
+    #[test]
+    fn py_str_is_one_line_without_raw_controls() {
+        for s in TRICKY {
+            let lit = py_str(s);
+            assert!(!lit.contains(SPLITLINES), "line break left raw in {lit:?}");
+            assert!(
+                !lit.chars()
+                    .any(|c| (c as u32) < 0x20 || ('\x7f'..='\u{9f}').contains(&c)),
+                "control char left raw in {lit:?}"
+            );
+        }
+        let bs = '\\';
+        assert_eq!(
+            py_str("a\u{2028}b\u{85}c"),
+            format!("'a{bs}u2028b{bs}x85c'")
+        );
+    }
 
     /// Python run against the generated main.py: compile it, pull the
     /// literals passed to `_run(…, 'setup'|'cmd')` plus workdir and dataset
