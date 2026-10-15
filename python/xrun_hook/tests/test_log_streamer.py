@@ -258,3 +258,56 @@ def test_atexit_drain_finishes_created_run(log_file: Path):
     streamer.start()
     _log_streamer._atexit_drain(streamer, client)
     assert client.last_run_status == "FINISHED"
+
+
+class FailFirstPutClient(FakeClient):
+    """The first PUT times out (it may or may not have landed server-side)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts = 0
+
+    def put_artifact(self, artifact_path: str, remote_path: str, content: bytes) -> None:
+        self.puts += 1
+        if self.puts == 1:
+            raise OSError("timed out")
+        super().put_artifact(artifact_path, remote_path, content)
+
+
+def test_failed_put_is_retried_without_a_hole(log_file: Path):
+    # A dropped chunk used to be gone for good: the poller's live offset then
+    # fell behind the file, and post-run ingest (which skips that many bytes
+    # of events.jsonl) re-ingested some lines and never saw others.
+    client = FailFirstPutClient()
+    streamer = LogStreamer(client, "run-42", log_file, interval_sec=10.0)
+    log_file.write_bytes(b"a\n")
+    with pytest.raises(OSError):
+        streamer._flush_once()
+    with log_file.open("ab") as f:
+        f.write(b"b\n")
+    streamer._flush_once()
+    # Same seq, same bytes as the failed attempt, then the rest.
+    assert client.artifacts == [
+        ("logs/log_000001.txt", b"a\n"),
+        ("logs/log_000002.txt", b"b\n"),
+    ]
+
+
+def test_backlog_goes_out_in_capped_line_aligned_chunks(log_file: Path, monkeypatch):
+    monkeypatch.setattr(_log_streamer, "MAX_CHUNK_BYTES", 16)
+    monkeypatch.setattr(_log_streamer, "MAX_CHUNKS_PER_TICK", 2)
+    body = b"".join(f"line-{i:02d}\n".encode() for i in range(10))  # 8 bytes each
+    log_file.write_bytes(body)
+    client = FakeClient()
+    streamer = LogStreamer(client, "run-42", log_file, interval_sec=10.0)
+
+    streamer._flush_once()  # a normal tick is bounded
+    assert len(client.artifacts) == 2
+
+    streamer._flush_once(force_init=True)  # the final drain is not
+    blobs = [blob for _, blob in client.artifacts]
+    assert b"".join(blobs) == body
+    assert all(len(b) <= 16 and b.endswith(b"\n") for b in blobs)
+    assert [p for p, _ in client.artifacts] == [
+        f"logs/log_{i:06d}.txt" for i in range(1, len(blobs) + 1)
+    ]

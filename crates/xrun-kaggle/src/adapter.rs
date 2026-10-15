@@ -2177,8 +2177,53 @@ mod telemetry_watch_tests {
 
 #[cfg(test)]
 mod main_py_bootstrap_tests {
-    use super::build_script_main;
+    use super::*;
     use xrun_core::pybridge::python_argv;
+
+    /// The whole generated main.py, with and without the wheel block and
+    /// with an empty setup, must at least compile: `_LOG`/`_note` moved
+    /// above the bootstrap, and the env prelude grew a line.
+    #[test]
+    fn generated_main_py_compiles_in_every_branch() {
+        let Some((python, lead)) = python_argv() else {
+            eprintln!("skip: no python interpreter");
+            return;
+        };
+        let adapter = KaggleAdapter::new().with_mlflow("http://mlflow.test".into(), None);
+        adapter.set_run_id(&RunId::new());
+        let prelude = adapter.kernel_env_prelude();
+        for wheel in [None, Some("bm90IGEgd2hlZWw=")] {
+            for setup in ["", "pip install -q foo"] {
+                let src = build_script_main(
+                    &prelude,
+                    wheel,
+                    setup,
+                    "python train.py",
+                    "/kaggle/working",
+                    &["owner/name".to_string()],
+                );
+                let out = std::process::Command::new(&python)
+                    .args(&lead)
+                    .arg("-c")
+                    .arg("import sys; compile(sys.stdin.read(), 'main.py', 'exec')")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .and_then(|mut child| {
+                        use std::io::Write;
+                        child.stdin.take().unwrap().write_all(src.as_bytes())?;
+                        child.wait_with_output()
+                    })
+                    .expect("run python");
+                assert!(
+                    out.status.success(),
+                    "main.py (wheel={wheel:?}, setup={setup:?}) does not compile: {}\n{src}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
 
     /// Run 01M4Z7KATXZXP1FEQQ2FCS69W7 streamed nothing for hours and the
     /// reason was only in Kaggle's own kernel log: the bootstrap wrote to

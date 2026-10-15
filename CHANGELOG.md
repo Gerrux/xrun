@@ -33,6 +33,10 @@ Versions follow [Semantic Versioning](https://semver.org/).
   nothing to ingest (`kaggle ingest: 0 events, 0 metrics`). The kernel now
   gets `XRUN_RUN_DIR=/kaggle/working/run`; post-run ingest skips what the
   live stream already delivered, so events are not doubled.
+- A chunk upload that failed (timeout, MLflow restart) was dropped: its
+  bytes never reached xrun and the chunk numbering had a hole. The
+  streamer now retries the same chunk until it lands, caps chunks at
+  4 MiB on a line boundary, and drains a backlog over a few ticks.
 
 ---
 

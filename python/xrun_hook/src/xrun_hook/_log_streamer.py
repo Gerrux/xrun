@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import itertools
 import json
 import logging
 import os
@@ -51,6 +52,11 @@ ARTIFACT_PREFIX = "logs"
 EVENTS_PREFIX = "events"
 METRICS_PREFIX = "metrics"
 HTTP_TIMEOUT_SEC = 15
+# Upper bound of one chunk PUT. A backlog (MLflow down for hours) goes out
+# as several chunks instead of one unbounded upload.
+MAX_CHUNK_BYTES = 4 * 1024 * 1024
+# Chunks per file per tick (the final drain at exit is not bounded).
+MAX_CHUNKS_PER_TICK = 8
 # Ceiling for the pause between MLflow init retries.
 INIT_RETRY_MAX_SEC = 120.0
 
@@ -253,8 +259,19 @@ class _Tailer:
         self.ext = ext
         self.offset = 0
         self.chunk_seq = 0
+        # Chunk read but not yet uploaded. Retried byte-for-byte under the
+        # same seq until the PUT succeeds: a failed upload must not leave a
+        # hole in the stream (the poller's offsets, and post-run ingest,
+        # assume the chunks are the file front to back), and a retry that
+        # overwrites an attempt which did land server-side must not change
+        # its bytes.
+        self._pending: "bytes | None" = None
 
     def read_new(self) -> bytes:
+        """The pending chunk, else up to MAX_CHUNK_BYTES past `offset`.
+        Does not advance anything — `commit_chunk()` does, after the PUT."""
+        if self._pending is not None:
+            return self._pending
         if not self.path.exists():
             return b""
         size = self.path.stat().st_size
@@ -263,15 +280,32 @@ class _Tailer:
             if size < self.offset:
                 self.offset = 0
             return b""
+        want = size - self.offset
         with self.path.open("rb") as f:
             f.seek(self.offset)
-            data = f.read(size - self.offset)
-        self.offset += len(data)
+            data = f.read(min(want, MAX_CHUNK_BYTES))
+        if len(data) < want:
+            # Capped: end the chunk on a line boundary so a JSONL record is
+            # never split between two chunks the poller may fetch apart.
+            nl = data.rfind(b"\n")
+            if nl >= 0:
+                data = data[: nl + 1]
+        if data:
+            self._pending = data
         return data
 
     def next_remote(self) -> str:
+        """Remote path of the pending chunk; the seq advances on commit."""
+        seq = self.chunk_seq + 1
+        return f"{self.prefix}/{self.prefix.rstrip('s')}_{seq:06d}.{self.ext}"
+
+    def commit_chunk(self) -> None:
+        """The pending chunk is uploaded: move past it."""
+        if self._pending is None:
+            return
+        self.offset += len(self._pending)
         self.chunk_seq += 1
-        return f"{self.prefix}/{self.prefix.rstrip('s')}_{self.chunk_seq:06d}.{self.ext}"
+        self._pending = None
 
 
 class LogStreamer:
@@ -389,19 +423,29 @@ class LogStreamer:
             if not self._ensure_run(force=force_init):
                 return
             for t in self._tailers:
-                new_bytes = t.read_new()
-                if not new_bytes:
-                    continue
-                self._client.put_artifact(self._artifact_path, t.next_remote(), new_bytes)
-                # Mirror metric records to MLflow's native log-batch so the
-                # Metrics tab in the UI plots them. Artifact JSONL is the
-                # source of truth for the local poller; this is purely for
-                # the human-facing dashboard.
-                if t.prefix == METRICS_PREFIX:
-                    try:
-                        self._mirror_metrics_to_mlflow(new_bytes)
-                    except Exception as e:  # noqa: BLE001 — best-effort
-                        _log.warning("xrun_hook log-batch mirror failed: %s", e)
+                # Several capped chunks per tick: a backlog (e.g. after an
+                # MLflow outage) drains over a few ticks, and the final drain
+                # at exit (`force_init`) leaves nothing behind. Bounded on
+                # normal ticks so a chatty log can't starve events/metrics.
+                for _ in itertools.count() if force_init else range(MAX_CHUNKS_PER_TICK):
+                    new_bytes = t.read_new()
+                    if not new_bytes:
+                        break
+                    # Raises on failure → the chunk stays pending for the
+                    # next tick.
+                    self._client.put_artifact(
+                        self._artifact_path, t.next_remote(), new_bytes
+                    )
+                    t.commit_chunk()
+                    # Mirror metric records to MLflow's native log-batch so
+                    # the Metrics tab in the UI plots them. Artifact JSONL is
+                    # the source of truth for the local poller; this is
+                    # purely for the human-facing dashboard.
+                    if t.prefix == METRICS_PREFIX:
+                        try:
+                            self._mirror_metrics_to_mlflow(new_bytes)
+                        except Exception as e:  # noqa: BLE001 — best-effort
+                            _log.warning("xrun_hook log-batch mirror failed: %s", e)
 
     def _mirror_metrics_to_mlflow(self, raw: bytes) -> None:
         """Parse a metrics-chunk byte buffer and POST in ≤1000-entry batches."""
