@@ -9,6 +9,17 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Kaggle script-mode kernel whose `run.cmd` or `run.setup` ended with a
+  single quote (e.g. `echo '=== done ==='` as the last line) failed in the
+  first seconds with `SyntaxError: unterminated string literal` in
+  `/kaggle/src/script.py` and no telemetry: the generated `main.py` wrapped
+  the shell text in `'''…'''`. All user text in the kernel source — setup,
+  cmd, workdir, dataset slugs and the env values of the notebook bootstrap
+  cell — is now a fully escaped literal, so any quote, backslash, line
+  break or control character reaches bash unchanged.
+
 ---
 
 ## [0.11.6] - 2026-10-15
