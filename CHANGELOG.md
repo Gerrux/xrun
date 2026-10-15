@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.7] - 2026-10-15
+
+Kaggle: a `run.cmd` or `run.setup` ending in a single quote no longer
+breaks the generated kernel script before anything runs.
+
 ### Fixed
 
 - A Kaggle script-mode kernel whose `run.cmd` or `run.setup` ended with a
