@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.6] - 2026-10-15
+
+Kaggle: a kernel whose live telemetry fails to reach MLflow no longer goes
+dark silently — the streamer keeps retrying, `poller.log` says what is
+missing, and events/metrics are recovered from the kernel output.
+
 ### Fixed
 
 - A Kaggle kernel whose `xrun_hook` streamer failed to reach MLflow at start
