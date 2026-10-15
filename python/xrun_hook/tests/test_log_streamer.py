@@ -181,12 +181,133 @@ def test_start_if_configured_inert_on_non_zero_rank(monkeypatch):
     assert start_if_configured() is None
 
 
-def test_start_if_configured_swallows_mlflow_init_failure(
+def test_start_if_configured_keeps_retrying_after_mlflow_init_failure(
     monkeypatch, tmp_path: Path
 ):
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:1")  # nothing listening
     monkeypatch.setenv("XRUN_RUN_ID", "abc123")
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "__xrun_stdout.log").write_bytes(b"")
-    # Must not raise even though MLflow is unreachable.
-    assert start_if_configured() is None
+    log = tmp_path / "__xrun_stdout.log"
+    log.write_bytes(b"")
+    # Must not raise even though MLflow is unreachable, and must not give up:
+    # one failed init at kernel start used to disable telemetry for the run.
+    streamer = start_if_configured()
+    assert streamer is not None
+    assert streamer.mlflow_run_id is None
+    # The failure is visible in the tailed log, i.e. in `xrun logs`.
+    assert b"[xrun_hook] MLflow init failed" in log.read_bytes()
+
+
+class FlakyInit:
+    """Fails the first `failures` calls, then returns a run."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.calls = 0
+
+    def __call__(self) -> "tuple[str, str]":
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise OSError("connection refused")
+        return "run-late", "1/run-late/artifacts"
+
+
+def test_streamer_uploads_backlog_once_init_succeeds(log_file: Path):
+    client = FakeClient()
+    init = FlakyInit(failures=2)
+    streamer = LogStreamer(client, None, log_file, interval_sec=0.01, init=init)
+    log_file.write_bytes(b"written while MLflow was down\n")
+    streamer.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while not client.artifacts and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        streamer.stop(timeout=2.0)
+
+    assert init.calls == 3
+    assert streamer.mlflow_run_id == "run-late"
+    reassembled = b"".join(blob for _, blob in client.artifacts)
+    # Status line from _say() lands in the tailed log after the backlog.
+    assert reassembled.startswith(b"written while MLflow was down\n")
+    assert client.artifacts[0][0] == "logs/log_000001.txt"
+
+
+def test_streamer_without_run_reads_nothing(log_file: Path):
+    client = FakeClient()
+    streamer = LogStreamer(client, None, log_file, interval_sec=0.01, init=FlakyInit(10**6))
+    log_file.write_bytes(b"pending")
+    streamer.start()
+    time.sleep(0.1)
+    streamer.stop(timeout=2.0)
+    assert client.artifacts == []
+    assert streamer.mlflow_run_id is None
+
+
+def test_atexit_drain_skips_update_without_run(log_file: Path):
+    client = FakeClient()
+    streamer = LogStreamer(client, None, log_file, interval_sec=10.0, init=FlakyInit(10**6))
+    streamer.start()
+    _log_streamer._atexit_drain(streamer, client)
+    assert client.last_run_status is None
+
+
+def test_atexit_drain_finishes_created_run(log_file: Path):
+    client = FakeClient()
+    streamer = LogStreamer(client, "run-42", log_file, interval_sec=10.0)
+    streamer.start()
+    _log_streamer._atexit_drain(streamer, client)
+    assert client.last_run_status == "FINISHED"
+
+
+class FailFirstPutClient(FakeClient):
+    """The first PUT times out (it may or may not have landed server-side)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts = 0
+
+    def put_artifact(self, artifact_path: str, remote_path: str, content: bytes) -> None:
+        self.puts += 1
+        if self.puts == 1:
+            raise OSError("timed out")
+        super().put_artifact(artifact_path, remote_path, content)
+
+
+def test_failed_put_is_retried_without_a_hole(log_file: Path):
+    # A dropped chunk used to be gone for good: the poller's live offset then
+    # fell behind the file, and post-run ingest (which skips that many bytes
+    # of events.jsonl) re-ingested some lines and never saw others.
+    client = FailFirstPutClient()
+    streamer = LogStreamer(client, "run-42", log_file, interval_sec=10.0)
+    log_file.write_bytes(b"a\n")
+    with pytest.raises(OSError):
+        streamer._flush_once()
+    with log_file.open("ab") as f:
+        f.write(b"b\n")
+    streamer._flush_once()
+    # Same seq, same bytes as the failed attempt, then the rest.
+    assert client.artifacts == [
+        ("logs/log_000001.txt", b"a\n"),
+        ("logs/log_000002.txt", b"b\n"),
+    ]
+
+
+def test_backlog_goes_out_in_capped_line_aligned_chunks(log_file: Path, monkeypatch):
+    monkeypatch.setattr(_log_streamer, "MAX_CHUNK_BYTES", 16)
+    monkeypatch.setattr(_log_streamer, "MAX_CHUNKS_PER_TICK", 2)
+    body = b"".join(f"line-{i:02d}\n".encode() for i in range(10))  # 8 bytes each
+    log_file.write_bytes(body)
+    client = FakeClient()
+    streamer = LogStreamer(client, "run-42", log_file, interval_sec=10.0)
+
+    streamer._flush_once()  # a normal tick is bounded
+    assert len(client.artifacts) == 2
+
+    streamer._flush_once(force_init=True)  # the final drain is not
+    blobs = [blob for _, blob in client.artifacts]
+    assert b"".join(blobs) == body
+    assert all(len(b) <= 16 and b.endswith(b"\n") for b in blobs)
+    assert [p for p, _ in client.artifacts] == [
+        f"logs/log_{i:06d}.txt" for i in range(1, len(blobs) + 1)
+    ]

@@ -5,6 +5,36 @@ Source-of-truth for ROADMAP planning. Newest first.
 
 ---
 
+## 2026-10-15: Kaggle kernel streams nothing, poller.log empty (closed in 0.11.6)
+
+**Symptom**: run 01M4Z7KATXZXP1FEQQ2FCS69W7 (`powerline-seg-v4`, 16 epochs)
+showed only `running:start` for 4 h; `xrun logs` — "No log chunks have
+arrived yet"; `poller.log` 0 bytes with a live poller and a `RUNNING`
+kernel. The smoke kernel launched 12 min earlier with the same `run.cmd`
+streamed fine. Same picture on fakefentus the day before.
+
+**Root cause**: MLflow had no run tagged `xrun_run_id=01M4Z7KA…` in any
+experiment (checked read-only through xrun's client; the smoke and v3 runs
+were there with their chunks). The kernel's streamer never registered, so
+the poller found nothing — and every branch of that path logged at `debug`,
+hence the empty `poller.log`. Kernel-side, `start_if_configured()` gave up
+for the whole run on the first failed MLflow call, and the bootstrap's own
+messages went only to Kaggle's kernel log (`ListKernelSessionOutput`
+returns an empty `log` while the session runs). Which kernel-side step
+failed for this run is visible only on the kernel's kaggle.com page.
+
+Found along the way: `xrun_hook` picked `/workspace/run` on Kaggle (it is
+writable), so events/metrics never reached the kernel output and post-run
+ingest always read `0 events, 0 metrics` — no fallback when streaming fails.
+
+**Fix (0.11.6)**: streamer retries MLflow init with backoff and uploads the
+backlog; bootstrap and streamer status go to the streamed log; throttled
+`poller.log` warnings for a missing streamer run and MLflow errors;
+`XRUN_RUN_DIR=/kaggle/working/run` in the kernel + offset-aware post-run
+ingest. Kernels pushed by 0.11.5 keep the old behaviour.
+
+---
+
 ## 2026-10-14: `xrun stop` cannot cancel a running Kaggle kernel (closed in 0.11.5 as "warn", not "cancel")
 
 **Symptom**: `xrun stop 01M4XCXCW931EP7KPZYTDDZKTC` printed

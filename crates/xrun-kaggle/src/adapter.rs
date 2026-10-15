@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use xrun_core::{
@@ -21,7 +21,7 @@ use crate::cli::{KaggleCli, KaggleProcess, KernelState, KernelStatus};
 use crate::embed;
 use crate::error::KaggleError;
 use crate::http::{self, KaggleApiClient};
-use crate::ingest::ingest_post_run;
+use crate::ingest::{ingest_post_run, LIVE_EVENTS_OFFSET, LIVE_METRICS_OFFSET};
 use crate::kernel_metadata::KernelMetadata;
 use crate::log_stream::{
     parse_chunk_seq, parse_chunk_seq_with, slice_from_offset, ARTIFACT_PREFIX, EVENTS_PREFIX,
@@ -30,6 +30,59 @@ use crate::log_stream::{
 };
 use crate::notebook_inject;
 use xrun_core::store::{NewEvent, NewMetric};
+
+/// xrun_hook's run dir inside a kernel; see `kernel_env_prelude`.
+const KERNEL_RUN_DIR: &str = "/kaggle/working/run";
+
+/// How long a RUNNING kernel may go without registering its MLflow streamer
+/// run before poller.log says so. Kernel start (datasets, pip, wheel
+/// bootstrap) took ~2 min in the field.
+const STREAMER_GRACE: Duration = Duration::from_secs(10 * 60);
+/// Repeat interval of the "no streamer run" warning.
+const MISSING_RUN_WARN_EVERY: Duration = Duration::from_secs(30 * 60);
+/// Repeat interval of MLflow lookup/list/download failure warnings — every
+/// poll tick would hit them.
+const MLFLOW_ERROR_WARN_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// Lets a warning through at most once per interval.
+#[derive(Debug, Default)]
+struct WarnGate {
+    last: Option<Instant>,
+}
+
+impl WarnGate {
+    fn ready(&mut self, now: Instant, every: Duration) -> bool {
+        match self.last {
+            Some(t) if now.saturating_duration_since(t) < every => false,
+            _ => {
+                self.last = Some(now);
+                true
+            }
+        }
+    }
+}
+
+/// What poller.log has been told about live telemetry. Every failure on
+/// this path used to be `debug!`, so a kernel whose streamer never reached
+/// MLflow left poller.log empty for the whole run.
+#[derive(Debug, Default)]
+struct TelemetryWatch {
+    /// First tick this process saw the kernel RUNNING, and its slug.
+    running_since: Option<Instant>,
+    kernel_slug: String,
+    missing_run: WarnGate,
+    mlflow_error: WarnGate,
+}
+
+/// Whether the "no streamer run" warning is due: the kernel has been
+/// RUNNING past the grace period and the gate is open.
+fn missing_run_warning_due(w: &mut TelemetryWatch, now: Instant) -> Option<Duration> {
+    let running_for = now.saturating_duration_since(w.running_since?);
+    if running_for < STREAMER_GRACE || !w.missing_run.ready(now, MISSING_RUN_WARN_EVERY) {
+        return None;
+    }
+    Some(running_for)
+}
 
 /// Wrapper script injected as `main.py` for script-mode kernels.
 pub const XRUN_KAGGLE_ENTRY_PY: &str = include_str!("../tests/data/_xrun_kaggle_entry.py");
@@ -62,6 +115,7 @@ pub struct KaggleAdapter {
     /// `xrun_run_id` tag. Filled lazily on the first `tail()` call so a
     /// kernel that's slow to start doesn't make `set_run_id()` block.
     mlflow_run_cache: Mutex<Option<(String, String)>>,
+    telemetry_watch: Mutex<TelemetryWatch>,
     /// Mock server for the REST client (tests only).
     #[cfg(any(test, feature = "mock"))]
     api_base: Option<String>,
@@ -77,6 +131,7 @@ impl KaggleAdapter {
             credentials: KaggleCredentials::default(),
             mlflow: None,
             mlflow_run_cache: Mutex::new(None),
+            telemetry_watch: Mutex::new(TelemetryWatch::default()),
             #[cfg(any(test, feature = "mock"))]
             api_base: None,
         }
@@ -288,6 +343,22 @@ impl KaggleAdapter {
         format!("{}\n", lines.join("\n"))
     }
 
+    /// Env block for the kernel: the hook's run dir (always) plus the MLflow
+    /// streaming vars from [`Self::build_env_prelude`].
+    ///
+    /// Without `XRUN_RUN_DIR` xrun_hook picks `/workspace/run` — writable on
+    /// Kaggle, but outside `/kaggle/working`, so events.jsonl/metrics.jsonl
+    /// never reach the kernel output and `pull` → `ingest_post_run` (which
+    /// reads `<output>/run/`) finds nothing. `setdefault` leaves a user's own
+    /// choice alone.
+    fn kernel_env_prelude(&self) -> String {
+        format!(
+            "os.environ.setdefault('XRUN_RUN_DIR', {})\n{}",
+            py_str(KERNEL_RUN_DIR),
+            self.build_env_prelude()
+        )
+    }
+
     /// Resolve the streamer's MLflow run_id and artifact storage prefix by
     /// `xrun_run_id` tag. Cached after the first successful lookup so
     /// subsequent `tail()` calls go straight to artifact listing.
@@ -305,14 +376,16 @@ impl KaggleAdapter {
         let exp_id = match block_async(client.get_or_create_experiment(LOG_STREAM_EXPERIMENT)) {
             Ok(id) => id,
             Err(e) => {
-                tracing::debug!("kaggle tail: MLflow experiment lookup failed: {e}");
+                self.warn_mlflow(&format!(
+                    "MLflow experiment '{LOG_STREAM_EXPERIMENT}' lookup failed: {e}"
+                ));
                 return Ok(None);
             }
         };
         let runs = match block_async(client.search_runs_by_tag(&exp_id, TAG_RUN_ID, xrun_run_id)) {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!("kaggle tail: MLflow runs/search failed: {e}");
+                self.warn_mlflow(&format!("MLflow runs/search failed: {e}"));
                 return Ok(None);
             }
         };
@@ -320,20 +393,75 @@ impl KaggleAdapter {
         // duplicates (re-run, partial failure) the most recent one wins.
         let mlflow_run_id = match runs.into_iter().next() {
             Some(id) => id,
-            None => return Ok(None),
+            None => {
+                self.note_streamer_missing(xrun_run_id);
+                return Ok(None);
+            }
         };
         let artifact_path = match block_async(client.get_run_artifact_path(&mlflow_run_id)) {
             Ok(p) => p,
             Err(e) => {
-                tracing::debug!("kaggle tail: artifact_uri lookup failed: {e}");
+                self.warn_mlflow(&format!(
+                    "artifact_uri lookup for MLflow run {mlflow_run_id} failed: {e}"
+                ));
                 return Ok(None);
             }
         };
+        // Once per poller: the cache below short-circuits later lookups.
+        tracing::info!(
+            "kaggle telemetry: streaming from MLflow run {mlflow_run_id} \
+             (experiment '{LOG_STREAM_EXPERIMENT}')"
+        );
         let pair = (mlflow_run_id, artifact_path);
         if let Ok(mut guard) = self.mlflow_run_cache.lock() {
             *guard = Some(pair.clone());
         }
         Ok(Some(pair))
+    }
+
+    /// `warn!` an MLflow failure on the telemetry path, at most once per
+    /// [`MLFLOW_ERROR_WARN_EVERY`]; the repeats in between go to `debug!`.
+    fn warn_mlflow(&self, what: &str) {
+        let due = self
+            .telemetry_watch
+            .lock()
+            .map(|mut w| {
+                w.mlflow_error
+                    .ready(Instant::now(), MLFLOW_ERROR_WARN_EVERY)
+            })
+            .unwrap_or(true);
+        if due {
+            tracing::warn!(
+                "kaggle telemetry: {what} (repeats muted for {} min)",
+                MLFLOW_ERROR_WARN_EVERY.as_secs() / 60
+            );
+        } else {
+            tracing::debug!("kaggle telemetry: {what}");
+        }
+    }
+
+    /// Called whenever MLflow answered but has no run for this xrun run.
+    /// Silent until `poll_completion` has seen the kernel RUNNING for
+    /// [`STREAMER_GRACE`], then a `warn!` every [`MISSING_RUN_WARN_EVERY`]:
+    /// the kernel-side streamer never registered, and nothing else in
+    /// poller.log would say so.
+    fn note_streamer_missing(&self, xrun_run_id: &str) {
+        let due = match self.telemetry_watch.lock() {
+            Ok(mut w) => missing_run_warning_due(&mut w, Instant::now())
+                .map(|running_for| (running_for, w.kernel_slug.clone())),
+            Err(_) => None,
+        };
+        if let Some((running_for, slug)) = due {
+            tracing::warn!(
+                "kaggle telemetry: kernel {slug} has been RUNNING for {} min, but MLflow has \
+                 no run tagged {TAG_RUN_ID}={xrun_run_id} in experiment \
+                 '{LOG_STREAM_EXPERIMENT}' — xrun_hook's streamer never registered, so live \
+                 logs, events and metrics are not arriving. The kernel's log on \
+                 https://www.kaggle.com/code/{slug} says why (lines starting with \
+                 `[xrun_hook]` or `xrun_hook bootstrap failed`).",
+                running_for.as_secs() / 60
+            );
+        }
     }
 }
 
@@ -649,7 +777,7 @@ impl VendorAdapter for KaggleAdapter {
                 .map_err(|e| VendorError::Other(format!("failed to read notebook: {e}")))?;
             let nb_str = String::from_utf8(nb_bytes)
                 .map_err(|e| VendorError::Other(format!("notebook is not valid UTF-8: {e}")))?;
-            let env_prelude = self.build_env_prelude();
+            let env_prelude = self.kernel_env_prelude();
             let wheel_b64 = if !embed::XRUN_HOOK_WHEEL.is_empty() {
                 Some(base64_encode(embed::XRUN_HOOK_WHEEL))
             } else {
@@ -682,7 +810,7 @@ impl VendorAdapter for KaggleAdapter {
             let cmd_block = manifest.run.cmd.as_deref().unwrap_or("").trim().to_string();
             let workdir = manifest.run.workdir.as_deref().unwrap_or("/kaggle/working");
             // §11: pass dataset slugs so main.py can probe XRUN_INPUT_DIR
-            let env_prelude = self.build_env_prelude();
+            let env_prelude = self.kernel_env_prelude();
             // Kaggle script-mode kernels only upload the single `code_file`,
             // dropping every sibling we put in staging. To get xrun_hook into
             // the kernel we base64-embed the wheel directly into main.py and
@@ -813,7 +941,7 @@ impl VendorAdapter for KaggleAdapter {
             match block_async(client.list_artifacts(&artifact_path, Some(ARTIFACT_PREFIX))) {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::debug!("kaggle tail: artifacts/list failed: {e}");
+                    self.warn_mlflow(&format!("artifacts/list({ARTIFACT_PREFIX}) failed: {e}"));
                     return Ok(Vec::new());
                 }
             };
@@ -995,6 +1123,15 @@ impl VendorAdapter for KaggleAdapter {
         *last_guard = Some(new_state.clone());
         drop(last_guard);
 
+        if new_state == KernelState::Running {
+            if let Ok(mut w) = self.telemetry_watch.lock() {
+                if w.running_since.is_none() {
+                    w.running_since = Some(Instant::now());
+                    w.kernel_slug = slug.to_string();
+                }
+            }
+        }
+
         // Pull any live event/metric chunks pushed by xrun_hook → MLflow
         // since the last tick. No-op when MLflow isn't configured. Done
         // before the terminal-state branch so the final partial chunk is
@@ -1115,7 +1252,7 @@ impl KaggleAdapter {
 
         // Events
         let events_offset = store
-            .get_poll_offset(&xrun_run_id, "telemetry_events")
+            .get_poll_offset(&xrun_run_id, LIVE_EVENTS_OFFSET)
             .unwrap_or(0);
         if let Some(new_bytes) = self.fetch_chunks_past_offset(
             &client,
@@ -1138,7 +1275,7 @@ impl KaggleAdapter {
                 }
             }
             let new_offset = events_offset + new_bytes.len() as u64;
-            let _ = store.update_poll_offset(&xrun_run_id, "telemetry_events", new_offset);
+            let _ = store.update_poll_offset(&xrun_run_id, LIVE_EVENTS_OFFSET, new_offset);
             if count > 0 {
                 tracing::debug!("kaggle telemetry: ingested {count} live events");
             }
@@ -1146,7 +1283,7 @@ impl KaggleAdapter {
 
         // Metrics
         let metrics_offset = store
-            .get_poll_offset(&xrun_run_id, "telemetry_metrics")
+            .get_poll_offset(&xrun_run_id, LIVE_METRICS_OFFSET)
             .unwrap_or(0);
         if let Some(new_bytes) = self.fetch_chunks_past_offset(
             &client,
@@ -1163,7 +1300,7 @@ impl KaggleAdapter {
                 }
             }
             let new_offset = metrics_offset + new_bytes.len() as u64;
-            let _ = store.update_poll_offset(&xrun_run_id, "telemetry_metrics", new_offset);
+            let _ = store.update_poll_offset(&xrun_run_id, LIVE_METRICS_OFFSET, new_offset);
             if count > 0 {
                 tracing::debug!("kaggle telemetry: ingested {count} live metrics");
             }
@@ -1186,7 +1323,7 @@ impl KaggleAdapter {
         let artifacts = match block_async(client.list_artifacts(artifact_path, Some(prefix))) {
             Ok(a) => a,
             Err(e) => {
-                tracing::debug!("kaggle telemetry: artifacts/list({prefix}) failed: {e}");
+                self.warn_mlflow(&format!("artifacts/list({prefix}) failed: {e}"));
                 return None;
             }
         };
@@ -1211,7 +1348,7 @@ impl KaggleAdapter {
             Ok(bytes) if bytes.is_empty() => None,
             Ok(bytes) => Some(bytes),
             Err(e) => {
-                tracing::debug!("kaggle telemetry: chunk fetch failed: {e}");
+                self.warn_mlflow(&format!("{prefix} chunk fetch failed: {e}"));
                 None
             }
         }
@@ -1426,12 +1563,12 @@ fn build_script_main(
              _r = _sp.run([sys.executable, '-m', 'pip', 'install', '--quiet', \
              '--no-deps', _whl_path], capture_output=True, text=True)\n\
              if _r.returncode != 0:\n\
-             \x20\x20\x20\x20print('xrun_hook bootstrap failed:', _r.stderr, flush=True)\n\
+             \x20\x20\x20\x20_note('xrun_hook bootstrap failed: ' + _r.stderr)\n\
              else:\n\
              \x20\x20\x20\x20try:\n\
              \x20\x20\x20\x20    import xrun_hook  # noqa: F401  starts streamer in main.py\n\
              \x20\x20\x20\x20except Exception as _e:\n\
-             \x20\x20\x20\x20    print('xrun_hook import failed:', _e, flush=True)\n\
+             \x20\x20\x20\x20    _note('xrun_hook import failed: ' + repr(_e))\n\
              # Block subprocess re-imports of xrun_hook from creating a second\n\
              # streamer (which would push duplicate chunks to a separate MLflow\n\
              # run). User code can still call xrun_hook.metric/.epoch/.done — only\n\
@@ -1466,8 +1603,16 @@ fn build_script_main(
          _DATASETS = {datasets_repr}\n\
          os.environ['XRUN_INPUT_DIR'] = _find_input_dir(_DATASETS)\n\
          \n\
+         # Opened before the hook bootstrap so its outcome reaches the\n\
+         # streamed log (Kaggle shows stderr only in the kernel's own log).\n\
+         # Append mode: xrun_hook appends its status lines to this file too.\n\
+         _LOG = open('__xrun_stdout.log', 'a')\n\
+         \n\
+         def _note(msg):\n\
+         \x20\x20\x20\x20print(msg, flush=True)\n\
+         \x20\x20\x20\x20_LOG.write(msg + '\\n'); _LOG.flush()\n\
+         \n\
          {wheel_block}\
-         _LOG = open('__xrun_stdout.log', 'w')\n\
          \n\
          def _run(script, label):\n\
          \x20\x20\x20\x20if not script.strip():\n\
@@ -1960,6 +2105,164 @@ mod input_dir_probe_tests {
             return;
         };
         assert_eq!(dir, "/kaggle/input");
+    }
+}
+
+#[cfg(test)]
+mod telemetry_watch_tests {
+    use super::*;
+
+    #[test]
+    fn warn_gate_opens_once_per_interval() {
+        let mut gate = WarnGate::default();
+        let t0 = Instant::now();
+        let every = Duration::from_secs(600);
+        assert!(gate.ready(t0, every));
+        assert!(!gate.ready(t0 + Duration::from_secs(599), every));
+        assert!(gate.ready(t0 + Duration::from_secs(600), every));
+        assert!(!gate.ready(t0 + Duration::from_secs(601), every));
+    }
+
+    #[test]
+    fn missing_run_is_silent_before_the_kernel_runs() {
+        let mut w = TelemetryWatch::default();
+        assert_eq!(missing_run_warning_due(&mut w, Instant::now()), None);
+    }
+
+    #[test]
+    fn missing_run_warns_after_grace_then_every_interval() {
+        let t0 = Instant::now();
+        let mut w = TelemetryWatch {
+            running_since: Some(t0),
+            ..TelemetryWatch::default()
+        };
+        // Kernel start (datasets, pip, wheel) — no warning yet.
+        assert_eq!(
+            missing_run_warning_due(&mut w, t0 + STREAMER_GRACE / 2),
+            None
+        );
+        let first = t0 + STREAMER_GRACE;
+        assert_eq!(missing_run_warning_due(&mut w, first), Some(STREAMER_GRACE));
+        assert_eq!(
+            missing_run_warning_due(&mut w, first + Duration::from_secs(60)),
+            None
+        );
+        let again = first + MISSING_RUN_WARN_EVERY;
+        assert_eq!(
+            missing_run_warning_due(&mut w, again),
+            Some(STREAMER_GRACE + MISSING_RUN_WARN_EVERY)
+        );
+    }
+
+    #[test]
+    fn kernel_env_prelude_pins_the_run_dir_without_mlflow() {
+        let adapter = KaggleAdapter::new();
+        let prelude = adapter.kernel_env_prelude();
+        assert_eq!(
+            prelude,
+            "os.environ.setdefault('XRUN_RUN_DIR', '/kaggle/working/run')\n"
+        );
+    }
+
+    #[test]
+    fn kernel_env_prelude_keeps_the_mlflow_vars() {
+        let adapter = KaggleAdapter::new().with_mlflow("http://mlflow.test".into(), None);
+        adapter.set_run_id(&RunId::new());
+        let prelude = adapter.kernel_env_prelude();
+        assert!(prelude.starts_with("os.environ.setdefault('XRUN_RUN_DIR', "));
+        assert!(prelude.contains("os.environ['MLFLOW_TRACKING_URI'] = 'http://mlflow.test'"));
+        assert!(prelude.contains("os.environ['XRUN_RUN_ID'] = "));
+    }
+}
+
+#[cfg(test)]
+mod main_py_bootstrap_tests {
+    use super::*;
+    use xrun_core::pybridge::python_argv;
+
+    /// The whole generated main.py, with and without the wheel block and
+    /// with an empty setup, must at least compile: `_LOG`/`_note` moved
+    /// above the bootstrap, and the env prelude grew a line.
+    #[test]
+    fn generated_main_py_compiles_in_every_branch() {
+        let Some((python, lead)) = python_argv() else {
+            eprintln!("skip: no python interpreter");
+            return;
+        };
+        let adapter = KaggleAdapter::new().with_mlflow("http://mlflow.test".into(), None);
+        adapter.set_run_id(&RunId::new());
+        let prelude = adapter.kernel_env_prelude();
+        for wheel in [None, Some("bm90IGEgd2hlZWw=")] {
+            for setup in ["", "pip install -q foo"] {
+                let src = build_script_main(
+                    &prelude,
+                    wheel,
+                    setup,
+                    "python train.py",
+                    "/kaggle/working",
+                    &["owner/name".to_string()],
+                );
+                let out = std::process::Command::new(&python)
+                    .args(&lead)
+                    .arg("-c")
+                    .arg("import sys; compile(sys.stdin.read(), 'main.py', 'exec')")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .and_then(|mut child| {
+                        use std::io::Write;
+                        child.stdin.take().unwrap().write_all(src.as_bytes())?;
+                        child.wait_with_output()
+                    })
+                    .expect("run python");
+                assert!(
+                    out.status.success(),
+                    "main.py (wheel={wheel:?}, setup={setup:?}) does not compile: {}\n{src}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+
+    /// Run 01M4Z7KATXZXP1FEQQ2FCS69W7 streamed nothing for hours and the
+    /// reason was only in Kaggle's own kernel log: the bootstrap wrote to
+    /// stdout before `__xrun_stdout.log` was even opened. The outcome must
+    /// land in the streamed file.
+    #[test]
+    fn bootstrap_failure_reaches_the_streamed_log() {
+        let Some((python, lead)) = python_argv() else {
+            eprintln!("skip: no python interpreter");
+            return;
+        };
+        // base64("not a wheel") — pip rejects it without touching the network.
+        let src = build_script_main("", Some("bm90IGEgd2hlZWw="), "", "", "/kaggle/working", &[]);
+        let start = src.find("_LOG = open(").expect("log opened");
+        let end = src.find("def _run(").expect("_run defined");
+        assert!(
+            start < src.find("_WHEEL_B64").expect("wheel block"),
+            "log must be open before the wheel bootstrap"
+        );
+        let script = format!("import os, sys\n{}_LOG.close()\n", &src[start..end]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new(python)
+            .args(&lead)
+            .arg("-c")
+            .arg(script)
+            .current_dir(dir.path())
+            .output()
+            .expect("run python");
+        assert!(
+            out.status.success(),
+            "bootstrap script failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let log = std::fs::read_to_string(dir.path().join("__xrun_stdout.log")).unwrap();
+        assert!(
+            log.contains("xrun_hook bootstrap failed"),
+            "streamed log lacks the bootstrap outcome: {log:?}"
+        );
     }
 }
 

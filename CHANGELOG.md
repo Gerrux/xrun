@@ -11,6 +11,43 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.11.6] - 2026-10-15
+
+Kaggle: a kernel whose live telemetry fails to reach MLflow no longer goes
+dark silently — the streamer keeps retrying, `poller.log` says what is
+missing, and events/metrics are recovered from the kernel output.
+
+### Fixed
+
+- A Kaggle kernel whose `xrun_hook` streamer failed to reach MLflow at start
+  stayed dark for the whole run: no live logs, events or metrics, and an
+  empty `poller.log`. One failed MLflow call at kernel start (experiment
+  lookup or run creation) switched streaming off for good. The streamer
+  now keeps retrying in the background (backoff up to 2 min) and sends the
+  full backlog once MLflow answers.
+- The poller said nothing while it found no MLflow run for a Kaggle kernel —
+  every failure on that path was `debug`. Now `poller.log` gets a warning
+  when the kernel has been `RUNNING` for 10 min without a streamer run
+  (repeated every 30 min, with a pointer to the kernel's log), MLflow
+  lookup/list/download failures are warnings (at most one per 10 min), and
+  a line names the MLflow run once streaming starts.
+- The kernel's `xrun_hook` bootstrap outcome (wheel install, import,
+  streamer status) went only to Kaggle's own kernel log, which no API
+  returns while the kernel runs. It is now written to the streamed log as
+  well, so `xrun logs` shows it.
+- Events and metrics from a Kaggle kernel never reached its output: on
+  Kaggle `/workspace` is writable, so `xrun_hook` wrote them to
+  `/workspace/run` instead of `/kaggle/working/run`, and `xrun pull` had
+  nothing to ingest (`kaggle ingest: 0 events, 0 metrics`). The kernel now
+  gets `XRUN_RUN_DIR=/kaggle/working/run`; post-run ingest skips what the
+  live stream already delivered, so events are not doubled.
+- A chunk upload that failed (timeout, MLflow restart) was dropped: its
+  bytes never reached xrun and the chunk numbering had a hole. The
+  streamer now retries the same chunk until it lands, caps chunks at
+  4 MiB on a line boundary, and drains a backlog over a few ticks.
+
+---
+
 ## [0.11.5] - 2026-10-14
 
 Kaggle: `xrun stop` asks the right endpoint and says plainly that a running
