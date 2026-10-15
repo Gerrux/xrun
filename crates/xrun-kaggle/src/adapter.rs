@@ -465,10 +465,40 @@ impl KaggleAdapter {
     }
 }
 
-/// Quote a string as a Python string literal, escaping backslashes and
-/// single quotes. Used for the env prelude.
+/// Quote arbitrary text as a one-line Python string literal that evaluates
+/// back to exactly `s`. Every piece of user text in the generated kernel
+/// source goes through here — env values, workdir, dataset slugs, and the
+/// `run.setup`/`run.cmd` shell scripts.
+///
+/// Backslashes and `'` are escaped, line breaks and other control characters
+/// become `\n`/`\r`/`\t`/`\xNN`, so no input can close the literal early
+/// (run 01M50EJ6AWMRC72TSB3JDM8HCP: a `cmd` ending in `'` broke the old
+/// `'''…'''` form) or split it across source lines. Everything else,
+/// Cyrillic included, stays as is: main.py is UTF-8.
 fn py_str(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || ('\x7f'..='\u{9f}').contains(&c) => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            // Python's tokenizer keeps these inside a literal, but
+            // `str.splitlines()` breaks on them — and IPython splits a cell
+            // that way before running it (the notebook bootstrap cell).
+            '\u{2028}' | '\u{2029}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Block on a future regardless of whether we're already inside a tokio
@@ -1529,17 +1559,16 @@ fn build_script_main(
     workdir: &str,
     datasets: &[String],
 ) -> String {
-    let escape = |s: &str| s.replace('\\', "\\\\").replace("'''", r"\'\'\'");
-    let setup_escaped = escape(setup);
-    let cmd_escaped = escape(cmd);
-    let workdir_repr = format!("'{}'", workdir.replace('\'', "\\'"));
+    let setup_repr = py_str(setup);
+    let cmd_repr = py_str(cmd);
+    let workdir_repr = py_str(workdir);
 
     // Build a Python list literal of dataset slugs
     let datasets_repr = format!(
         "[{}]",
         datasets
             .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+            .map(|s| py_str(s))
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -1634,7 +1663,7 @@ fn build_script_main(
          \x20\x20\x20\x20    _LOG.write(msg + '\\n'); _LOG.flush()\n\
          \x20\x20\x20\x20    sys.exit(proc.returncode)\n\
          \n\
-         _run('''{setup_escaped}''', 'setup')\n\
+         _run({setup_repr}, 'setup')\n\
          \n\
          # numpy↔torch ABI probe. If torch was pinned against numpy 1.x but the\n\
          # environment has numpy 2.x (or vice versa), DataLoader workers blow up\n\
@@ -1660,15 +1689,15 @@ fn build_script_main(
          \x20\x20\x20\x20    sys.exit(r.returncode)\n\
          _probe_torch_numpy()\n\
          \n\
-         _run('''{cmd_escaped}''', 'cmd')\n\
+         _run({cmd_repr}, 'cmd')\n\
          \n\
          _LOG.close()\n",
         env_prelude = env_prelude,
         workdir_repr = workdir_repr,
         datasets_repr = datasets_repr,
         wheel_block = wheel_block,
-        setup_escaped = setup_escaped,
-        cmd_escaped = cmd_escaped
+        setup_repr = setup_repr,
+        cmd_repr = cmd_repr
     )
 }
 
@@ -2263,6 +2292,170 @@ mod main_py_bootstrap_tests {
             log.contains("xrun_hook bootstrap failed"),
             "streamed log lacks the bootstrap outcome: {log:?}"
         );
+    }
+
+    /// Shell text that the old `'''…'''` embedding broke or could break.
+    const TRICKY: &[&str] = &[
+        // Run 01M50EJ6AWMRC72TSB3JDM8HCP: the last line ended with `'`.
+        "python probe.py\necho '=== probe done ==='",
+        "echo '",
+        "echo ''",
+        "x='''y'''",
+        "printf '%s' \"\"\"q\"\"\"",
+        "echo trailing \\",
+        "python train.py \\\n  --lr 5e-4 \\\n  --epochs 3",
+        r"printf 'a\nb\tc\\d\x41ф'",
+        "tab\there\r\nwindows line",
+        "echo {} {{x}} $HOME `date` %s",
+        "echo 'Привет, мир' # кириллица",
+        "nul\0esc\x1bdel\x7fls\u{2028}nel\u{85}ps\u{2029}vt\x0bff\x0cfs\x1c",
+        "bom\u{feff}mid c1\u{9f}",
+        "",
+    ];
+
+    /// Every char `str.splitlines()` breaks on. IPython splits a cell with
+    /// it before running, so none may appear raw inside a generated literal.
+    const SPLITLINES: &[char] = &[
+        '\n', '\r', '\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\u{85}', '\u{2028}', '\u{2029}',
+    ];
+
+    /// Python-free check: whatever the input, the literal is one line by
+    /// `splitlines()` rules and holds no raw C0/C1 control or DEL.
+    #[test]
+    fn py_str_is_one_line_without_raw_controls() {
+        for s in TRICKY {
+            let lit = py_str(s);
+            assert!(!lit.contains(SPLITLINES), "line break left raw in {lit:?}");
+            assert!(
+                !lit.chars()
+                    .any(|c| (c as u32) < 0x20 || ('\x7f'..='\u{9f}').contains(&c)),
+                "control char left raw in {lit:?}"
+            );
+        }
+        let bs = '\\';
+        assert_eq!(
+            py_str("a\u{2028}b\u{85}c"),
+            format!("'a{bs}u2028b{bs}x85c'")
+        );
+    }
+
+    /// Python run against the generated main.py: compile it, pull the
+    /// literals passed to `_run(…, 'setup'|'cmd')` plus workdir and dataset
+    /// slugs out of the AST, and print them as UTF-8 JSON. Reads the file as
+    /// bytes so a cp1252 console can't mangle the Cyrillic cases.
+    const EXTRACT_LITERALS: &str = "\
+import ast, json, sys
+src = open(sys.argv[1], 'rb').read()
+compile(src, 'main.py', 'exec')
+out = {}
+for node in ast.walk(ast.parse(src)):
+    if isinstance(node, ast.Call):
+        name = getattr(node.func, 'id', None) or getattr(node.func, 'attr', None)
+        if name == '_run':
+            out[ast.literal_eval(node.args[1])] = ast.literal_eval(node.args[0])
+        elif name == 'chdir':
+            out['workdir'] = ast.literal_eval(node.args[0])
+    elif isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', None) == '_DATASETS':
+        out['datasets'] = ast.literal_eval(node.value)
+sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode('utf-8'))
+";
+
+    /// main.py must compile for any `run.setup`/`run.cmd`, and the shell
+    /// script handed to bash must be the manifest text byte for byte —
+    /// including `\`-newline continuations and literal `\n` sequences.
+    #[test]
+    fn user_text_round_trips_byte_for_byte() {
+        let Some((python, lead)) = python_argv() else {
+            eprintln!("skip: no python interpreter");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.py");
+        for (i, cmd) in TRICKY.iter().enumerate() {
+            let setup = TRICKY[(i + 1) % TRICKY.len()];
+            let workdir = format!("/kaggle/working/it's {i}\\");
+            let datasets = vec![format!("owner/name-{i}"), (*cmd).to_string()];
+            let src = build_script_main("", None, setup, cmd, &workdir, &datasets);
+            std::fs::write(&path, src.as_bytes()).unwrap();
+            let out = std::process::Command::new(&python)
+                .args(&lead)
+                .arg("-c")
+                .arg(EXTRACT_LITERALS)
+                .arg(&path)
+                .output()
+                .expect("run python");
+            assert!(
+                out.status.success(),
+                "main.py for cmd={cmd:?} does not compile: {}\n{src}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let got: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(got["cmd"].as_str(), Some(*cmd), "cmd changed in transit");
+            assert_eq!(
+                got["setup"].as_str(),
+                Some(setup),
+                "setup changed in transit"
+            );
+            assert_eq!(got["workdir"].as_str(), Some(workdir.as_str()));
+            assert_eq!(got["datasets"], serde_json::json!(datasets));
+        }
+    }
+
+    /// The env prelude is the only user text in the notebook bootstrap cell
+    /// (`run.notebook`). Values that would close or split a literal must
+    /// still come out of the executed cell unchanged.
+    #[test]
+    fn notebook_bootstrap_cell_keeps_env_values_intact() {
+        let Some((python, lead)) = python_argv() else {
+            eprintln!("skip: no python interpreter");
+            return;
+        };
+        let username = "test-user'\\\nкириллица";
+        let password = "test-key-abc'''\r\n\\";
+        let adapter = KaggleAdapter::new().with_mlflow(
+            "http://mlflow.test/it's".into(),
+            Some(MlflowAuth::Basic {
+                username: username.into(),
+                password: password.into(),
+            }),
+        );
+        adapter.set_run_id(&RunId::new());
+        let nb = r#"{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#;
+        let injected =
+            notebook_inject::inject_bootstrap_cell(nb, &adapter.kernel_env_prelude(), None)
+                .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&injected).unwrap();
+        let cell: String = v["cells"][0]["source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap())
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell.py");
+        std::fs::write(&path, cell.as_bytes()).unwrap();
+        let script = "\
+import json, os, sys
+exec(compile(open(sys.argv[1], 'rb').read(), 'cell.py', 'exec'))
+keys = ['MLFLOW_TRACKING_URI', 'MLFLOW_TRACKING_USERNAME', 'MLFLOW_TRACKING_PASSWORD']
+sys.stdout.buffer.write(json.dumps({k: os.environ[k] for k in keys}, ensure_ascii=False).encode('utf-8'))
+";
+        let out = std::process::Command::new(&python)
+            .args(&lead)
+            .arg("-c")
+            .arg(script)
+            .arg(&path)
+            .output()
+            .expect("run python");
+        assert!(
+            out.status.success(),
+            "bootstrap cell failed: {}\n{cell}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(got["MLFLOW_TRACKING_URI"], "http://mlflow.test/it's");
+        assert_eq!(got["MLFLOW_TRACKING_USERNAME"], username);
+        assert_eq!(got["MLFLOW_TRACKING_PASSWORD"], password);
     }
 }
 
