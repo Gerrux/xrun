@@ -9,6 +9,24 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `vendor: local` runs left `running` after a host restart or a crashed
+  training script were never healed: `xrun fix-status` and `xrun resume`
+  only checked that the instance row existed, so `resume` respawned a
+  useless poller and only `xrun stop` closed the run. Both now read the
+  training process from `run.pid`; when it is gone the run becomes `done`
+  if a `done:ok` event was recorded and `failed` (with a `stage_failed`
+  event) otherwise, and the instance is marked destroyed without signalling
+  the stored PID. `resume` reports such runs as `reconciled`.
+- The local adapter now reports training-process liveness to the poller, so
+  a local script that exits without writing `done:ok` fails the run after two
+  ticks instead of leaving it `running` forever (as vast/ssh already did).
+- A recycled PID no longer passes for a live local run: the process start time
+  (`/proc`, PowerShell `Get-Process` on Windows, `ps` on macOS) is compared
+  with the moment `run.pid` was written, so after a reboot an unrelated
+  process that inherited the PID counts as dead.
+
 ---
 
 ## [0.11.7] - 2026-10-15

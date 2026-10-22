@@ -15,7 +15,8 @@ use xrun_core::{
 };
 
 use crate::process::{
-    kill_process, probe_gpu_summary, process_alive, run_setup_blocking, spawn_main,
+    kill_process, probe_gpu_summary, process_alive, process_alive_since, run_setup_blocking,
+    spawn_main,
 };
 use crate::shell::resolve_shell;
 use crate::tail::tail_file;
@@ -195,10 +196,9 @@ impl VendorAdapter for LocalAdapter {
                 .run_id
                 .as_deref()
                 .and_then(|rid| rid.parse::<RunId>().ok())
-                .map(|rid| self.read_pid(&rid))
-                .map(|pid_opt| match pid_opt {
-                    Some(pid) if process_alive(pid) => "running".to_string(),
-                    Some(_) => "exited".to_string(),
+                .map(|rid| match self.training_alive(&rid) {
+                    Some(true) => "running".to_string(),
+                    Some(false) => "exited".to_string(),
                     None => "unknown".to_string(),
                 });
             out.push(VendorRemoteInstance {
@@ -443,9 +443,49 @@ impl VendorAdapter for LocalAdapter {
         self.append_event("instance_destroyed", "ok", pid.map(|p| format!("pid={p}")));
         Ok(())
     }
+
+    /// Feeds the poller's "PID gone twice → Failed" rule, so a script that
+    /// exits (or a host that rebooted) without `done:ok` no longer leaves the
+    /// run `running` forever. `None` without a `run.pid`.
+    fn process_alive(&self, h: &InstanceHandle) -> Option<bool> {
+        let rid = self.run_id().ok().or_else(|| {
+            let store_slot = self.store.borrow();
+            let inst = store_slot.as_ref()?.get_instance(&h.id).ok().flatten()?;
+            inst.run_id?.parse::<RunId>().ok()
+        })?;
+        self.training_alive(&rid)
+    }
 }
 
 impl LocalAdapter {
+    /// Is the training process recorded in `<run_dir>/run.pid` still the
+    /// original one? `None` when there is no `run.pid`.
+    ///
+    /// The cutoff for PID reuse is the mtime of `run.pid`: `execute()` writes
+    /// it right after `spawn_main`, so the genuine process started at or
+    /// before that instant. After a reboot the file is older than the host's
+    /// boot, while any process now holding the same PID started later. This
+    /// needs neither the store nor the run row (`started_at` is stamped even
+    /// later, after `execute()` returns, and the adapter may have no store).
+    /// Without a readable mtime we fall back to plain PID liveness.
+    fn training_alive(&self, run_id: &RunId) -> Option<bool> {
+        let pid_file = self.run_dir(run_id).join("run.pid");
+        let pid = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())?;
+        let recorded_at = std::fs::metadata(&pid_file)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(chrono::DateTime::<Utc>::from);
+        Some(match recorded_at {
+            Some(t) => process_alive_since(
+                pid,
+                t + chrono::Duration::seconds(crate::process::START_SLACK_SECS),
+            ),
+            None => process_alive(pid),
+        })
+    }
+
     fn read_pid(&self, run_id: &RunId) -> Option<u32> {
         let pid_file = self.run_dir(run_id).join("run.pid");
         std::fs::read_to_string(&pid_file)
@@ -863,6 +903,75 @@ run:
         }
         assert!(!crate::process::process_alive(pid), "child should be dead");
         assert!(!pid_file.exists(), "pid file removed");
+    }
+
+    /// Provisioned (not executed) adapter with a run dir, for PID-file tests.
+    fn provisioned() -> (TempDir, LocalAdapter, InstanceHandle, PathBuf) {
+        let (td, mut store) = fresh_store();
+        let runs_dir = td.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        let run_id = store
+            .create_run("pid-test", "abc", "manifest.yaml", "local", &[])
+            .unwrap();
+        let adapter = LocalAdapter::with_store_and_runs_dir(store, runs_dir.clone());
+        adapter.set_run_id(&run_id);
+        let handle = adapter.provision(&local_manifest("")).expect("provision");
+        let pid_file = runs_dir.join(run_id.to_string()).join("run.pid");
+        (td, adapter, handle, pid_file)
+    }
+
+    fn status_of(adapter: &LocalAdapter, handle: &InstanceHandle) -> Option<String> {
+        adapter
+            .vendor_instances()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == handle.id)
+            .expect("instance listed")
+            .status
+    }
+
+    #[test]
+    fn process_alive_is_none_without_pid_file() {
+        let (_td, adapter, handle, _pid_file) = provisioned();
+        assert_eq!(adapter.process_alive(&handle), None);
+        assert_eq!(status_of(&adapter, &handle).as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn process_alive_false_and_status_exited_for_dead_pid() {
+        let (_td, adapter, handle, pid_file) = provisioned();
+        // u32::MAX - 1 is never a live PID.
+        std::fs::write(&pid_file, (u32::MAX - 1).to_string()).unwrap();
+        assert_eq!(adapter.process_alive(&handle), Some(false));
+        assert_eq!(status_of(&adapter, &handle).as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn process_alive_true_for_live_pid_recorded_just_now() {
+        let (_td, adapter, handle, pid_file) = provisioned();
+        std::fs::write(&pid_file, std::process::id().to_string()).unwrap();
+        assert_eq!(adapter.process_alive(&handle), Some(true));
+        assert_eq!(status_of(&adapter, &handle).as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn recycled_pid_recorded_before_process_start_is_dead() {
+        // run.pid written long before this process started = the PID in it
+        // belonged to a run from before a reboot, now owned by someone else.
+        if crate::process::process_started_at(std::process::id()).is_none() {
+            return; // start time unreadable here: the check degrades to plain liveness
+        }
+        let (_td, adapter, handle, pid_file) = provisioned();
+        std::fs::write(&pid_file, std::process::id().to_string()).unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&pid_file)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        assert_eq!(adapter.process_alive(&handle), Some(false));
+        assert_eq!(status_of(&adapter, &handle).as_deref(), Some("exited"));
     }
 
     #[test]

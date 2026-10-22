@@ -14,6 +14,7 @@ use xrun_core::{store::RunStatus, vendor::InstanceHandle, Store, VendorAdapter};
 
 use crate::cli::FixStatusArgs;
 use crate::commands::common::{build_adapter, open_store, resolve_run, vendor_or_vast, AdapterCtx};
+use crate::commands::resume::{is_dead_local, reconcile_dead_local};
 
 pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) -> Result<()> {
     let store = open_store(db_path)?;
@@ -116,6 +117,20 @@ pub fn run(args: &FixStatusArgs, db_path: &Path, runs_dir: &Path, config_dir: &P
         // user can inspect logs and re-run.
         match vendor.vendor_instances() {
             Ok(remote) => {
+                // A local row stays listed after its training process is
+                // gone (host restart, crash): reconcile it from run.pid +
+                // the recorded events instead of trusting mere presence.
+                if is_dead_local(&run.vendor, &remote, &instance_id) {
+                    let status =
+                        reconcile_dead_local(db_path, run, &instance_id, &run_dir, args.dry_run)?;
+                    println!(
+                        "  {run_id} [{vendor}]: training process gone — marking {s}",
+                        vendor = run.vendor,
+                        s = status.as_str(),
+                    );
+                    changed += 1;
+                    continue;
+                }
                 let alive = remote.iter().any(|r| r.id == instance_id);
                 if alive {
                     println!(
