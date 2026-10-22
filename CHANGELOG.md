@@ -9,6 +9,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.11.8] - 2026-10-22
+
+Fixes from the ArboForge runs: training scripts get instrumented with
+metrics (agent skill), `xrun show` prints a run's final numbers, Kaggle
+`pull` no longer fails after a complete download, `doctor --manifest`
+checks only the named manifest, and local runs left `running` after a
+reboot are closed by `fix-status`.
+
 ### Added
 
 - `xrun show` prints each metric key's last value and step
