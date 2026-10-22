@@ -9,6 +9,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun doctor --manifest <path>` checked every manifest in `exp/` as well
+  as the named one, so in a project with many manifests it ran the full
+  per-manifest checks (including Kaggle network calls) for all of them and
+  could hang for minutes. With `--manifest` only the named files are
+  checked and the vendors of other manifests no longer add environment
+  checks; without it `exp/` is still scanned. The same file spelled two
+  ways (`exp/a.yaml`, `./exp/a.yaml`, or backslashes on Windows) is now
+  recognised as one manifest.
+- `xrun doctor` authenticated against Kaggle once per Kaggle manifest and
+  asked `kaggle datasets status` again for every shared dataset slug. It
+  now authenticates once per run and queries each slug once; the rows are
+  unchanged.
+
 ---
 
 ## [0.11.7] - 2026-10-15
