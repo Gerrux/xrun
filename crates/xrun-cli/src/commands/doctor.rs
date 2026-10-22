@@ -350,6 +350,9 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     });
 
     // ---- manifests ----
+    // One Kaggle session for the whole run: authentication and per-slug
+    // dataset readiness are each queried once, however many manifests share them.
+    let mut kaggle_session: Option<KaggleSession> = None;
     for m in &manifests {
         if let Some(err) = &m.error {
             checks.push(Check {
@@ -374,7 +377,12 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
         if matches!(manifest.vendor, Vendor::Kaggle)
             && (creds.kaggle.token.is_some() || creds.kaggle.username.is_some() || args.all)
         {
-            kaggle_manifest_checks(manifest, config_dir, &mut checks);
+            let session = kaggle_session.get_or_insert_with(|| {
+                KaggleSession::new(
+                    KaggleAdapter::new().with_credentials(resolve_kaggle_credentials(config_dir)),
+                )
+            });
+            kaggle_manifest_checks(manifest, session, &mut checks);
         }
         requires_checks(manifest, &mut checks);
     }
@@ -415,27 +423,45 @@ pub fn run(args: &DoctorArgs, config_dir: &Path, db_path: Option<&Path>) -> Resu
     Ok(())
 }
 
-fn discover_manifests(args: &DoctorArgs, config: &GlobalConfig) -> Vec<DiscoveredManifest> {
-    let explicit: std::collections::HashSet<PathBuf> = args.manifests.iter().cloned().collect();
-    let mut paths: Vec<PathBuf> = args.manifests.clone();
+/// Identity of a manifest path for de-duplication: `exp/a.yaml` and
+/// `exp\a.yaml` (or `./exp/a.yaml`) name the same file, so compare the
+/// canonical form and fall back to the path as written when the file is
+/// unreadable.
+fn path_key(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
 
-    // Auto-scan exp dir (config override or default ./exp) for *.yaml / *.yml.
-    let exp_dir = config
-        .defaults
-        .exp_dir
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("exp"));
-    if exp_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&exp_dir) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_file() {
-                    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-                    if (ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
-                        && !paths.contains(&p)
-                    {
-                        paths.push(p);
+/// Manifests to check. With `--manifest` that is exactly the named files;
+/// without it, every `*.yaml` / `*.yml` in the exp dir (config
+/// `defaults.exp_dir`, default `./exp`, non-recursive).
+fn discover_manifests(args: &DoctorArgs, config: &GlobalConfig) -> Vec<DiscoveredManifest> {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // (path, explicit)
+    let mut paths: Vec<(PathBuf, bool)> = Vec::new();
+    for p in &args.manifests {
+        if seen.insert(path_key(p)) {
+            paths.push((p.clone(), true));
+        }
+    }
+
+    if args.manifests.is_empty() {
+        let exp_dir = config
+            .defaults
+            .exp_dir
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("exp"));
+        if exp_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&exp_dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_file() {
+                        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        if (ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+                            && seen.insert(path_key(&p))
+                        {
+                            paths.push((p, false));
+                        }
                     }
                 }
             }
@@ -445,30 +471,27 @@ fn discover_manifests(args: &DoctorArgs, config: &GlobalConfig) -> Vec<Discovere
     paths.sort();
     paths
         .into_iter()
-        .map(|path| {
-            let is_explicit = explicit.contains(&path);
-            match std::fs::read_to_string(&path) {
-                Ok(yaml) => match Manifest::from_yaml_str(&yaml) {
-                    Ok(m) => DiscoveredManifest {
-                        path,
-                        explicit: is_explicit,
-                        parsed: Some(m),
-                        error: None,
-                    },
-                    Err(e) => DiscoveredManifest {
-                        path,
-                        explicit: is_explicit,
-                        parsed: None,
-                        error: Some(e.to_string()),
-                    },
+        .map(|(path, is_explicit)| match std::fs::read_to_string(&path) {
+            Ok(yaml) => match Manifest::from_yaml_str(&yaml) {
+                Ok(m) => DiscoveredManifest {
+                    path,
+                    explicit: is_explicit,
+                    parsed: Some(m),
+                    error: None,
                 },
                 Err(e) => DiscoveredManifest {
                     path,
                     explicit: is_explicit,
                     parsed: None,
-                    error: Some(format!("read failed: {e}")),
+                    error: Some(e.to_string()),
                 },
-            }
+            },
+            Err(e) => DiscoveredManifest {
+                path,
+                explicit: is_explicit,
+                parsed: None,
+                error: Some(format!("read failed: {e}")),
+            },
         })
         .collect()
 }
@@ -631,8 +654,53 @@ fn dir_writable(path: &Path) -> bool {
     ok
 }
 
+/// Shared state for the Kaggle checks of one doctor run. Each query goes
+/// through a subprocess with no timeout, so a project with many Kaggle
+/// manifests must not repeat them: authentication happens at most once and
+/// each dataset slug is asked about at most once, whatever the manifest count.
+/// Errors are cached as their rendered text (the rows only ever show text).
+struct KaggleSession {
+    adapter: KaggleAdapter,
+    auth: Option<Result<String, String>>,
+    dataset_ready: std::collections::HashMap<String, Result<bool, String>>,
+}
+
+impl KaggleSession {
+    fn new(adapter: KaggleAdapter) -> Self {
+        Self {
+            adapter,
+            auth: None,
+            dataset_ready: std::collections::HashMap::new(),
+        }
+    }
+
+    fn authenticate(&mut self) -> Result<String, String> {
+        let adapter = &self.adapter;
+        self.auth
+            .get_or_insert_with(|| adapter.cli().authenticate().map_err(|e| e.to_string()))
+            .clone()
+    }
+
+    fn is_dataset_ready(&mut self, slug: &str) -> Result<bool, String> {
+        if let Some(cached) = self.dataset_ready.get(slug) {
+            return cached.clone();
+        }
+        let res = self
+            .adapter
+            .cli()
+            .is_dataset_ready(slug)
+            .map_err(|e| e.to_string());
+        self.dataset_ready.insert(slug.to_string(), res.clone());
+        res
+    }
+}
+
 /// Kaggle-specific checks for manifests with `vendor: kaggle`.
-fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut Vec<Check>) {
+fn kaggle_manifest_checks(
+    manifest: &Manifest,
+    session: &mut KaggleSession,
+    checks: &mut Vec<Check>,
+) {
     let kaggle_spec = match &manifest.kaggle {
         Some(s) => s,
         None => {
@@ -696,11 +764,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
         },
     });
 
-    let creds = resolve_kaggle_credentials(config_dir);
-    let adapter = KaggleAdapter::new().with_credentials(creds);
-    let cli = adapter.cli();
-
-    let creds_ok = match cli.authenticate() {
+    let creds_ok = match session.authenticate() {
         Ok(u) => {
             checks.push(Check {
                 name: "kaggle_credentials",
@@ -732,7 +796,7 @@ fn kaggle_manifest_checks(manifest: &Manifest, config_dir: &Path, checks: &mut V
             all_slugs.push(s.as_str());
         }
         for slug in all_slugs {
-            let (ok, warn_only, detail) = match cli.is_dataset_ready(slug) {
+            let (ok, warn_only, detail) = match session.is_dataset_ready(slug) {
                 Ok(true) => (true, false, format!("dataset '{slug}' is ready")),
                 Ok(false) => (
                     false,
@@ -871,4 +935,111 @@ fn binary_available(name: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use xrun_kaggle::{KaggleError, KaggleProcess};
+
+    #[derive(Default)]
+    struct Counts {
+        auth: AtomicUsize,
+        status: AtomicUsize,
+    }
+
+    /// Counts the subprocess calls doctor makes; every dataset is "ready".
+    struct CountingKaggle(Arc<Counts>);
+
+    impl KaggleProcess for CountingKaggle {
+        fn push(&self, _: &Path) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn status(&self, _: &str) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn output(&self, _: &str, _: &Path) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn cancel(&self, _: &str) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn list_mine(&self) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn config_view(&self) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_status(&self, _: &str) -> Result<String, KaggleError> {
+            self.0.status.fetch_add(1, Ordering::SeqCst);
+            Ok("ready".to_string())
+        }
+        fn datasets_create(&self, _: &Path) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_version(&self, _: &Path, _: &str) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+            unreachable!()
+        }
+        fn authenticate_via_python(&self) -> Result<String, KaggleError> {
+            self.0.auth.fetch_add(1, Ordering::SeqCst);
+            Ok("tester".to_string())
+        }
+    }
+
+    fn kaggle_manifest(name: &str, datasets: &[&str]) -> Manifest {
+        let list: Vec<String> = datasets.iter().map(|d| format!("\"{d}\"")).collect();
+        Manifest::from_yaml_str(&format!(
+            "name: {name}\nvendor: kaggle\nkaggle:\n  kernel_slug: tester/{name}\n  datasets: [{}]\nrun:\n  cmd: echo hi\n",
+            list.join(", ")
+        ))
+        .expect("test manifest parses")
+    }
+
+    #[test]
+    fn kaggle_auth_and_dataset_status_are_queried_once_across_manifests() {
+        let counts = Arc::new(Counts::default());
+        let mut session = KaggleSession::new(KaggleAdapter::with_process(Box::new(
+            CountingKaggle(counts.clone()),
+        )));
+        let manifests = [
+            kaggle_manifest("a", &["tester/shared", "tester/only-a"]),
+            kaggle_manifest("b", &["tester/shared"]),
+            kaggle_manifest("c", &["tester/shared", "tester/only-a"]),
+        ];
+        let mut checks: Vec<Check> = Vec::new();
+        for m in &manifests {
+            kaggle_manifest_checks(m, &mut session, &mut checks);
+        }
+
+        assert_eq!(counts.auth.load(Ordering::SeqCst), 1, "one authenticate");
+        assert_eq!(
+            counts.status.load(Ordering::SeqCst),
+            2,
+            "one datasets status per unique slug"
+        );
+        // Rows are unchanged: every manifest still reports credentials and
+        // each of its datasets.
+        let named = |n: &str| checks.iter().filter(|c| c.name == n).count();
+        assert_eq!(named("kaggle_credentials"), 3);
+        assert_eq!(named("kaggle_dataset"), 5);
+        assert!(checks
+            .iter()
+            .filter(|c| c.name == "kaggle_credentials" || c.name == "kaggle_dataset")
+            .all(|c| c.ok));
+    }
+
+    #[test]
+    fn path_key_equates_spellings_of_the_same_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("m.yaml");
+        std::fs::write(&file, "name: m\n").unwrap();
+        let dotted = tmp.path().join(".").join("m.yaml");
+        assert_eq!(path_key(&file), path_key(&dotted));
+        assert_ne!(path_key(&file), path_key(&tmp.path().join("other.yaml")));
+    }
 }

@@ -9,6 +9,18 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `xrun show` prints each metric key's last value and step
+  (`pooled_f1: 1 points, last=0.6312 (step 120)`); `--json` gains
+  `last_step` and `last` in `metric_keys`. A headline number logged once at
+  the end of a cross-validation run is now visible without `xrun metrics`.
+- The agent skill (`xrun install skill`) has an "Instrument the training
+  script" section: `metrics({...}, step=k)` per epoch or per fold, the
+  final pooled score at the last step, `done()` last, and the multi-command
+  `run.cmd` trap. Agents had copied the hand-written `events.jsonl` smoke
+  check into training code, so `xrun metrics` stayed empty.
+
 ### Fixed
 
 - `xrun pull` on a Kaggle run exited 1 with `kaggle CLI failed (exit 1)` and
@@ -24,23 +36,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
   directory still fails, so 401/404/429 are unchanged), and `pull` ingests
   `run/events.jsonl` / `run/metrics.jsonl` and copies the stdout log even
   when the download call reports a failure.
-### Added
-
-- `xrun show` prints each metric key's last value and step
-  (`pooled_f1: 1 points, last=0.6312 (step 120)`); `--json` gains
-  `last_step` and `last` in `metric_keys`. A headline number logged once at
-  the end of a cross-validation run is now visible without `xrun metrics`.
-- The agent skill (`xrun install skill`) has an "Instrument the training
-  script" section: `metrics({...}, step=k)` per epoch or per fold, the
-  final pooled score at the last step, `done()` last, and the multi-command
-  `run.cmd` trap. Agents had copied the hand-written `events.jsonl` smoke
-  check into training code, so `xrun metrics` stayed empty.
-
-### Fixed
-
 - `xrun_hook.metric()` / `metrics()` no longer raise a TypeError mid-run on
   numpy `float32` values or 0-d tensors: values go through `float()` and
   the step through `int()`.
+- `xrun doctor --manifest <path>` checked every manifest in `exp/` as well
+  as the named one, so in a project with many manifests it ran the full
+  per-manifest checks (including Kaggle network calls) for all of them and
+  could hang for minutes. With `--manifest` only the named files are
+  checked and the vendors of other manifests no longer add environment
+  checks; without it `exp/` is still scanned. The same file spelled two
+  ways (`exp/a.yaml`, `./exp/a.yaml`, or backslashes on Windows) is now
+  recognised as one manifest.
+- `xrun doctor` authenticated against Kaggle once per Kaggle manifest and
+  asked `kaggle datasets status` again for every shared dataset slug. It
+  now authenticates once per run and queries each slug once; the rows are
+  unchanged.
 
 ---
 
