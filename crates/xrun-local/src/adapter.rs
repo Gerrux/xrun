@@ -36,6 +36,11 @@ pub struct LocalAdapter {
     /// launch CWD when this is unset (e.g. on `xrun pull` after a foreground
     /// run already exited).
     workdir: RefCell<Option<PathBuf>>,
+    /// Training PID whose start time already passed the reuse check. The
+    /// poller probes liveness every tick, and on Windows the start-time
+    /// lookup is a PowerShell launch; a start time never changes, so one
+    /// check per PID is enough.
+    verified_pid: RefCell<Option<u32>>,
 }
 
 impl LocalAdapter {
@@ -49,6 +54,7 @@ impl LocalAdapter {
             runs_dir: PathBuf::new(),
             local_spec: RefCell::new(None),
             workdir: RefCell::new(None),
+            verified_pid: RefCell::new(None),
         }
     }
 
@@ -59,6 +65,7 @@ impl LocalAdapter {
             runs_dir,
             local_spec: RefCell::new(None),
             workdir: RefCell::new(None),
+            verified_pid: RefCell::new(None),
         }
     }
 
@@ -473,17 +480,24 @@ impl LocalAdapter {
         let pid = std::fs::read_to_string(&pid_file)
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())?;
+        if *self.verified_pid.borrow() == Some(pid) {
+            return Some(process_alive(pid));
+        }
         let recorded_at = std::fs::metadata(&pid_file)
             .and_then(|m| m.modified())
             .ok()
             .map(chrono::DateTime::<Utc>::from);
-        Some(match recorded_at {
+        let alive = match recorded_at {
             Some(t) => process_alive_since(
                 pid,
                 t + chrono::Duration::seconds(crate::process::START_SLACK_SECS),
             ),
             None => process_alive(pid),
-        })
+        };
+        if alive {
+            *self.verified_pid.borrow_mut() = Some(pid);
+        }
+        Some(alive)
     }
 
     fn read_pid(&self, run_id: &RunId) -> Option<u32> {
