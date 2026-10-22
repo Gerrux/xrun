@@ -20,7 +20,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use xrun_core::{
-    store::{Run, RunStatus},
+    store::{NewEvent, Run, RunId, RunStatus},
     vendor::InstanceHandle,
     Store, VendorAdapter,
 };
@@ -231,6 +231,19 @@ pub(crate) fn resume_one(
     // Step 2b: SSH-style vendors (vast, ssh, local) — check the live list.
     match vendor.vendor_instances() {
         Ok(remote) => {
+            // A local row stays listed after its training process is gone
+            // (host restart, crash), so presence alone proves nothing there.
+            if is_dead_local(&run.vendor, &remote, &instance_id) {
+                let status = reconcile_dead_local(db_path, run, &instance_id, &run_dir, dry_run)?;
+                return Ok(Report {
+                    run_id: run_id.to_string(),
+                    vendor: run.vendor.clone(),
+                    outcome: Outcome::Reconciled,
+                    poller_pid: None,
+                    final_status: Some(status.as_str().to_string()),
+                    note: Some(LOCAL_GONE_MSG.to_string()),
+                });
+            }
             let alive = remote.iter().any(|r| r.id == instance_id);
             if alive {
                 respawn(run, db_path, runs_dir, config_dir, dry_run)
@@ -259,6 +272,79 @@ pub(crate) fn resume_one(
             note: Some(format!("vendor probe failed: {e}")),
         }),
     }
+}
+
+/// Event message recorded when a local run's training process vanished.
+pub(crate) const LOCAL_GONE_MSG: &str =
+    "training process gone (host restart or crash) without done:ok";
+
+/// True when `instance_id` is a `vendor: local` row whose training process is
+/// confirmed gone (`vendor_instances` status `exited`; `unknown` — no
+/// `run.pid` — keeps the old presence-only behaviour).
+pub(crate) fn is_dead_local(
+    vendor: &str,
+    remote: &[xrun_core::vendor::VendorRemoteInstance],
+    instance_id: &str,
+) -> bool {
+    vendor == "local"
+        && remote
+            .iter()
+            .any(|r| r.id == instance_id && r.status.as_deref() == Some("exited"))
+}
+
+/// Did the run record a successful `done` event, either in the store or in
+/// the run dir's `events.jsonl` (the poller may have died before ingesting)?
+fn local_run_finished_ok(store: &Store, run_id: &RunId, run_dir: &Path) -> bool {
+    if let Ok(events) = store.list_events(run_id) {
+        if events.iter().any(|e| e.stage == "done" && e.status == "ok") {
+            return true;
+        }
+    }
+    let Ok(text) = std::fs::read_to_string(run_dir.join("events.jsonl")) else {
+        return false;
+    };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .any(|v| v["stage"] == "done" && v["status"] == "ok")
+}
+
+/// Close a `vendor: local` run whose training process is gone: `done` when a
+/// `done:ok` event exists, `failed` otherwise (with an explaining event). The
+/// instance row is marked destroyed WITHOUT calling `destroy` — that would
+/// signal the PID from `run.pid`, which may be recycled by now. Returns the
+/// status written (or that would be written when `dry_run`).
+pub(crate) fn reconcile_dead_local(
+    db_path: &Path,
+    run: &Run,
+    instance_id: &str,
+    run_dir: &Path,
+    dry_run: bool,
+) -> Result<RunStatus> {
+    let mut store = Store::open(db_path)?;
+    let status = if local_run_finished_ok(&store, &run.id, run_dir) {
+        RunStatus::Done
+    } else {
+        RunStatus::Failed
+    };
+    if dry_run {
+        return Ok(status);
+    }
+    if status == RunStatus::Failed {
+        store.append_event(
+            &run.id,
+            NewEvent {
+                ts: chrono::Utc::now(),
+                stage: "stage_failed".to_string(),
+                status: "fail".to_string(),
+                msg: Some(LOCAL_GONE_MSG.to_string()),
+                payload_json: None,
+            },
+        )?;
+    }
+    store.update_run_status(&run.id, status.clone())?;
+    let _ = store.update_run_poller_pid(&run.id, None);
+    let _ = store.update_instance_destroyed(instance_id, chrono::Utc::now());
+    Ok(status)
 }
 
 fn respawn(

@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
+
+use chrono::{DateTime, Utc};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -85,6 +87,175 @@ pub fn process_alive(pid: u32) -> bool {
             }
             _ => false,
         }
+    }
+}
+
+/// Clock slack applied by [`process_alive_since`] callers: the training PID is
+/// recorded right after `spawn_main`, so a genuine training process started
+/// at or before that moment; the slack absorbs coarse start-time clocks
+/// (`/proc/stat` `btime` has 1 s granularity, Windows `StartTime` is rounded)
+/// without letting a PID recycled long after launch pass as the original.
+pub const START_SLACK_SECS: i64 = 5;
+
+/// Wall-clock start time of the process `pid`, or `None` when it cannot be
+/// determined (process gone, access denied, unsupported platform).
+///
+/// - Linux: `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since boot)
+///   plus `btime` from `/proc/stat`. `CLK_TCK` is assumed to be 100 — the
+///   value on every mainstream Linux build — since reading it needs libc.
+/// - Windows: one `powershell` call (`Get-Process … .StartTime`).
+/// - macOS: `ps -o lstart=`, which prints local time.
+pub fn process_started_at(pid: u32) -> Option<DateTime<Utc>> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let btime = std::fs::read_to_string("/proc/stat").ok()?;
+        linux_started_at(&stat, &btime)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = format!(
+            "(Get-Process -Id {pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')"
+        );
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        cmd.stdin(Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let out = cmd.output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        DateTime::parse_from_rfc3339(text.trim())
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use chrono::{Local, NaiveDateTime, TimeZone};
+        let out = Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        // "Thu Oct 22 10:00:00 2026"; the day is space-padded, so squeeze
+        // whitespace before parsing.
+        let squeezed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let naive = NaiveDateTime::parse_from_str(&squeezed, "%a %b %e %H:%M:%S %Y").ok()?;
+        Local
+            .from_local_datetime(&naive)
+            .single()
+            .map(|t| t.with_timezone(&Utc))
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Opaque identity of the process `pid` that does not move with the wall
+/// clock, or `None` when it cannot be read. Two reads for the same process
+/// compare equal; a different process holding a recycled PID gives a
+/// different token.
+///
+/// A start time derived from the clock is not enough: on Linux it is
+/// `btime + ticks`, and `btime` shifts with every realtime step (WSL2 after
+/// host sleep, an NTP step), so a live process could look "started after
+/// run.pid was written". The token is the raw value the kernel stored at
+/// creation instead.
+///
+/// - Linux: `starttime` from `/proc/<pid>/stat` (clock ticks since boot).
+/// - Windows: `StartTime` as a UTC FILETIME (one `powershell` call).
+/// - macOS: `ps -o lstart=` verbatim.
+pub fn process_start_token(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        linux_start_ticks(&stat).map(|t| t.to_string())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = format!("(Get-Process -Id {pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()");
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        cmd.stdin(Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let out = cmd.output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        text.parse::<u64>().ok().map(|t| t.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let squeezed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!squeezed.is_empty()).then_some(squeezed)
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// `starttime` (field 22) of a `/proc/<pid>/stat` line.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_start_ticks(stat: &str) -> Option<i64> {
+    // `comm` (field 2) is parenthesised and may itself contain spaces and
+    // parentheses, so anchor on the last ')'. After it, fields start at #3
+    // (state), making `starttime` (#22) the 20th token.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Pure part of the Linux start-time lookup, split out so it is testable on
+/// any platform. `stat` is `/proc/<pid>/stat`, `proc_stat` is `/proc/stat`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_started_at(stat: &str, proc_stat: &str) -> Option<DateTime<Utc>> {
+    const CLK_TCK: i64 = 100;
+    let ticks = linux_start_ticks(stat)?;
+    let btime: i64 = proc_stat
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    let secs = btime + ticks / CLK_TCK;
+    let nanos = ((ticks % CLK_TCK) * (1_000_000_000 / CLK_TCK)) as u32;
+    DateTime::from_timestamp(secs, nanos)
+}
+
+/// Liveness probe that survives PID reuse: `pid` counts as alive only if the
+/// process exists AND it was not started after `not_after`.
+///
+/// After a host restart the PID recorded in `run.pid` may belong to an
+/// unrelated process; the real training process would have started before
+/// `not_after` (the moment the PID was recorded). When the start time cannot
+/// be read the check degrades to plain [`process_alive`].
+pub fn process_alive_since(pid: u32, not_after: DateTime<Utc>) -> bool {
+    if !process_alive(pid) {
+        return false;
+    }
+    match process_started_at(pid) {
+        Some(started) => started <= not_after,
+        None => true,
     }
 }
 
@@ -260,6 +431,57 @@ mod tests {
     use crate::shell::resolve_shell;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn linux_started_at_parses_stat_with_tricky_comm() {
+        // comm contains spaces and a ')'; starttime = 123456 ticks = 1234.56 s.
+        let stat = "42 (we ird) name) S 1 42 42 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 123456 1000 10 18446744073709551615";
+        let proc_stat = "cpu  1 2 3\nbtime 1700000000\nprocesses 5\n";
+        let t = linux_started_at(stat, proc_stat).expect("parsed");
+        assert_eq!(t.timestamp(), 1_700_000_000 + 1234);
+        assert_eq!(t.timestamp_subsec_millis(), 560);
+        assert!(linux_started_at("garbage", proc_stat).is_none());
+        assert!(linux_started_at(stat, "cpu 1\n").is_none());
+    }
+
+    #[test]
+    fn current_process_start_time_is_known_and_in_the_past() {
+        let started = process_started_at(std::process::id());
+        // Platforms where the lookup is unsupported return None; everywhere
+        // else it must be a plausible instant.
+        if let Some(t) = started {
+            assert!(t <= Utc::now() + chrono::Duration::seconds(START_SLACK_SECS));
+            assert!(t > Utc::now() - chrono::Duration::days(365));
+        } else if cfg!(any(target_os = "linux", windows)) {
+            panic!("start time must be readable on linux/windows");
+        }
+    }
+
+    #[test]
+    fn alive_since_rejects_a_process_started_after_the_cutoff() {
+        let pid = std::process::id();
+        let now = Utc::now();
+        // Cutoff in the future: the live test process started before it.
+        assert!(process_alive_since(pid, now + chrono::Duration::hours(1)));
+        // Cutoff far in the past (a PID recorded before a reboot): the
+        // current process "started after it", i.e. the PID was recycled.
+        // Only decidable where the start time is readable.
+        if process_started_at(pid).is_some() {
+            assert!(!process_alive_since(
+                pid,
+                now - chrono::Duration::days(3650)
+            ));
+        }
+    }
+
+    #[test]
+    fn alive_since_false_for_dead_pid() {
+        // u32::MAX is never a valid PID on any supported platform.
+        assert!(!process_alive_since(
+            u32::MAX - 1,
+            Utc::now() + chrono::Duration::hours(1)
+        ));
+    }
 
     #[test]
     fn run_setup_succeeds_on_true() {

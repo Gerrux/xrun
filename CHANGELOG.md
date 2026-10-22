@@ -21,6 +21,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
   `run.cmd` trap. Agents had copied the hand-written `events.jsonl` smoke
   check into training code, so `xrun metrics` stayed empty.
 
+### Changed
+
+- A local `run.cmd` that detaches the training from the shell xrun started
+  (`nohup … &`, `Start-Process`, `cmd /c start`) now ends `failed` a few
+  seconds after launch instead of staying `running` untracked: xrun watches
+  the process it spawned.
+
 ### Fixed
 
 - `xrun pull` on a Kaggle run exited 1 with `kaggle CLI failed (exit 1)` and
@@ -51,6 +58,24 @@ Versions follow [Semantic Versioning](https://semver.org/).
   asked `kaggle datasets status` again for every shared dataset slug. It
   now authenticates once per run and queries each slug once; the rows are
   unchanged.
+- `vendor: local` runs left `running` after a host restart or a crashed
+  training script were never healed: `xrun fix-status` and `xrun resume`
+  only checked that the instance row existed, so `resume` respawned a
+  useless poller and only `xrun stop` closed the run. Both now read the
+  training process from `run.pid`; when it is gone the run becomes `done`
+  if a `done:ok` event was recorded and `failed` (with a `stage_failed`
+  event) otherwise, and the instance is marked destroyed without signalling
+  the stored PID. `resume` reports such runs as `reconciled`.
+- The local adapter now reports training-process liveness to the poller, so
+  a local script that exits without writing `done:ok` fails the run after two
+  ticks instead of leaving it `running` forever (as vast/ssh already did).
+- A recycled PID no longer passes for a live local run: at spawn xrun saves
+  the process's start identity next to `run.pid` (`/proc` start ticks,
+  `Get-Process` StartTime on Windows, `ps` on macOS) and later compares it,
+  so after a reboot an unrelated process that inherited the PID counts as
+  dead, and a wall-clock step (WSL2 after host sleep) does not make a live
+  one look recycled. Runs launched before this fall back to comparing the
+  start time with `run.pid`'s mtime.
 
 ---
 
