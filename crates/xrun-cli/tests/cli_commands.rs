@@ -117,6 +117,43 @@ fn seed_run(tmp: &TempDir, series: &[(&str, &[(i64, f64)])]) -> RunId {
     id
 }
 
+/// A cross-validation run logs its headline score once, at the last step;
+/// `show` must surface that value, not just the key name and a count.
+#[test]
+fn show_reports_last_value_per_metric_key() {
+    let tmp = TempDir::new().unwrap();
+    let id = seed_run(
+        &tmp,
+        &[
+            ("f1/cellA/rgb", &[(0, 0.61), (1, 0.64)]),
+            ("pooled_f1", &[(2, 0.6312)]),
+        ],
+    );
+    xrun(&tmp)
+        .args(["show", &id.to_string()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "pooled_f1: 1 points, last=0.6312 (step 2)",
+        ));
+
+    let out = xrun(&tmp)
+        .args(["show", &id.to_string(), "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let keys = v["metric_keys"].as_array().unwrap();
+    assert_eq!(keys[0]["key"], "f1/cellA/rgb");
+    assert_eq!(keys[0]["count"], 2);
+    assert_eq!(keys[0]["last_step"], 1);
+    assert_eq!(keys[0]["last"], 0.64);
+    assert_eq!(keys[1]["key"], "pooled_f1");
+    assert_eq!(keys[1]["last"], 0.6312);
+}
+
 #[test]
 fn metrics_ascii_renders_chart_for_run_with_points() {
     let tmp = TempDir::new().unwrap();
