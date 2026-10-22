@@ -142,7 +142,7 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
 
     let events = store.list_events(&id).context("failed to list events")?;
     let metric_keys = store
-        .list_metric_keys(&id)
+        .list_metric_summaries(&id)
         .context("failed to list metric keys")?;
 
     // Pull ssh_host/port from the instance handle persisted at provision time.
@@ -185,7 +185,12 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         let mut out = serde_json::json!({
             "run": run,
             "events": events,
-            "metric_keys": metric_keys.iter().map(|(k, c)| serde_json::json!({"key": k, "count": c})).collect::<Vec<_>>(),
+            "metric_keys": metric_keys.iter().map(|m| serde_json::json!({
+                "key": m.key,
+                "count": m.count,
+                "last_step": m.last_step,
+                "last": m.last_value,
+            })).collect::<Vec<_>>(),
             "ssh": ssh_json,
             "dataset": dataset_json,
         });
@@ -203,7 +208,10 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
             }
         }
         println!("  vendor:        {}", run.vendor);
-        println!("  manifest_hash: {}", &run.manifest_hash[..16]);
+        println!(
+            "  manifest_hash: {}",
+            run.manifest_hash.get(..16).unwrap_or(&run.manifest_hash)
+        );
         println!("  manifest_path: {}", run.manifest_path);
         println!(
             "  created_at:    {}",
@@ -261,8 +269,11 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         if metric_keys.is_empty() {
             println!("  (none)");
         } else {
-            for (k, c) in &metric_keys {
-                println!("  {k}: {c} points");
+            for m in &metric_keys {
+                println!(
+                    "  {}: {} points, last={:.4} (step {})",
+                    m.key, m.count, m.last_value, m.last_step
+                );
             }
         }
     }

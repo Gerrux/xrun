@@ -103,6 +103,37 @@ def test_metrics_batch_empty_dict_is_noop(isolated_run_dir):
     assert _read_metrics(isolated_run_dir) == []
 
 
+class _Scalar:
+    """Stand-in for numpy float32 / 0-d torch tensor: not a float subclass,
+    so json.dumps rejects it, but float()/int() work."""
+
+    def __init__(self, v):
+        self._v = v
+
+    def __float__(self):
+        return float(self._v)
+
+    def __int__(self):
+        return int(self._v)
+
+
+def test_metrics_coerce_array_scalars(isolated_run_dir):
+    xrun_hook.metrics({"f1/cellA/rgb": _Scalar(0.64)}, step=_Scalar(3))
+    xrun_hook.metric("loss", _Scalar(0.5), step=_Scalar(4))
+    rows = [json.loads(line) for line in _read_metrics(isolated_run_dir)]
+    assert rows[0]["key"] == "f1/cellA/rgb"
+    assert rows[0]["value"] == pytest.approx(0.64)
+    assert rows[0]["step"] == 3
+    assert rows[1]["value"] == pytest.approx(0.5)
+    assert rows[1]["step"] == 4
+
+
+def test_metrics_non_numeric_writes_nothing(isolated_run_dir):
+    with pytest.raises((TypeError, ValueError)):
+        xrun_hook.metrics({"ok": 1.0, "bad": "n/a"}, step=0)
+    assert _read_metrics(isolated_run_dir) == []
+
+
 # ---------------------------------------------------------------------------
 # epoch()
 # ---------------------------------------------------------------------------

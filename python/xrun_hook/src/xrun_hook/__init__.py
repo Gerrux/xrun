@@ -83,7 +83,7 @@ def _write_event(
 
 
 def _write_metric(key: str, value: float, step: int) -> None:
-    record = {"ts": _now_iso(), "step": step, "key": key, "value": value}
+    record = {"ts": _now_iso(), "step": int(step), "key": key, "value": float(value)}
     _get_metrics().append(record)
 
 
@@ -132,12 +132,18 @@ def metrics(values: "dict[str, float]", step: int) -> None:
     Each key/value pair becomes one record in metrics.jsonl, all sharing the
     same step. Equivalent to calling :func:`metric` in a loop, but keeps the
     call site terse and groups the writes under a single timestamp.
+
+    Values go through ``float()`` and the step through ``int()``: numpy
+    ``float32`` / 0-d tensors are not JSON-serializable, and a TypeError in
+    the middle of a long run would kill training over a log line.
     """
     if not values:
         return
     ts = _now_iso()
+    step = int(step)
+    rows = [(key, float(value)) for key, value in values.items()]
     writer = _get_metrics()
-    for key, value in values.items():
+    for key, value in rows:
         writer.append({"ts": ts, "step": step, "key": key, "value": value})
 
 
