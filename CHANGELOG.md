@@ -22,10 +22,20 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - The local adapter now reports training-process liveness to the poller, so
   a local script that exits without writing `done:ok` fails the run after two
   ticks instead of leaving it `running` forever (as vast/ssh already did).
-- A recycled PID no longer passes for a live local run: the process start time
-  (`/proc`, PowerShell `Get-Process` on Windows, `ps` on macOS) is compared
-  with the moment `run.pid` was written, so after a reboot an unrelated
-  process that inherited the PID counts as dead.
+- A recycled PID no longer passes for a live local run: at spawn xrun saves
+  the process's start identity next to `run.pid` (`/proc` start ticks,
+  `Get-Process` StartTime on Windows, `ps` on macOS) and later compares it,
+  so after a reboot an unrelated process that inherited the PID counts as
+  dead, and a wall-clock step (WSL2 after host sleep) does not make a live
+  one look recycled. Runs launched before this fall back to comparing the
+  start time with `run.pid`'s mtime.
+
+### Changed
+
+- A local `run.cmd` that detaches the training from the shell xrun started
+  (`nohup … &`, `Start-Process`, `cmd /c start`) now ends `failed` a few
+  seconds after launch instead of staying `running` untracked: xrun watches
+  the process it spawned.
 
 ---
 

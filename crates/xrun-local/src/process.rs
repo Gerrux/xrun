@@ -159,16 +159,78 @@ pub fn process_started_at(pid: u32) -> Option<DateTime<Utc>> {
     }
 }
 
+/// Opaque identity of the process `pid` that does not move with the wall
+/// clock, or `None` when it cannot be read. Two reads for the same process
+/// compare equal; a different process holding a recycled PID gives a
+/// different token.
+///
+/// A start time derived from the clock is not enough: on Linux it is
+/// `btime + ticks`, and `btime` shifts with every realtime step (WSL2 after
+/// host sleep, an NTP step), so a live process could look "started after
+/// run.pid was written". The token is the raw value the kernel stored at
+/// creation instead.
+///
+/// - Linux: `starttime` from `/proc/<pid>/stat` (clock ticks since boot).
+/// - Windows: `StartTime` as a UTC FILETIME (one `powershell` call).
+/// - macOS: `ps -o lstart=` verbatim.
+pub fn process_start_token(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        linux_start_ticks(&stat).map(|t| t.to_string())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = format!("(Get-Process -Id {pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()");
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        cmd.stdin(Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let out = cmd.output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        text.parse::<u64>().ok().map(|t| t.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let squeezed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!squeezed.is_empty()).then_some(squeezed)
+    }
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// `starttime` (field 22) of a `/proc/<pid>/stat` line.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_start_ticks(stat: &str) -> Option<i64> {
+    // `comm` (field 2) is parenthesised and may itself contain spaces and
+    // parentheses, so anchor on the last ')'. After it, fields start at #3
+    // (state), making `starttime` (#22) the 20th token.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
 /// Pure part of the Linux start-time lookup, split out so it is testable on
 /// any platform. `stat` is `/proc/<pid>/stat`, `proc_stat` is `/proc/stat`.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn linux_started_at(stat: &str, proc_stat: &str) -> Option<DateTime<Utc>> {
     const CLK_TCK: i64 = 100;
-    // `comm` (field 2) is parenthesised and may itself contain spaces and
-    // parentheses, so anchor on the last ')'. After it, fields start at #3
-    // (state), making `starttime` (#22) the 20th token.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    let ticks: i64 = rest.split_whitespace().nth(19)?.parse().ok()?;
+    let ticks = linux_start_ticks(stat)?;
     let btime: i64 = proc_stat
         .lines()
         .find_map(|l| l.strip_prefix("btime "))?

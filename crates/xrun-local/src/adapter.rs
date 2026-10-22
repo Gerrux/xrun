@@ -15,9 +15,12 @@ use xrun_core::{
 };
 
 use crate::process::{
-    kill_process, probe_gpu_summary, process_alive, process_alive_since, run_setup_blocking,
-    spawn_main,
+    kill_process, probe_gpu_summary, process_alive, process_alive_since, process_start_token,
+    run_setup_blocking, spawn_main,
 };
+
+/// Next to `run.pid`: the spawned process's [`process_start_token`].
+const START_TOKEN_FILE: &str = "run.pid.start";
 use crate::shell::resolve_shell;
 use crate::tail::tail_file;
 use crate::transfer::{classify_kind, copy_path, glob_in_workdir, pull_matches};
@@ -358,6 +361,11 @@ impl VendorAdapter for LocalAdapter {
         if let Err(e) = std::fs::write(&pid_file, pid.to_string()) {
             tracing::warn!("could not persist PID to {pid_file:?}: {e}");
         }
+        // Identity of the spawned process for the PID-reuse check in
+        // `training_alive`; without it that check falls back to run.pid's mtime.
+        if let Some(token) = process_start_token(pid) {
+            let _ = std::fs::write(run_dir.join(START_TOKEN_FILE), token);
+        }
         let _ = h; // handle is unused once the PID file is written
 
         self.append_event(
@@ -443,6 +451,7 @@ impl VendorAdapter for LocalAdapter {
             // row as "running".
             if let Ok(rid) = self.run_id() {
                 let _ = std::fs::remove_file(self.run_dir(&rid).join("run.pid"));
+                let _ = std::fs::remove_file(self.run_dir(&rid).join(START_TOKEN_FILE));
             }
         }
 
@@ -470,7 +479,11 @@ impl LocalAdapter {
     /// Is the training process recorded in `<run_dir>/run.pid` still the
     /// original one? `None` when there is no `run.pid`.
     ///
-    /// The cutoff for PID reuse is the mtime of `run.pid`: `execute()` writes
+    /// Preferred: compare the process's start token with the one `execute()`
+    /// saved next to run.pid — exact, and immune to wall-clock steps.
+    ///
+    /// Fallback (runs launched before the token file existed, or when the
+    /// token was unreadable at spawn): the mtime of `run.pid`. `execute()` writes
     /// it right after `spawn_main`, so the genuine process started at or
     /// before that instant. After a reboot the file is older than the host's
     /// boot, while any process now holding the same PID started later. This
@@ -488,6 +501,18 @@ impl LocalAdapter {
         );
         if verified {
             return Some(process_alive(pid));
+        }
+        let saved_token = std::fs::read_to_string(self.run_dir(run_id).join(START_TOKEN_FILE))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(saved) = saved_token {
+            let alive =
+                process_alive(pid) && process_start_token(pid).is_none_or(|now| now == saved);
+            if alive {
+                *self.verified_pid.borrow_mut() = Some((run_id.clone(), pid));
+            }
+            return Some(alive);
         }
         let recorded_at = std::fs::metadata(&pid_file)
             .and_then(|m| m.modified())
@@ -978,6 +1003,51 @@ run:
         assert_eq!(adapter.training_alive(&live), Some(true));
         assert_eq!(adapter.training_alive(&stale), Some(false));
         assert_eq!(adapter.training_alive(&live), Some(true));
+    }
+
+    /// The saved start token decides, not run.pid's mtime: an mtime that
+    /// looks ancient (wall clock stepped forward since spawn) must not kill a
+    /// live run, and a fresh mtime must not save a different process.
+    #[test]
+    fn start_token_overrides_pid_file_mtime() {
+        let Some(token) = crate::process::process_start_token(std::process::id()) else {
+            return; // token unreadable on this host
+        };
+        let (_td, adapter, _handle, pid_file) = provisioned();
+        let run_dir = pid_file.parent().unwrap().to_path_buf();
+        let rid: RunId = run_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .parse()
+            .unwrap();
+        std::fs::write(&pid_file, std::process::id().to_string()).unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&pid_file)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        std::fs::write(run_dir.join(START_TOKEN_FILE), &token).unwrap();
+        assert_eq!(adapter.training_alive(&rid), Some(true));
+
+        let fresh = LocalAdapter::with_store_and_runs_dir(
+            fresh_store().1,
+            run_dir.parent().unwrap().to_path_buf(),
+        );
+        std::fs::write(&pid_file, std::process::id().to_string()).unwrap();
+        std::fs::write(run_dir.join(START_TOKEN_FILE), "not-this-process").unwrap();
+        assert_eq!(fresh.training_alive(&rid), Some(false));
+    }
+
+    #[test]
+    fn process_start_token_is_stable_for_a_live_process() {
+        let pid = std::process::id();
+        if let Some(a) = crate::process::process_start_token(pid) {
+            assert_eq!(crate::process::process_start_token(pid), Some(a));
+        }
+        assert_eq!(crate::process::process_start_token(u32::MAX - 1), None);
     }
 
     fn status_of(adapter: &LocalAdapter, handle: &InstanceHandle) -> Option<String> {
