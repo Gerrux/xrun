@@ -162,16 +162,21 @@ read one with `xrun metrics <id> --key pooled_f1 --json`.
   (in `run.setup` on remote vendors). The hook writes to `$XRUN_RUN_DIR`,
   which xrun sets for every vendor.
 - Kaggle without `mlflow.url`: metrics reach `xrun metrics` only after the
-  kernel ends, when xrun collects its output (`xrun pull <id>`). With
-  MLflow they stream while the kernel runs.
+  kernel ends, when xrun downloads its output — automatically on `done` if
+  `artifacts.patterns` is set, otherwise on `xrun pull <id>`. With MLflow
+  they stream while the kernel runs.
 - Terminal events end the whole run: `done()` → `done`; any `status: fail`
   → `failed` (an exception leaving `with stage(...)`, `fail(msg)`, or an
   uncaught exception — `import xrun_hook` installs an excepthook). Then the
   instance is stopped per `policy`. Call `done()` once, last, after the
   final `metrics(...)`.
 - Outside Kaggle a script that exits without `done()` ends `failed`
-  ("training PID gone but no done:ok"); on `local` it can even stay
-  `running`. On Kaggle the kernel's completion closes the run as well.
+  ("training PID gone but no done:ok"); older xrun builds left such a
+  `local` run `running` instead. On Kaggle the kernel's completion closes
+  the run as well.
+- Don't detach the training from `run.cmd` (`nohup … &`, `Start-Process`,
+  `cmd /c start`): xrun watches the process it started, and a detached
+  child is either untracked or ends the run as `failed`.
 - Multi-command `run.cmd` (`python prep.py && python train.py`): the first
   command that writes a terminal event closes the run, and the rest is
   ignored or killed. Only the last script calls `done()`; helper scripts

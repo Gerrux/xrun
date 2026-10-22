@@ -271,8 +271,11 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         } else {
             for m in &metric_keys {
                 println!(
-                    "  {}: {} points, last={:.4} (step {})",
-                    m.key, m.count, m.last_value, m.last_step
+                    "  {}: {} points, last={} (step {})",
+                    m.key,
+                    m.count,
+                    fmt_metric_value(m.last_value),
+                    m.last_step
                 );
             }
         }
@@ -281,10 +284,28 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
     Ok(())
 }
 
+/// Four decimals for scores and losses; scientific notation for small
+/// magnitudes (learning rates), which `{:.4}` would print as `0.0000`.
+fn fmt_metric_value(v: f64) -> String {
+    if v != 0.0 && v.abs() < 1e-3 {
+        format!("{v:.3e}")
+    } else {
+        format!("{v:.4}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn metric_value_keeps_small_magnitudes_readable() {
+        assert_eq!(fmt_metric_value(0.6312), "0.6312");
+        assert_eq!(fmt_metric_value(0.0), "0.0000");
+        assert_eq!(fmt_metric_value(5e-4), "5.000e-4");
+        assert_eq!(fmt_metric_value(-2.5), "-2.5000");
+    }
 
     fn at() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 14, 9, 30, 0).unwrap()
