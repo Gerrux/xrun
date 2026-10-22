@@ -57,6 +57,39 @@ fn lifecycle() {
             .unwrap();
     }
 
+    // Last value is the one at the highest step, not the last inserted:
+    // a re-logged early step must not mask the final number.
+    store
+        .append_metric(
+            &run_id,
+            NewMetric {
+                step: 1,
+                key: "acc".to_string(),
+                value: 0.9,
+                ts: Utc::now(),
+            },
+        )
+        .unwrap();
+    let summaries = store.list_metric_summaries(&run_id).unwrap();
+    let keys: Vec<&str> = summaries.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(keys, ["acc", "loss"]);
+    assert_eq!(
+        (
+            summaries[0].count,
+            summaries[0].last_step,
+            summaries[0].last_value
+        ),
+        (2, 2, 0.2)
+    );
+    assert_eq!(
+        (
+            summaries[1].count,
+            summaries[1].last_step,
+            summaries[1].last_value
+        ),
+        (3, 3, 1.0 / 3.0)
+    );
+
     // List runs by provisioning status
     let runs = store
         .list_runs(&ListFilter {
