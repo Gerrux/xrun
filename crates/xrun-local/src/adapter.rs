@@ -39,8 +39,10 @@ pub struct LocalAdapter {
     /// Training PID whose start time already passed the reuse check. The
     /// poller probes liveness every tick, and on Windows the start-time
     /// lookup is a PowerShell launch; a start time never changes, so one
-    /// check per PID is enough.
-    verified_pid: RefCell<Option<u32>>,
+    /// check per PID is enough. Keyed by run as well: `vendor_instances`
+    /// walks every local row, and a stale pre-reboot run may hold the very
+    /// PID a live run was verified with.
+    verified_pid: RefCell<Option<(RunId, u32)>>,
 }
 
 impl LocalAdapter {
@@ -480,7 +482,11 @@ impl LocalAdapter {
         let pid = std::fs::read_to_string(&pid_file)
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())?;
-        if *self.verified_pid.borrow() == Some(pid) {
+        let verified = matches!(
+            &*self.verified_pid.borrow(),
+            Some((rid, p)) if rid == run_id && *p == pid
+        );
+        if verified {
             return Some(process_alive(pid));
         }
         let recorded_at = std::fs::metadata(&pid_file)
@@ -495,7 +501,7 @@ impl LocalAdapter {
             None => process_alive(pid),
         };
         if alive {
-            *self.verified_pid.borrow_mut() = Some(pid);
+            *self.verified_pid.borrow_mut() = Some((run_id.clone(), pid));
         }
         Some(alive)
     }
@@ -932,6 +938,46 @@ run:
         let handle = adapter.provision(&local_manifest("")).expect("provision");
         let pid_file = runs_dir.join(run_id.to_string()).join("run.pid");
         (td, adapter, handle, pid_file)
+    }
+
+    #[test]
+    fn verified_pid_of_one_run_does_not_vouch_for_a_stale_run_with_the_same_pid() {
+        if crate::process::process_started_at(std::process::id()).is_none() {
+            return; // start time unreadable here: no reuse check to cache
+        }
+        let (_td, adapter, _handle, live_pid_file) = provisioned();
+        let pid = std::process::id().to_string();
+        std::fs::write(&live_pid_file, &pid).unwrap();
+        let live: RunId = live_pid_file
+            .parent()
+            .and_then(|d| d.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // A run from before a reboot whose recorded PID is now the live one.
+        let stale: RunId = ulid::Ulid::new().to_string().parse().unwrap();
+        let stale_dir = live_pid_file
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(stale.to_string());
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        let stale_pid_file = stale_dir.join("run.pid");
+        std::fs::write(&stale_pid_file, &pid).unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale_pid_file)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        assert_eq!(adapter.training_alive(&live), Some(true));
+        assert_eq!(adapter.training_alive(&stale), Some(false));
+        assert_eq!(adapter.training_alive(&live), Some(true));
     }
 
     fn status_of(adapter: &LocalAdapter, handle: &InstanceHandle) -> Option<String> {
