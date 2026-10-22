@@ -11,7 +11,7 @@ mod runs;
 pub use artifacts::NewArtifact;
 pub use events::{NewEvent, StoredEvent};
 pub use instances::{Instance, InstanceCaps};
-pub use metrics::{NewMetric, StoredMetric};
+pub use metrics::{MetricKeySummary, NewMetric, StoredMetric};
 pub use notify_log::{NewNotifyLog, NotifyLogRow};
 pub use runs::{ListFilter, Run, RunId, RunStatus};
 

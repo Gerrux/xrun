@@ -4,8 +4,11 @@ Minimal Python hook for emitting structured events and metrics from training scr
 
 ## Install
 
+Not on PyPI. On `vendor: kaggle` xrun embeds the wheel into the kernel; elsewhere
+install it into the run's interpreter from the repo:
+
 ```bash
-pip install xrun_hook
+pip install "git+https://github.com/Gerrux/xrun#subdirectory=python/xrun_hook"
 ```
 
 ## Usage

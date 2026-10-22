@@ -142,7 +142,7 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
 
     let events = store.list_events(&id).context("failed to list events")?;
     let metric_keys = store
-        .list_metric_keys(&id)
+        .list_metric_summaries(&id)
         .context("failed to list metric keys")?;
 
     // Pull ssh_host/port from the instance handle persisted at provision time.
@@ -185,7 +185,12 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         let mut out = serde_json::json!({
             "run": run,
             "events": events,
-            "metric_keys": metric_keys.iter().map(|(k, c)| serde_json::json!({"key": k, "count": c})).collect::<Vec<_>>(),
+            "metric_keys": metric_keys.iter().map(|m| serde_json::json!({
+                "key": m.key,
+                "count": m.count,
+                "last_step": m.last_step,
+                "last": m.last_value,
+            })).collect::<Vec<_>>(),
             "ssh": ssh_json,
             "dataset": dataset_json,
         });
@@ -203,7 +208,10 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
             }
         }
         println!("  vendor:        {}", run.vendor);
-        println!("  manifest_hash: {}", &run.manifest_hash[..16]);
+        println!(
+            "  manifest_hash: {}",
+            run.manifest_hash.get(..16).unwrap_or(&run.manifest_hash)
+        );
         println!("  manifest_path: {}", run.manifest_path);
         println!(
             "  created_at:    {}",
@@ -261,8 +269,14 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         if metric_keys.is_empty() {
             println!("  (none)");
         } else {
-            for (k, c) in &metric_keys {
-                println!("  {k}: {c} points");
+            for m in &metric_keys {
+                println!(
+                    "  {}: {} points, last={} (step {})",
+                    m.key,
+                    m.count,
+                    fmt_metric_value(m.last_value),
+                    m.last_step
+                );
             }
         }
     }
@@ -270,10 +284,28 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
     Ok(())
 }
 
+/// Four decimals for scores and losses; scientific notation for small
+/// magnitudes (learning rates), which `{:.4}` would print as `0.0000`.
+fn fmt_metric_value(v: f64) -> String {
+    if v != 0.0 && v.abs() < 1e-3 {
+        format!("{v:.3e}")
+    } else {
+        format!("{v:.4}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn metric_value_keeps_small_magnitudes_readable() {
+        assert_eq!(fmt_metric_value(0.6312), "0.6312");
+        assert_eq!(fmt_metric_value(0.0), "0.0000");
+        assert_eq!(fmt_metric_value(5e-4), "5.000e-4");
+        assert_eq!(fmt_metric_value(-2.5), "-2.5000");
+    }
 
     fn at() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 14, 9, 30, 0).unwrap()
