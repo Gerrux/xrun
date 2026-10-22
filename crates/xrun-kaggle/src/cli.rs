@@ -140,6 +140,13 @@ impl KaggleProcessReal {
         // the keyboard. With `null` the prompt either gets EOF and aborts
         // fast, or proceeds with the default. Either way we never hang.
         cmd.stdin(std::process::Stdio::null());
+        // The kaggle CLI is Python: over a pipe on Windows it encodes stdout
+        // with the ANSI code page, and a non-cp125x character in a kernel
+        // log or file name kills it with a `UnicodeEncodeError` after the
+        // download already happened. Force UTF-8 so it never dies on the
+        // console encoding (our readers decode lossily as UTF-8 anyway).
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -316,9 +323,13 @@ impl KaggleProcess for KaggleProcessReal {
         let out = run_with_timeout(cmd, output_timeout(), "kaggle kernels output")?;
 
         if !out.status.success() {
+            // The kaggle CLI prints its errors on stdout; stderr alone is
+            // often empty ("kaggle CLI failed (exit 1)" and nothing else).
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             return Err(KaggleError::CliFailure {
                 exit_code: out.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+                stderr: annotate_kaggle_cli_failure(&format!("stdout: {stdout}\nstderr: {stderr}")),
             });
         }
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -624,9 +635,31 @@ impl KaggleCli {
     }
 
     /// Download kernel output to `into_dir`.
+    ///
+    /// The kaggle CLI can exit non-zero *after* it has written the files
+    /// (seen on Windows with empty stderr). When the call fails but
+    /// `into_dir` now holds a file written during this call, the download
+    /// is treated as done and the failure is only logged; an empty or
+    /// untouched directory keeps the error, so a real 401/404/429 still fails.
     pub fn output(&self, slug: &str, into_dir: &Path) -> Result<(), KaggleError> {
-        self.process.output(slug, into_dir)?;
-        Ok(())
+        let started = std::time::SystemTime::now();
+        match self.process.output(slug, into_dir) {
+            Ok(_) => Ok(()),
+            Err(KaggleError::CliFailure { exit_code, stderr }) => {
+                let fresh = count_files_modified_since(into_dir, started);
+                if fresh == 0 {
+                    return Err(KaggleError::CliFailure { exit_code, stderr });
+                }
+                let detail: String = stderr.chars().take(500).collect();
+                tracing::warn!(
+                    "kaggle kernels output {slug} exited {exit_code} but wrote {fresh} \
+                     file(s) into {}; treating the download as done. Output: {detail}",
+                    into_dir.display()
+                );
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Try to cancel / interrupt a running kernel. Returns `Ok(())` on success
@@ -841,6 +874,26 @@ fn is_transient_kaggle_error(err: &KaggleError) -> bool {
         }
         _ => false,
     }
+}
+
+/// Number of regular files under `dir` (recursive) modified at or after
+/// `since`. Unreadable entries and a missing `dir` count as zero.
+fn count_files_modified_since(dir: &Path, since: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            count += count_files_modified_since(&entry.path(), since);
+        } else if meta.is_file() && meta.modified().map(|m| m >= since).unwrap_or(false) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Append an actionable hint to a `kaggle CLI failed` body when the message

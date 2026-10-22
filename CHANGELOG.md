@@ -9,6 +9,22 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun pull` on a Kaggle run exited 1 with `kaggle CLI failed (exit 1)` and
+  an empty message after every artifact had actually been downloaded; the
+  poller's on_done pull then logged `artifacts.pull fail` and
+  `instance.kept fail` on every run, and because the events/metrics ingest
+  sat after the download call, a Kaggle run without MLflow ended with an
+  empty `xrun metrics`. The kaggle subprocess now runs with
+  `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` (no console-encoding crash), a
+  failed `kernels output` reports the CLI's stdout (where kaggle prints its
+  errors), a non-zero exit that nevertheless wrote files into the target
+  directory counts as a finished download (a warning is logged; an empty
+  directory still fails, so 401/404/429 are unchanged), and `pull` ingests
+  `run/events.jsonl` / `run/metrics.jsonl` and copies the stdout log even
+  when the download call reports a failure.
+
 ---
 
 ## [0.11.7] - 2026-10-15
