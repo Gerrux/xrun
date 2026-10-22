@@ -9,8 +9,36 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `xrun show` prints each metric key's last value and step
+  (`pooled_f1: 1 points, last=0.6312 (step 120)`); `--json` gains
+  `last_step` and `last` in `metric_keys`. A headline number logged once at
+  the end of a cross-validation run is now visible without `xrun metrics`.
+- The agent skill (`xrun install skill`) has an "Instrument the training
+  script" section: `metrics({...}, step=k)` per epoch or per fold, the
+  final pooled score at the last step, `done()` last, and the multi-command
+  `run.cmd` trap. Agents had copied the hand-written `events.jsonl` smoke
+  check into training code, so `xrun metrics` stayed empty.
+
 ### Fixed
 
+- `xrun pull` on a Kaggle run exited 1 with `kaggle CLI failed (exit 1)` and
+  an empty message after every artifact had actually been downloaded; the
+  poller's on_done pull then logged `artifacts.pull fail` and
+  `instance.kept fail` on every run, and because the events/metrics ingest
+  sat after the download call, a Kaggle run without MLflow ended with an
+  empty `xrun metrics`. The kaggle subprocess now runs with
+  `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` (no console-encoding crash), a
+  failed `kernels output` reports the CLI's stdout (where kaggle prints its
+  errors), a non-zero exit that nevertheless wrote files into the target
+  directory counts as a finished download (a warning is logged; an empty
+  directory still fails, so 401/404/429 are unchanged), and `pull` ingests
+  `run/events.jsonl` / `run/metrics.jsonl` and copies the stdout log even
+  when the download call reports a failure.
+- `xrun_hook.metric()` / `metrics()` no longer raise a TypeError mid-run on
+  numpy `float32` values or 0-d tensors: values go through `float()` and
+  the step through `int()`.
 - `xrun doctor --manifest <path>` checked every manifest in `exp/` as well
   as the named one, so in a project with many manifests it ran the full
   per-manifest checks (including Kaggle network calls) for all of them and

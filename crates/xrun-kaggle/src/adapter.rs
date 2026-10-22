@@ -234,6 +234,41 @@ impl KaggleAdapter {
         self.run_id.read().ok().and_then(|g| g.clone())
     }
 
+    /// Ingest events + metrics from a downloaded kernel output into the store
+    /// and copy the kernel stdout log next to the run. Best effort: failures
+    /// are logged, never returned.
+    fn ingest_pulled_output(&self, into: &Path) {
+        let (Some(run_id), Some(store_path)) = (self.get_run_id(), &self.store_path) else {
+            return;
+        };
+        let db_path = store_path.join("runs.db");
+        match Store::open(&db_path) {
+            Ok(mut store) => match ingest_post_run(into, &mut store, &run_id) {
+                Ok((ev, m)) => {
+                    tracing::info!("kaggle ingest: {ev} events, {m} metrics");
+                }
+                Err(e) => {
+                    tracing::warn!("kaggle ingest failed: {e}");
+                }
+            },
+            Err(e) => {
+                tracing::warn!("could not open store for kaggle ingest: {e}");
+            }
+        }
+
+        // §1: Copy stdout log so `xrun logs <id>` can read it
+        let xrun_log = into.join("__xrun_stdout.log");
+        if xrun_log.exists() {
+            let run_log = store_path
+                .join("runs")
+                .join(run_id.to_string())
+                .join("stdout.log");
+            if let Err(e) = std::fs::copy(&xrun_log, &run_log) {
+                tracing::warn!("failed to copy kaggle stdout log: {e}");
+            }
+        }
+    }
+
     /// Resolve the Kaggle username for `{user}` placeholder expansion.
     ///
     /// Order:
@@ -993,41 +1028,19 @@ impl VendorAdapter for KaggleAdapter {
 
     fn pull(&self, h: &InstanceHandle, _remote: &str, into: &Path) -> Result<(), VendorError> {
         let slug = h.id.strip_prefix("kaggle:").unwrap_or(&h.id);
-        self.cli.output(slug, into).map_err(kaggle_err)?;
+        let downloaded = self.cli.output(slug, into);
 
-        // Ingest events + metrics from the downloaded output
-        if let Some(run_id) = self.get_run_id() {
-            if let Some(store_path) = &self.store_path {
-                let db_path = store_path.join("runs.db");
-                match Store::open(&db_path) {
-                    Ok(mut store) => match ingest_post_run(into, &mut store, &run_id) {
-                        Ok((ev, m)) => {
-                            tracing::info!("kaggle ingest: {ev} events, {m} metrics");
-                        }
-                        Err(e) => {
-                            tracing::warn!("kaggle ingest failed: {e}");
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!("could not open store for kaggle ingest: {e}");
-                    }
-                }
-
-                // §1: Copy stdout log so `xrun logs <id>` can read it
-                let xrun_log = into.join("__xrun_stdout.log");
-                if xrun_log.exists() {
-                    let run_log = store_path
-                        .join("runs")
-                        .join(run_id.to_string())
-                        .join("stdout.log");
-                    if let Err(e) = std::fs::copy(&xrun_log, &run_log) {
-                        tracing::warn!("failed to copy kaggle stdout log: {e}");
-                    }
-                }
-            }
+        // A failed download can still have left the run's files behind (the
+        // CLI died after writing them). Ingest whatever is there so metrics
+        // are not lost, then report the failure.
+        if downloaded.is_ok()
+            || into.join("run").join("events.jsonl").exists()
+            || into.join("run").join("metrics.jsonl").exists()
+            || into.join("__xrun_stdout.log").exists()
+        {
+            self.ingest_pulled_output(into);
         }
-
-        Ok(())
+        downloaded.map_err(kaggle_err)
     }
 
     fn destroy(&self, h: &InstanceHandle) -> Result<(), VendorError> {

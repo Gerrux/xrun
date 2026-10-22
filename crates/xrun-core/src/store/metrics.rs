@@ -83,4 +83,39 @@ impl Store {
             .collect();
         Ok(rows?)
     }
+
+    /// Per key: point count and the value at the highest step. A run whose
+    /// headline number lands once at the end (pooled CV score, bootstrap
+    /// interval) has nothing to chart, so `xrun show` prints this instead.
+    pub fn list_metric_summaries(
+        &self,
+        run_id: &super::RunId,
+    ) -> Result<Vec<MetricKeySummary>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.key, COUNT(*), MAX(m.step), \
+                    (SELECT l.value FROM metrics l \
+                      WHERE l.run_id = m.run_id AND l.key = m.key \
+                      ORDER BY l.step DESC LIMIT 1) \
+             FROM metrics m WHERE m.run_id = ?1 GROUP BY m.key ORDER BY m.key",
+        )?;
+        let rows: rusqlite::Result<Vec<MetricKeySummary>> = stmt
+            .query_map([run_id], |row| {
+                Ok(MetricKeySummary {
+                    key: row.get(0)?,
+                    count: row.get(1)?,
+                    last_step: row.get(2)?,
+                    last_value: row.get(3)?,
+                })
+            })?
+            .collect();
+        Ok(rows?)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricKeySummary {
+    pub key: String,
+    pub count: i64,
+    pub last_step: i64,
+    pub last_value: f64,
 }

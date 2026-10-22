@@ -943,3 +943,154 @@ fn test_adapter_raw_run_status_429_is_one_call_and_an_error() {
     assert!(err.to_string().contains("429"), "{err}");
     assert_eq!(*calls.lock().unwrap(), 1, "must not retry on 429");
 }
+
+// ---------------------------------------------------------------------------
+// `kernels output` that exits non-zero after it already wrote the files
+// ---------------------------------------------------------------------------
+
+/// `kernels output` mock: optionally writes files into the target dir, then
+/// fails like the real CLI did on Windows (exit 1, stderr empty, the text on
+/// stdout).
+struct MockOutputFailure {
+    files: Vec<(&'static str, &'static str)>,
+    stdout: &'static str,
+}
+
+impl KaggleProcess for MockOutputFailure {
+    fn push(&self, _dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn output(&self, _slug: &str, into: &Path) -> Result<String, KaggleError> {
+        for (name, body) in &self.files {
+            let path = into.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        Err(KaggleError::CliFailure {
+            exit_code: 1,
+            stderr: format!("stdout: {}\nstderr: ", self.stdout),
+        })
+    }
+    fn cancel(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn config_view(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_status(&self, _slug: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_create(&self, _local_dir: &Path) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_version(&self, _local_dir: &Path, _message: &str) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+    fn datasets_list_mine(&self) -> Result<String, KaggleError> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn test_output_failure_after_files_were_written_is_ok() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cli = KaggleCli::with_process(Box::new(MockOutputFailure {
+        files: vec![("run/metrics.jsonl", "{}\n"), ("model.bin", "x")],
+        stdout: "Output file downloaded to x",
+    }));
+    cli.output("user/slug", tmp.path())
+        .expect("files landed during the call, so the failure is tolerated");
+}
+
+#[test]
+fn test_output_failure_mid_transfer_stays_an_error_despite_written_files() {
+    // The CLI died on the second file: the first one (and a truncated
+    // checkpoint) are on disk, but the download did not finish.
+    for stdout in [
+        "Traceback ...\nurllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(1024 bytes read, 4096 more expected)')",
+        "requests.exceptions.ChunkedEncodingError: Connection broken",
+        "OSError: [Errno 28] No space left on device",
+        "ConnectionResetError: [WinError 10054] connection reset by peer",
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cli = KaggleCli::with_process(Box::new(MockOutputFailure {
+            files: vec![("run/metrics.jsonl", "{}\n"), ("best.pt", "trunc")],
+            stdout,
+        }));
+        let err = cli
+            .output("user/slug", tmp.path())
+            .expect_err("a partial download must not count as done");
+        assert!(err.to_string().contains("kaggle CLI failed"), "{err}");
+    }
+}
+
+#[test]
+fn test_output_failure_with_empty_dir_stays_an_error() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cli = KaggleCli::with_process(Box::new(MockOutputFailure {
+        files: vec![],
+        stdout: "401 Client Error: Unauthorized",
+    }));
+    let err = cli.output("user/slug", tmp.path()).unwrap_err();
+    assert!(err.to_string().contains("401 Client Error"), "{err}");
+}
+
+#[test]
+fn test_output_failure_ignores_files_from_an_earlier_pull() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("old.bin"), "from an earlier pull").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let cli = KaggleCli::with_process(Box::new(MockOutputFailure {
+        files: vec![],
+        stdout: "404 Not Found",
+    }));
+    assert!(cli.output("user/slug", tmp.path()).is_err());
+}
+
+#[test]
+fn test_adapter_pull_ingests_metrics_even_when_output_fails() {
+    use xrun_core::store::Store;
+    use xrun_core::vendor::VendorAdapter;
+
+    let data = tempfile::TempDir::new().unwrap();
+    let into = tempfile::TempDir::new().unwrap();
+    // `Store` is not Send; keep it on this thread and drop it before the pull
+    // opens its own connection.
+    let run_id = {
+        let mut store = Store::open(&data.path().join("runs.db")).unwrap();
+        store
+            .create_run("t", "hash", "m.yaml", "kaggle", &[])
+            .unwrap()
+    };
+    // The metrics file is already on disk before the call, so the tolerant
+    // path of `KaggleCli::output` (fresh files) does not apply and the
+    // failure reaches `pull`.
+    std::fs::create_dir_all(into.path().join("run")).unwrap();
+    std::fs::write(
+        into.path().join("run/metrics.jsonl"),
+        r#"{"step":1,"key":"val_f1","value":0.5,"ts":"2026-10-15T07:40:00.000Z"}"#,
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let adapter = KaggleAdapter::with_process(Box::new(MockOutputFailure {
+        files: vec![],
+        stdout: "",
+    }))
+    .with_store_path(data.path().to_path_buf());
+    adapter.set_run_id(&run_id);
+
+    let err = adapter
+        .pull(&kaggle_handle(), "", into.path())
+        .expect_err("the download failure is still reported");
+    assert!(err.to_string().contains("kaggle CLI failed"), "{err}");
+
+    let store = Store::open(&data.path().join("runs.db")).unwrap();
+    let metrics = store.list_metrics(&run_id, None).unwrap();
+    assert_eq!(metrics.len(), 1, "metrics must reach the store anyway");
+}
