@@ -1009,6 +1009,28 @@ fn test_output_failure_after_files_were_written_is_ok() {
 }
 
 #[test]
+fn test_output_failure_mid_transfer_stays_an_error_despite_written_files() {
+    // The CLI died on the second file: the first one (and a truncated
+    // checkpoint) are on disk, but the download did not finish.
+    for stdout in [
+        "Traceback ...\nurllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(1024 bytes read, 4096 more expected)')",
+        "requests.exceptions.ChunkedEncodingError: Connection broken",
+        "OSError: [Errno 28] No space left on device",
+        "ConnectionResetError: [WinError 10054] connection reset by peer",
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cli = KaggleCli::with_process(Box::new(MockOutputFailure {
+            files: vec![("run/metrics.jsonl", "{}\n"), ("best.pt", "trunc")],
+            stdout,
+        }));
+        let err = cli
+            .output("user/slug", tmp.path())
+            .expect_err("a partial download must not count as done");
+        assert!(err.to_string().contains("kaggle CLI failed"), "{err}");
+    }
+}
+
+#[test]
 fn test_output_failure_with_empty_dir_stays_an_error() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cli = KaggleCli::with_process(Box::new(MockOutputFailure {

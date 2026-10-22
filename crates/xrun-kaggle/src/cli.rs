@@ -641,10 +641,14 @@ impl KaggleCli {
     /// `into_dir` now holds a file written during this call, the download
     /// is treated as done and the failure is only logged; an empty or
     /// untouched directory keeps the error, so a real 401/404/429 still fails.
+    /// A failure that reads like an interrupted transfer (network drop, full
+    /// disk) also keeps the error: the files written so far are a partial
+    /// download, possibly a truncated checkpoint.
     pub fn output(&self, slug: &str, into_dir: &Path) -> Result<(), KaggleError> {
         let started = std::time::SystemTime::now();
         match self.process.output(slug, into_dir) {
             Ok(_) => Ok(()),
+            Err(e) if is_interrupted_download(&e) => Err(e),
             Err(KaggleError::CliFailure { exit_code, stderr }) => {
                 let fresh = count_files_modified_since(into_dir, started);
                 if fresh == 0 {
@@ -874,6 +878,35 @@ fn is_transient_kaggle_error(err: &KaggleError) -> bool {
         }
         _ => false,
     }
+}
+
+/// Does a failed `kernels output` read like it stopped mid-transfer? Then the
+/// files already in the target dir are a partial download and must not be
+/// taken for a finished one. Transient network errors plus the Python
+/// exceptions `requests`/`urllib3`/`http.client` raise on a dropped body, and
+/// a full disk.
+fn is_interrupted_download(err: &KaggleError) -> bool {
+    if is_transient_kaggle_error(err) {
+        return true;
+    }
+    let KaggleError::CliFailure { stderr, .. } = err else {
+        return false;
+    };
+    let lower = stderr.to_lowercase();
+    [
+        "incompleteread",
+        "chunkedencodingerror",
+        "remotedisconnected",
+        "protocolerror",
+        "connectionerror",
+        "connection broken",
+        "readtimeout",
+        "no space left",
+        "errno 28",
+        "not enough space",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
 }
 
 /// Number of regular files under `dir` (recursive) modified at or after
