@@ -9,6 +9,23 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Manifest field `series_id: <slug>` (`^[a-z0-9][a-z0-9-]*$`) groups runs of
+  one campaign. A non-slug value is rejected by `launch --dry-run`,
+  `doctor --manifest` and `--override`/`--patch`. The value is stored on the
+  run at launch, and `xrun ls --json` / `xrun show --json` return it
+  (`null` when unset); `xrun show` prints it.
+- `xrun rerun` keeps the original run's `series_id`. `xrun sweep` copies the
+  base's `series_id` into every variant, or derives one from the base name
+  and the sweep timestamp (`my_exp` → `my-exp-20261025-143000`); `--json`
+  lists it per manifest.
+
+### Changed
+
+- SQLite schema v8 adds `runs.series_id`. Existing runs stay `null`; there is
+  no backfill. An older xrun refuses to open a v8 database.
+
 ---
 
 ## [0.11.8] - 2026-10-22

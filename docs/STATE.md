@@ -118,6 +118,9 @@ CREATE INDEX idx_notify_log_run ON notify_log(run_id);
 -- runs.poller_heartbeat_at DATETIME (007): поллер штампует каждый тик;
 -- `xrun watchdog` сравнивает с [notify].heartbeat_stale_min.
 
+-- runs.series_id TEXT (008): `series_id` манифеста, пишется при launch.
+-- Раны до v8 и без поля — NULL, бэкфилла нет.
+
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 INSERT INTO schema_version VALUES (1);
 ```

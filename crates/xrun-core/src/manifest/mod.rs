@@ -12,7 +12,7 @@ pub use types::{
     KeepBest, LightningSpec, LocalSpec, Manifest, MlflowSpec, Policy, PriceSpec, Requires, RunSpec,
     SshSpec, UnpackSpec, VastSpec, Vendor, COLAB_GPU_VALUES,
 };
-pub use validate::validate;
+pub use validate::{validate, validate_series_id};
 
 use crate::error::ManifestError;
 

@@ -32,7 +32,7 @@ pub fn run(args: &SweepArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
 
     let yaml = std::fs::read_to_string(&args.manifest)
         .with_context(|| format!("failed to read {}", args.manifest.display()))?;
-    let base = Manifest::from_yaml_str(&yaml)
+    let mut base = Manifest::from_yaml_str(&yaml)
         .with_context(|| format!("failed to parse {}", args.manifest.display()))?;
 
     let axes = parse_grid(&args.grid)?;
@@ -41,7 +41,14 @@ pub fn run(args: &SweepArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
         anyhow::bail!("grid expanded to zero combinations");
     }
 
-    let out_dir = resolve_out_dir(args, &base);
+    // One timestamp for the output dir and the derived series, so every
+    // materialised manifest of this sweep lands in the same series.
+    let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    if base.series_id.is_none() {
+        base.series_id = Some(slugify(&format!("{}-{ts}", base.name)));
+    }
+
+    let out_dir = resolve_out_dir(args, &base, &ts);
     if !args.dry_run {
         std::fs::create_dir_all(&out_dir)
             .with_context(|| format!("failed to create output dir {}", out_dir.display()))?;
@@ -67,6 +74,7 @@ pub fn run(args: &SweepArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path)
             name: patched.name.clone(),
             path,
             overrides,
+            series_id: patched.series_id.clone(),
         });
     }
 
@@ -94,6 +102,7 @@ struct MaterialisedRun {
     name: String,
     path: PathBuf,
     overrides: Vec<String>,
+    series_id: Option<String>,
 }
 
 fn parse_grid(raw: &[String]) -> Result<Vec<(String, Vec<String>)>> {
@@ -169,7 +178,22 @@ fn file_safe(s: &str) -> String {
         .to_string()
 }
 
-fn resolve_out_dir(args: &SweepArgs, base: &Manifest) -> PathBuf {
+/// Lowercase; anything outside `[a-z0-9-]` becomes `-`. Turns a manifest
+/// name into a valid `series_id`.
+fn slugify(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn resolve_out_dir(args: &SweepArgs, base: &Manifest, ts: &str) -> PathBuf {
     if let Some(dir) = &args.out {
         return dir.clone();
     }
@@ -178,7 +202,6 @@ fn resolve_out_dir(args: &SweepArgs, base: &Manifest) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(&base.name);
-    let ts = Utc::now().format("%Y%m%d-%H%M%S");
     PathBuf::from(format!("exp/sweep_{stem}_{ts}"))
 }
 
@@ -219,6 +242,7 @@ fn emit_json(rows: &[MaterialisedRun], args: &SweepArgs, results: &[SweepResult]
                 "name": r.name,
                 "path": r.path.display().to_string(),
                 "overrides": r.overrides,
+                "series_id": r.series_id,
             })
         })
         .collect();
@@ -370,6 +394,12 @@ mod tests {
             ("run.args.--batch-size".to_string(), "4".to_string()),
         ];
         assert_eq!(combo_suffix(&combo), "lr-5e-4_batch-size-4");
+    }
+
+    #[test]
+    fn slugify_lowercases_and_dashes_everything_else() {
+        assert_eq!(slugify("my_exp-20261025-143000"), "my-exp-20261025-143000");
+        assert_eq!(slugify("A.b c"), "a-b-c");
     }
 
     #[test]

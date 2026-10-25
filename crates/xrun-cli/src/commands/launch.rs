@@ -416,6 +416,11 @@ fn do_launch_with_budget(
             manifest.tags.as_deref().unwrap_or(&[]),
         )
         .context("failed to create run record")?;
+    if let Some(series_id) = &manifest.series_id {
+        store
+            .set_run_series_id(&run_id, series_id)
+            .context("failed to record series_id")?;
+    }
 
     let run_dir = runs_dir.join(run_id.to_string());
     std::fs::create_dir_all(&run_dir)
