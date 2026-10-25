@@ -71,6 +71,45 @@ run:
     assert!(err.to_string().contains("name must match"));
 }
 
+fn local_with_series(series: &str) -> String {
+    format!("name: my_exp\nseries_id: {series}\nvendor: local\nrun:\n  cmd: python train.py\n")
+}
+
+#[test]
+fn series_id_parses_and_roundtrips() {
+    let m = Manifest::from_yaml_str(&local_with_series("ab-48-lr")).unwrap();
+    assert_eq!(m.series_id.as_deref(), Some("ab-48-lr"));
+    let yaml = serde_yaml::to_string(&m).unwrap();
+    let back = Manifest::from_yaml_str(&yaml).unwrap();
+    assert_eq!(back.series_id.as_deref(), Some("ab-48-lr"));
+}
+
+#[test]
+fn series_id_absent_is_none_and_not_serialized() {
+    let m = Manifest::from_yaml_str("name: a\nvendor: local\nrun:\n  cmd: x\n").unwrap();
+    assert_eq!(m.series_id, None);
+    assert!(!serde_yaml::to_string(&m).unwrap().contains("series_id"));
+}
+
+#[test]
+fn series_id_rejects_non_slug() {
+    for bad in [
+        "My-Series",
+        "under_score",
+        "-lead",
+        "has space",
+        "dot.ted",
+        "\"\"",
+    ] {
+        let err = Manifest::from_yaml_str(&local_with_series(bad)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("series_id must match ^[a-z0-9][a-z0-9-]*$"),
+            "{bad}: {msg}"
+        );
+    }
+}
+
 #[test]
 fn validate_data_dst_not_slash_fails() {
     let yaml = r#"

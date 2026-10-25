@@ -510,6 +510,10 @@ pub struct Manifest {
     pub name: String,
     pub description: Option<String>,
     pub tags: Option<Vec<String>>,
+    /// Groups runs of one campaign (slug `^[a-z0-9][a-z0-9-]*$`). Stored on
+    /// the run row; `xrun sweep` fills it in when the base has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
     pub vendor: Vendor,
     pub vast: Option<VastSpec>,
     pub kaggle: Option<KaggleSpec>,

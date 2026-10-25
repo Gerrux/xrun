@@ -355,6 +355,15 @@ xrun sweep exp/base.yaml \
   --launch --detach --yes --json
 ```
 
+All variants share one `series_id`: the base manifest's, or
+`<base-name>-<YYYYMMDD-HHMMSS>` when the base has none.
+
+### Group runs into a series
+Top-level `series_id: <slug>` (`^[a-z0-9][a-z0-9-]*$`) in the manifest tags a
+campaign. It is stored on the run row and comes back in
+`xrun ls --all --json` / `xrun show <id> --json` (`null` when unset);
+`rerun` keeps it, `--override series_id=<slug>` sets it per launch.
+
 ### Stuck `running` row (poller died)
 ```bash
 xrun resume <id> --json    # reconnect polling or reconcile vendor completion

@@ -291,6 +291,64 @@ fn migration_004_applies_on_top_of_003_without_data_loss() {
 }
 
 #[test]
+fn series_id_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("runs.db")).unwrap();
+    let run_id = store.create_run("s", "h", "p.yaml", "local", &[]).unwrap();
+    assert_eq!(store.get_run(&run_id).unwrap().unwrap().series_id, None);
+
+    store.set_run_series_id(&run_id, "ab-48").unwrap();
+    let run = store.get_run(&run_id).unwrap().unwrap();
+    assert_eq!(run.series_id.as_deref(), Some("ab-48"));
+    let json = serde_json::to_value(&run).unwrap();
+    assert_eq!(json["series_id"], "ab-48");
+
+    let other = store.create_run("o", "h", "p.yaml", "local", &[]).unwrap();
+    let json = serde_json::to_value(store.get_run(&other).unwrap().unwrap()).unwrap();
+    assert!(json["series_id"].is_null() && json.get("series_id").is_some());
+}
+
+#[test]
+fn migration_008_adds_series_id_on_top_of_007() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("migration_008.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        for sql in [
+            include_str!("../src/store/migrations/001_initial.sql"),
+            include_str!("../src/store/migrations/002_cost_estimate.sql"),
+            include_str!("../src/store/migrations/003_budget.sql"),
+            include_str!("../src/store/migrations/004_poller_pid.sql"),
+            include_str!("../src/store/migrations/005_sink_run_ids.sql"),
+            include_str!("../src/store/migrations/006_backfill_ended_at.sql"),
+            include_str!("../src/store/migrations/007_notify.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO runs \
+             (id, name, manifest_hash, manifest_path, vendor, status, created_at) \
+             VALUES (?1, 'legacy', 'h', 'p.yaml', 'local', 'done', datetime('now'))",
+            rusqlite::params!["01HV0000000000000000000088"],
+        )
+        .unwrap();
+    }
+
+    let mut store = Store::open(&db_path).unwrap();
+    let runs = store.list_runs(&ListFilter::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].series_id, None, "no backfill for old runs");
+    store.set_run_series_id(&runs[0].id, "late").unwrap();
+    drop(store);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let version: u32 = conn
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
+}
+
+#[test]
 fn update_nonexistent_run_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("runs.db");

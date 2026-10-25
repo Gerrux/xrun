@@ -365,6 +365,7 @@ mlflow:
 | `name` | string | да | Slug; используется как experiment name в MLflow |
 | `description` | string | нет | Свободный текст |
 | `tags` | [string] | нет | Видны в `xrun ls`, фильтруются |
+| `series_id` | string | нет | Серия прогонов (одна кампания — много ранов). Slug `^[a-z0-9][a-z0-9-]*$`, иначе манифест отвергается (`launch --dry-run`, `doctor --manifest`). Сохраняется в строке рана при запуске и виден в `xrun ls/show --json` (`null`, если поля нет). `rerun` наследует; `sweep` копирует из базы, а без него ставит `<base.name>-<ts>` (в slug-форме, ts тот же, что в `exp/sweep_<stem>_<ts>`). Входит в canonical hash |
 | `vendor` | enum | да | `vast` \| `kaggle` \| `local` \| `ssh` \| `lightning` \| `colab` |
 | `vast` / `kaggle` / `local` / `ssh` / `lightning` / `colab` | object | да | По одному в зависимости от `vendor` (блоки `local`, `lightning`, `colab` опциональны) |
 | `data` | [object] | нет | Что предзалить |
