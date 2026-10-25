@@ -139,6 +139,9 @@ pub struct Run {
     /// Stamped by the poll loop every tick. `xrun watchdog` compares it
     /// against `[notify].heartbeat_stale_min` to detect a dead poller.
     pub poller_heartbeat_at: Option<DateTime<Utc>>,
+    /// Manifest `series_id` at launch time. NULL for runs without one and
+    /// for runs created before schema v8.
+    pub series_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -167,13 +170,14 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         wandb_run_id: row.get(15)?,
         wandb_run_url: row.get(16)?,
         poller_heartbeat_at: row.get(17)?,
+        series_id: row.get(18)?,
     })
 }
 
 const SELECT_RUN_COLS: &str =
     "id, name, manifest_hash, manifest_path, vendor, instance_id, status, \
      created_at, started_at, ended_at, cost_usd, mlflow_run_id, notes, poller_pid, \
-     mlflow_run_url, wandb_run_id, wandb_run_url, poller_heartbeat_at";
+     mlflow_run_url, wandb_run_id, wandb_run_url, poller_heartbeat_at, series_id";
 
 impl Store {
     pub fn create_run(
@@ -267,6 +271,21 @@ impl Store {
             "UPDATE runs SET started_at = ?1 WHERE id = ?2",
             params![started_at, id],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_run_series_id(&mut self, id: &RunId, series_id: &str) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = tx.execute(
+            "UPDATE runs SET series_id = ?1 WHERE id = ?2",
+            params![series_id, id],
+        )?;
+        if rows == 0 {
+            return Err(StoreError::RunNotFound(id.to_string()));
+        }
         tx.commit()?;
         Ok(())
     }

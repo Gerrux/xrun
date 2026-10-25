@@ -208,6 +208,9 @@ pub fn run(args: &ShowArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
             }
         }
         println!("  vendor:        {}", run.vendor);
+        if let Some(series_id) = &run.series_id {
+            println!("  series_id:     {series_id}");
+        }
         println!(
             "  manifest_hash: {}",
             run.manifest_hash.get(..16).unwrap_or(&run.manifest_hash)

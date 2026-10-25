@@ -7,6 +7,9 @@ use crate::error::ManifestError;
 
 pub fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
     validate_name(&manifest.name)?;
+    if let Some(series_id) = &manifest.series_id {
+        validate_series_id(series_id)?;
+    }
     validate_vendor_sections(manifest)?;
     if let Some(v) = manifest.policy.as_ref().and_then(|p| p.on_done.as_deref()) {
         if !ON_DONE_VALUES.contains(&v) {
@@ -101,6 +104,22 @@ fn validate_name(name: &str) -> Result<(), ManifestError> {
         return Err(ManifestError::Validation(format!(
             "name must match ^[a-z0-9][a-z0-9_-]*$: {:?}",
             name
+        )));
+    }
+    Ok(())
+}
+
+/// `^[a-z0-9][a-z0-9-]*$` — same shape as `name`, minus `_`.
+pub fn validate_series_id(series_id: &str) -> Result<(), ManifestError> {
+    let valid = !series_id.is_empty()
+        && series_id
+            .chars()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_lowercase() || c.is_ascii_digit() || (i > 0 && c == '-'));
+    if !valid {
+        return Err(ManifestError::Validation(format!(
+            "series_id must match ^[a-z0-9][a-z0-9-]*$: {:?}",
+            series_id
         )));
     }
     Ok(())

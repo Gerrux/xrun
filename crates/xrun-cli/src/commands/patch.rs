@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use xrun_core::manifest::Manifest;
+use xrun_core::manifest::{validate_series_id, Manifest};
 
 /// Apply a list of `path=value` overrides to a manifest in-place. Returns the
 /// patched manifest, leaving the input untouched on error.
@@ -29,8 +29,15 @@ pub fn apply(manifest: &Manifest, overrides: &[String]) -> Result<Manifest> {
         set_path(&mut value, path, parsed)
             .with_context(|| format!("failed to apply override {raw}"))?;
     }
-    serde_json::from_value(value)
-        .context("patched manifest no longer validates — check the override paths and value types")
+    let patched: Manifest = serde_json::from_value(value).context(
+        "patched manifest no longer validates — check the override paths and value types",
+    )?;
+    // `launch --override` never re-reads the patched manifest from disk, so
+    // the slug rule is checked here rather than relying on `from_yaml_str`.
+    if let Some(series_id) = &patched.series_id {
+        validate_series_id(series_id)?;
+    }
+    Ok(patched)
 }
 
 /// Try JSON first (so `5e-4`, `true`, `[1,2]`, `null` round-trip as their
@@ -102,6 +109,25 @@ run:
         let m = base_manifest();
         let patched = apply(&m, &["name=experiment-2".to_string()]).unwrap();
         assert_eq!(patched.name, "experiment-2");
+    }
+
+    #[test]
+    fn override_sets_top_level_series_id() {
+        let m = base_manifest();
+        let patched = apply(&m, &["series_id=ab-48".to_string()]).unwrap();
+        assert_eq!(patched.series_id.as_deref(), Some("ab-48"));
+        let again = apply(&patched, &["series_id=other".to_string()]).unwrap();
+        assert_eq!(again.series_id.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn override_rejects_invalid_series_id() {
+        let m = base_manifest();
+        let err = apply(&m, &["series_id=Bad_One".to_string()]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("series_id must match"),
+            "{err:#}"
+        );
     }
 
     #[test]
