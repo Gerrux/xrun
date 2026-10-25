@@ -9,6 +9,15 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `xrun logs` failed with `stream did not contain valid UTF-8` when a local
+  run on Windows wrote `stdout.log` in the console code page (cp1251), so
+  the traceback was only readable after re-encoding the file by hand. The
+  log is now printed with invalid bytes replaced by `�`, including
+  `--grep`; `--follow` no longer silently drops such a chunk, and a UTF-8
+  character split between two snapshots stays intact.
+  
 ### Added
 
 - Manifest field `series_id: <slug>` (`^[a-z0-9][a-z0-9-]*$`) groups runs of

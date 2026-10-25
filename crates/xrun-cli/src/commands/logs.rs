@@ -38,8 +38,11 @@ pub fn run(args: &LogsArgs, db_path: &Path, runs_dir: &Path, config_dir: &Path) 
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&log_path)
+    // Not `read_to_string`: a Windows console writes the log in its code page
+    // (cp1251, cp866), and one non-UTF-8 byte must not hide the traceback.
+    let bytes = std::fs::read(&log_path)
         .with_context(|| format!("failed to read log: {}", log_path.display()))?;
+    let content = String::from_utf8_lossy(&bytes);
 
     match &args.grep {
         Some(pattern) => {
@@ -148,7 +151,8 @@ fn follow_local_file(
 
     let mut offset: u64 = 0;
     let mut warned_empty = false;
-    let mut buf = String::new();
+    let mut buf = Vec::new();
+    let mut decoder = LossyDecoder::default();
 
     loop {
         // Re-read terminal status each iteration so we exit promptly.
@@ -169,22 +173,16 @@ fn follow_local_file(
                     // File was truncated (e.g. pre-emption + restart on vast,
                     // or rerun); start from the new beginning.
                     offset = 0;
+                    decoder = LossyDecoder::default();
                 }
                 if len > offset {
                     f.seek(SeekFrom::Start(offset))?;
                     buf.clear();
-                    f.read_to_string(&mut buf).ok();
-                    offset = len;
-                    match grep {
-                        Some(pattern) => {
-                            for line in buf.lines() {
-                                if line.contains(pattern) {
-                                    println!("{line}");
-                                }
-                            }
-                        }
-                        None => print!("{buf}"),
-                    }
+                    // `read_to_string` here used to fail on a non-UTF-8 chunk
+                    // and the `.ok()` dropped it silently, offset and all.
+                    f.read_to_end(&mut buf).ok();
+                    offset += buf.len() as u64;
+                    print_chunk(&decoder.push(&buf), grep);
                 } else if !warned_empty && len == 0 {
                     explain_empty_log_for(id, run, config_dir);
                     warned_empty = true;
@@ -199,10 +197,64 @@ fn follow_local_file(
         }
 
         if terminal {
+            print_chunk(&decoder.finish(), grep);
             return Ok(());
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+fn print_chunk(text: &str, grep: Option<&str>) {
+    if text.is_empty() {
+        return;
+    }
+    match grep {
+        Some(pattern) => {
+            for line in text.lines() {
+                if line.contains(pattern) {
+                    println!("{line}");
+                }
+            }
+        }
+        None => print!("{text}"),
+    }
+}
+
+/// Decodes a growing log chunk by chunk, replacing invalid bytes with U+FFFD.
+/// An incomplete UTF-8 sequence at the end of a chunk is held back until the
+/// next one: the producer may snapshot the file in the middle of a character.
+#[derive(Default)]
+struct LossyDecoder {
+    pending: Vec<u8>,
+}
+
+impl LossyDecoder {
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let split = self.pending.len() - incomplete_tail_len(&self.pending);
+        let out = String::from_utf8_lossy(&self.pending[..split]).into_owned();
+        self.pending.drain(..split);
+        out
+    }
+
+    fn finish(&mut self) -> String {
+        let out = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        out
+    }
+}
+
+/// Length of a trailing incomplete (but so far valid) UTF-8 sequence, 0..=3.
+fn incomplete_tail_len(bytes: &[u8]) -> usize {
+    for n in 1..=3.min(bytes.len()) {
+        let tail = &bytes[bytes.len() - n..];
+        if let Err(e) = std::str::from_utf8(tail) {
+            if e.valid_up_to() == 0 && e.error_len().is_none() {
+                return n;
+            }
+        }
+    }
+    0
 }
 
 /// `xrun logs -f <id>` streams the live stdout from the running instance over
@@ -283,4 +335,34 @@ fn shell_escape(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_replaces_cp1251_bytes_instead_of_dropping_chunk() {
+        let mut dec = LossyDecoder::default();
+        let out = dec.push(b"ValueError: \xce\xf8\xe8\xe1\xea\xe0\r\n");
+        assert!(out.starts_with("ValueError: \u{FFFD}"), "{out:?}");
+        assert!(out.ends_with("\r\n"), "{out:?}");
+        assert_eq!(dec.finish(), "");
+    }
+
+    #[test]
+    fn decoder_keeps_utf8_char_split_across_chunks() {
+        // "Ош" in UTF-8 is d0 9e d1 88; the poller may snapshot mid-char.
+        let mut dec = LossyDecoder::default();
+        let a = dec.push(b"x \xd0\x9e\xd1");
+        let b = dec.push(b"\x88 y");
+        assert_eq!(format!("{a}{b}"), "x Ош y");
+    }
+
+    #[test]
+    fn decoder_flushes_incomplete_tail_on_finish() {
+        let mut dec = LossyDecoder::default();
+        assert_eq!(dec.push(b"ok \xd0"), "ok ");
+        assert_eq!(dec.finish(), "\u{FFFD}");
+    }
 }

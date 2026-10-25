@@ -262,3 +262,49 @@ fn doctor_exits_one_when_checks_fail() {
         );
     }
 }
+
+/// A Windows console writes `stdout.log` in its code page (cp1251 here:
+/// `\xce\xf8\xe8\xe1\xea\xe0` is "Ошибка"), which is not UTF-8. `xrun logs`
+/// used to refuse the whole file; the traceback must still be readable.
+fn write_cp1251_log(tmp: &TempDir) -> RunId {
+    let id = RunId::new();
+    let dir = tmp.path().join("runs").join(id.to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("stdout.log"),
+        b"Traceback (most recent call last):\r\nValueError: \xce\xf8\xe8\xe1\xea\xe0\r\nepoch 1 done\r\n",
+    )
+    .unwrap();
+    id
+}
+
+#[test]
+fn logs_prints_non_utf8_log_lossily() {
+    let tmp = TempDir::new().unwrap();
+    let id = write_cp1251_log(&tmp);
+    xrun(&tmp)
+        .arg("logs")
+        .arg(id.to_string())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Traceback (most recent call last):",
+        ))
+        .stdout(predicate::str::contains("ValueError: \u{FFFD}"))
+        .stdout(predicate::str::contains("epoch 1 done"));
+}
+
+#[test]
+fn logs_grep_matches_lines_in_non_utf8_log() {
+    let tmp = TempDir::new().unwrap();
+    let id = write_cp1251_log(&tmp);
+    xrun(&tmp)
+        .arg("logs")
+        .arg(id.to_string())
+        .arg("--grep")
+        .arg("ValueError")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ValueError: \u{FFFD}"))
+        .stdout(predicate::str::contains("epoch").not());
+}
