@@ -195,6 +195,16 @@ done()
 
 ## TUI
 
+<p align="center">
+  <img src="docs/screenshots/tui-dashboard.png" alt="Дашборд TUI: четыре активных запуска на vast, Kaggle и Lightning с ценой и кривой train_loss, потраченные деньги и расход в час, последние завершённые запуски">
+</p>
+<p align="center">
+  <img src="docs/screenshots/tui-runs.png" alt="Список запусков в TUI: готовящийся, три идущих, упавшие и завершённые запуски на шести вендорах, с длительностью и ценой">
+</p>
+<p align="center">
+  <img src="docs/screenshots/tui-run-detail.png" alt="Карточка запуска в TUI на вкладке метрик: ключи train_loss и val_f1 со спарклайнами, график train_loss по шагам и кнопки Stop, Rerun, Pull">
+</p>
+
 `xrun` без аргументов в терминале открывает TUI. Навигация аккордами от `g`:
 
 | | |

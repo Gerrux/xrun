@@ -1,5 +1,8 @@
 # Макет для скриншотов
 
+Картинки для README, сайта и статей двух видов: терминал и social preview
+рисует `index.html`, TUI снимает `tui.py` (раздел «TUI» ниже).
+
 `index.html` рисует картинки для README и статей из демо-данных в оформлении
 самого xrun: терминальный блок и подсветка YAML — как на сайте
 (`docs/index.html`), палитра — из `docs/brand.md`. Вывод CLI собирается по тем
@@ -42,3 +45,30 @@ cd - >/dev/null
 обрезку снизу, полосы прокрутки и перенос строк; `social.png` — до 1 МБ.
 
 Social preview в GitHub загружается руками: Settings → General → Social preview.
+
+## TUI
+
+Снимки TUI не нарисованы: `tui.py` запускает настоящий TUI из
+`python/xrun_tui/src` без терминала (`App.run_test`) на демо-базе и сохраняет
+экраны через экспорт Textual в SVG, а Chrome переводит SVG в PNG (масштаб 2,
+прозрачный фон за скруглёнными углами окна). База собирается из миграций
+`crates/xrun-core/src/store/migrations`, так что схема всегда текущая.
+
+Конфиг, данные и домашняя папка уходят во временный каталог: без этого TUI
+нашёл бы ключи человека (`~/.config/vastai/vast_api_key`, `~/.kaggle`) и
+сходил бы с ними в настоящие API. Аккаунт в строке статуса — `demo`, карточка
+Doctor — «all green»: пустой временный конфиг иначе валит проверку кредов.
+
+| Экран | Файл | Окно, ячеек |
+| --- | --- | --- |
+| Dashboard | `docs/screenshots/tui-dashboard.png` | 132×30 |
+| Runs | `docs/screenshots/tui-runs.png` | 132×23 |
+| Run detail, вкладка Metrics | `docs/screenshots/tui-run-detail.png` | 132×36 |
+
+```bash
+python docs/mock/tui.py
+```
+
+Нужны `textual` и зависимости TUI (`pip install -e python/xrun_tui`) и Chrome
+по стандартному пути, иначе путь к нему — в переменной `CHROME`. Время на
+снимках относительное («37m ago»), часы в шапке — момент съёмки.
