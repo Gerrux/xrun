@@ -106,6 +106,13 @@ p{text-wrap:pretty}
 .k{color:var(--blue)} .s{color:var(--green)} .c{color:var(--dim)} .n{color:var(--yellow)} .p{color:var(--magenta)}
 .caption{margin-top:12px;font-size:13.5px;color:var(--muted)}
 
+/* Снимки из docs/screenshots: TUI снят на демо-базе, вывод CLI собран по
+   форматтерам из кода (docs/mock/README.md). У TUI своё окно со скруглением,
+   у терминальных — поле цвета страницы, поэтому рамки нет. */
+.shot{margin:40px 0 0}
+.shot img{display:block;width:100%;height:auto}
+.shot.narrow{max-width:620px}
+
 .vendors .grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
 @media (min-width:900px){.vendors .grid{grid-template-columns:repeat(4,1fr)}}
 .vendors .tag{display:inline-block;margin-bottom:10px;font:12px/1 var(--mono);color:var(--blue);background:var(--overlay);padding:5px 8px;border-radius:6px}
@@ -154,6 +161,11 @@ footer .lockup{margin-top:0}
       <a class="btn btn-main" href="https://github.com/Gerrux/xrun" data-i18n="src">Исходный код</a>
       <a class="btn btn-ghost" href="https://github.com/Gerrux/xrun/tree/master/docs" data-i18n="docs">Документация</a>
     </div>
+    <figure class="shot">
+      <img src="screenshots/tui-dashboard.png" width="1629" height="782" data-i18n-alt="a1"
+           alt="Дашборд TUI: четыре активных запуска на vast, Kaggle и Lightning с ценой и кривой train_loss, потраченные деньги и расход в час, последние завершённые запуски">
+      <figcaption class="caption" data-i18n="f1"><code>xrun</code> без аргументов открывает TUI: активные запуски, расход в час, последние результаты.</figcaption>
+    </figure>
   </div>
 </header>
 
@@ -181,6 +193,11 @@ footer .lockup{margin-top:0}
       <li><span class="dot" style="background:var(--dim)"></span><span data-i18n="st3">кончилось, инстанс погашен</span></li>
       <li><span class="dot" style="background:var(--red)"></span><span data-i18n="st4">упало, нужен человек</span></li>
     </ul>
+    <figure class="shot">
+      <img src="screenshots/tui-runs.png" width="1629" height="611" loading="lazy" data-i18n-alt="a2"
+           alt="Список запусков в TUI: готовящийся, три идущих, упавшие и завершённые запуски на шести вендорах, с длительностью и ценой">
+      <figcaption class="caption" data-i18n="f2">Те же цвета в списке запусков: зелёным горит то, что прямо сейчас тратит деньги.</figcaption>
+    </figure>
   </div>
 </section>
 
@@ -233,6 +250,11 @@ footer .lockup{margin-top:0}
         <figcaption class="caption" data-i18n="cap">Копия манифеста хранится с запуском, а его хеш — часть личности запуска: <code>xrun rerun</code> воспроизводит ровно то, что бежало.</figcaption>
       </figure>
     </div>
+    <figure class="shot narrow">
+      <img src="screenshots/launch.png" width="760" height="737" loading="lazy" data-i18n-alt="a3"
+           alt="Терминал: xrun launch --detach арендует GPU, заливает данные, запускает тренировку и уходит в фон; xrun events --follow показывает стадии и эпохи">
+      <figcaption class="caption" data-i18n="f3">Запуск с <code>--detach</code> возвращает shell через минуту-другую, дальше стадии видны в <code>xrun events</code>.</figcaption>
+    </figure>
   </div>
 </section>
 
@@ -294,6 +316,11 @@ footer .lockup{margin-top:0}
         <p data-i18n="k9p"><code>xrun install skill</code> учит Claude Code и Codex пользоваться xrun вместо ручных <code>vastai</code> и <code>ssh</code>.</p>
       </div>
     </div>
+    <figure class="shot">
+      <img src="screenshots/tui-run-detail.png" width="1629" height="928" loading="lazy" data-i18n-alt="a4"
+           alt="Карточка запуска в TUI на вкладке метрик: ключи train_loss и val_f1 со спарклайнами и график train_loss по шагам, лучший результат и кнопки Stop, Rerun, Pull">
+      <figcaption class="caption" data-i18n="f4">Карточка запуска: стадии, логи, манифест и метрики живьём, остановка и pull одной клавишей.</figcaption>
+    </figure>
   </div>
 </section>
 
@@ -375,6 +402,14 @@ const DICT = {
     k9p: "<code>xrun install skill</code> teaches Claude Code and Codex to use xrun instead of hand-rolled <code>vastai</code> and <code>ssh</code>.",
     rel: "Releases",
     chg: "Changelog",
+    f1: "<code>xrun</code> with no arguments opens the TUI: active runs, hourly burn, recent results.",
+    f2: "The same colours in the run list: green is what is spending money right now.",
+    f3: "A <code>--detach</code> launch gives the shell back in a minute or two; from there on <code>xrun events</code> shows the stages.",
+    f4: "The run card: stages, logs, manifest and live metrics, stop and pull on a single key.",
+    a1: "TUI dashboard: four active runs on vast, Kaggle and Lightning with cost and a train_loss curve, money spent and hourly burn, recently finished runs",
+    a2: "TUI run list: a provisioning run, three running, failed and finished runs across six vendors, with duration and cost",
+    a3: "Terminal: xrun launch --detach rents a GPU, uploads the data, starts training and returns; xrun events --follow shows the stages and epochs",
+    a4: "TUI run card on the metrics tab: train_loss and val_f1 keys with sparklines and a train_loss chart by step, the best value and Stop, Rerun, Pull buttons",
   },
 };
 
@@ -384,6 +419,9 @@ const RU = {};
 document.querySelectorAll("[data-i18n]").forEach((el) => {
   const k = el.dataset.i18n;
   if (!(k in RU)) RU[k] = el.innerHTML;
+});
+document.querySelectorAll("[data-i18n-alt]").forEach((el) => {
+  RU[el.dataset.i18nAlt] = el.alt;
 });
 RU.title = document.title;
 RU.desc = document.querySelector('meta[name="description"]').content;
@@ -399,6 +437,10 @@ function apply(lang) {
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     const v = d[el.dataset.i18n];
     if (v !== undefined) el.innerHTML = v;
+  });
+  document.querySelectorAll("[data-i18n-alt]").forEach((el) => {
+    const v = d[el.dataset.i18nAlt];
+    if (v !== undefined) el.alt = v;
   });
   document.querySelectorAll("#langs button").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.lang === current));

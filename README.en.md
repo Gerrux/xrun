@@ -186,6 +186,16 @@ full protocol — [docs/EVENTS.md](docs/EVENTS.md).
 
 ## TUI
 
+<p align="center">
+  <img src="docs/screenshots/tui-dashboard.png" alt="TUI dashboard: four active runs on vast, Kaggle and Lightning with cost and a train_loss curve, money spent and hourly burn, recently finished runs">
+</p>
+<p align="center">
+  <img src="docs/screenshots/tui-runs.png" alt="TUI run list: a provisioning run, three running, failed and finished runs across six vendors, with duration and cost">
+</p>
+<p align="center">
+  <img src="docs/screenshots/tui-run-detail.png" alt="TUI run card on the metrics tab: train_loss and val_f1 keys with sparklines, a train_loss chart by step and Stop, Rerun, Pull buttons">
+</p>
+
 `xrun` with no arguments in a terminal opens the TUI. Navigation is by chords
 starting with `g`:
 
