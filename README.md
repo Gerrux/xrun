@@ -17,6 +17,13 @@
   <img alt="" src="https://img.shields.io/badge/vast.ai%20%7C%20Kaggle%20%7C%20Lightning%20%7C%20Colab%20%7C%20SSH%20%7C%20local-1A1B26?style=flat-square">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/result.png" alt="Манифест эксперимента для vast.ai, а рядом в терминале: xrun ls с запусками на vast, Kaggle, SSH, Colab и локально, кривая train_loss из xrun metrics --ascii и xrun pull, забравший лучший чекпоинт">
+</p>
+<p align="center">
+  <img src="docs/screenshots/launch.png" width="560" alt="xrun launch --detach арендует GPU, заливает данные, запускает тренировку и уходит в фон; xrun events --follow показывает стадии: provision, upload, setup, train и эпохи">
+</p>
+
 **Запускатель ML-экспериментов.** Один манифест описывает запуск целиком:
 где взять GPU, что залить, чем тренировать и что забрать. `xrun` арендует
 инстанс, заливает данные, запускает тренировку, следит за стадиями и метриками

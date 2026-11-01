@@ -17,6 +17,13 @@
   <img alt="" src="https://img.shields.io/badge/vast.ai%20%7C%20Kaggle%20%7C%20SSH%20%7C%20local-1A1B26?style=flat-square">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/result.png" alt="An experiment manifest for vast.ai next to a terminal: xrun ls with runs on vast, Kaggle, SSH, Colab and the local machine, the train_loss curve from xrun metrics --ascii, and xrun pull fetching the best checkpoint">
+</p>
+<p align="center">
+  <img src="docs/screenshots/launch.png" width="560" alt="xrun launch --detach rents a GPU, uploads the data, starts training and returns to the shell; xrun events --follow shows the stages: provision, upload, setup, train and epochs">
+</p>
+
 **An ML experiment runner.** One manifest describes a run end to end: where
 the GPU comes from, what to upload, what to train and what to bring back.
 `xrun` rents the instance, uploads the data, starts training, follows stages

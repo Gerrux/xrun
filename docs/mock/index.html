@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>xrun screenshots</title>
+<!--
+  Renders README/article images from demo data in xrun's own design: the
+  terminal block and YAML colours of docs/index.html, Tokyo Night from
+  docs/brand.md. CLI output is built by the same widths and rules as the Rust
+  code (ls.rs, events_cmd.rs, launch.rs, ascii_chart.rs, pull.rs) and is
+  plain text, as the CLI prints it. No real projects, paths or hosts.
+  Regenerate: docs/mock/README.md
+  ?scene=launch   xrun launch --detach, then events --follow mid-run
+  ?scene=result   the manifest next to ls, metrics --ascii and pull
+  ?scene=social   1280x640 link preview (GitHub, X, Reddit)
+-->
+<style>
+  :root {
+    --bg: #1A1B26; --surface: #24283B; --overlay: #2D3149; --line: rgba(192,202,245,.09);
+    --text: #C0CAF5; --muted: #7C85B3; --dim: #565F89;
+    --blue: #7AA2F7; --magenta: #BB9AF7; --green: #9ECE6A; --yellow: #E0AF68; --red: #F7768E;
+    --display: 'Bahnschrift', 'Segoe UI Semibold', 'Inter', system-ui, sans-serif;
+    --mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+               font: 16px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  .term { border: 1px solid var(--line); border-radius: 12px; background: #16161E; overflow: hidden; }
+  .term .bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px;
+               border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+  .term .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--overlay); }
+  .term .bar span { margin-inline-start: 8px; font-family: var(--mono); }
+  .term pre { margin: 0; padding: 18px 18px 20px; font: 13.5px/1.65 var(--mono); color: var(--text); white-space: pre;
+              font-variant-ligatures: none; font-feature-settings: "calt" 0; }
+  .k { color: var(--blue); } .s { color: var(--green); } .c { color: var(--dim); }
+  .n { color: var(--yellow); } .p { color: var(--magenta); }
+  .cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: -.2em; background: var(--text); opacity: .75; }
+  .scene { padding: 28px; background: var(--bg); }
+  .launch { width: 760px; }
+  .result { width: 1320px; display: grid; grid-template-columns: 480px 1fr; gap: 24px; align-items: start; }
+  .result .term pre { font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// One demo object for every scene, so ids and numbers match across images.
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+let seed = 20261101
+function rnd() { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646 }
+function ulid(iso) {
+  let t = Date.parse(iso), time = ''
+  for (let i = 0; i < 10; i++) { time = CROCKFORD[t % 32] + time; t = Math.floor(t / 32) }
+  let tail = ''
+  for (let i = 0; i < 16; i++) tail += CROCKFORD[Math.floor(rnd() * 32)]
+  return time + tail
+}
+
+const demo = {
+  manifest: 'exp/resnet50.yaml',
+  runs: [
+    { name: 'resnet50-cifar', vendor: 'vast', status: 'running', created: '2026-11-01T09:12:04Z' },
+    // ls.rs pads vendor to 8 and "lightning" is 9 wide: it would shift the row.
+    { name: 'vit-small-lr3e4', vendor: 'vast', status: 'running', created: '2026-11-01T08:40:51Z' },
+    { name: 'bert-base-ft', vendor: 'kaggle', status: 'running', created: '2026-11-01T07:58:13Z' },
+    { name: 'unet-seg-v2', vendor: 'ssh', status: 'failed', created: '2026-10-31T21:05:37Z' },
+    { name: 'whisper-tiny-ft', vendor: 'colab', status: 'done', created: '2026-10-31T18:22:09Z' },
+    { name: 'gbm-baseline', vendor: 'local', status: 'done', created: '2026-10-31T15:47:30Z' },
+    { name: 'quickstart', vendor: 'local', status: 'done', created: '2026-10-30T11:03:52Z' },
+  ],
+  pollerPid: 48211,
+  // Debug-printed std::time::Duration, as launch.rs prints it.
+  took: { provision: '52.418307s', upload: '21.906214s', execute: '3.117045s' },
+  events: [
+    ['2026-11-01T09:12:57Z', 'provision', 'ok', ''],
+    ['2026-11-01T09:12:57Z', 'upload', 'start', ''],
+    ['2026-11-01T09:13:19Z', 'upload', 'ok', ''],
+    ['2026-11-01T09:13:22Z', 'train_start', 'ok', ''],
+    ['2026-11-01T09:13:23Z', 'setup', 'start', ''],
+    ['2026-11-01T09:13:41Z', 'setup', 'ok', ''],
+    ['2026-11-01T09:13:44Z', 'train', 'start', ''],
+    ['2026-11-01T09:16:52Z', 'epoch', 'ok', ''],
+    ['2026-11-01T09:19:58Z', 'epoch', 'ok', ''],
+    ['2026-11-01T09:23:05Z', 'epoch', 'ok', ''],
+  ],
+  best: 'models/best.pt',
+}
+for (const r of demo.runs) r.id = ulid(r.created)
+const main = demo.runs[0]
+const short = main.id.slice(-4)
+
+// train_loss per step: falling curve with a little noise, like the brand mark.
+const loss = []
+for (let s = 0; s < 480; s++) {
+  const v = 0.42 + 3.9 * Math.exp(-s / 70) + 0.18 * Math.exp(-s / 400) + (rnd() - 0.5) * 0.06
+  loss.push([s, Math.round(v * 10000) / 10000])
+}
+
+// --- ports of the Rust formatters -------------------------------------------
+const pad = (s, n) => String(s).padEnd(n)
+const trunc = (s, n) => [...s].slice(0, n).join('')
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+
+// ls.rs
+function ls(runs) {
+  const out = [`${pad('id', 26)}  ${pad('name', 16)}  ${pad('status', 12)}  ${pad('vendor', 8)}  created_at`, '-'.repeat(80)]
+  for (const r of runs) out.push(`${pad(r.id, 26)}  ${pad(trunc(r.name, 16), 16)}  ${pad(r.status, 12)}  ${pad(r.vendor, 8)}  ${r.created}`)
+  return out.join('\n')
+}
+
+// events_cmd.rs
+function events(rows) {
+  const out = [`${pad('ts', 24)}  ${pad('stage', 20)}  ${pad('status', 8)}  msg`, '-'.repeat(70)]
+  for (const [ts, stage, status, msg] of rows) out.push(`${pad(ts, 24)}  ${pad(stage, 20)}  ${pad(status, 8)}  ${msg}`)
+  return out.join('\n')
+}
+
+// ascii_chart.rs
+const W = 60, H = 8, LABEL = 10
+function fmtLabel(v) {
+  const a = Math.abs(v)
+  return a !== 0 && (a >= 1e6 || a < 1e-3) ? v.toExponential(2) : v.toFixed(4)
+}
+function bucketize(pts, width) {
+  const n = pts.length, cols = Array(width).fill(null)
+  if (n === 1) { cols[0] = pts[0][1]; return cols }
+  if (n <= width) { pts.forEach(([, v], i) => { cols[Math.floor(i * (width - 1) / (n - 1))] = v }); return cols }
+  const sums = Array(width).fill(0), counts = Array(width).fill(0)
+  pts.forEach(([, v], i) => { const c = Math.min(Math.floor(i * width / n), width - 1); sums[c] += v; counts[c]++ })
+  return cols.map((_, c) => counts[c] ? sums[c] / counts[c] : null)
+}
+function asciiChart(key, pts) {
+  const vals = pts.map(p => p[1])
+  const min = Math.min(...vals), max = Math.max(...vals), last = vals[vals.length - 1]
+  const first = pts[0][0], lastStep = pts[pts.length - 1][0]
+  const range = Math.max(max - min, 1e-12)
+  const rowOf = v => Math.min(Math.round((1 - Math.min(Math.max((v - min) / range, 0), 1)) * (H - 1)), H - 1)
+  const grid = Array.from({ length: H }, () => Array(W).fill(' '))
+  let prev = null
+  bucketize(pts, W).forEach((v, col) => {
+    if (v === null) { prev = null; return }
+    const row = rowOf(v)
+    if (prev !== null) {
+      const lo = Math.min(prev, row), hi = Math.max(prev, row)
+      for (let r = lo + 1; r < hi; r++) if (grid[r][col] === ' ') grid[r][col] = '|'
+    }
+    grid[row][col] = '*'
+    prev = row
+  })
+  const out = [key]
+  grid.forEach((row, r) => {
+    const label = r === 0 ? fmtLabel(max) : r === H - 1 ? fmtLabel(min) : r === H / 2 ? fmtLabel(min + range / 2) : ''
+    out.push(`${label.padStart(LABEL - 2)} |${row.join('')}`)
+  })
+  out.push(`${''.padStart(LABEL - 2)} +${'-'.repeat(W)}`)
+  const gap = Math.max(W - (5 + String(first).length + String(lastStep).length), 0)
+  out.push(`${''.padStart(LABEL - 2)}  step ${first}${''.padStart(gap)}${lastStep}`)
+  out.push(`${''.padStart(LABEL - 2)}  min=${min.toFixed(4)}  max=${max.toFixed(4)}  last=${last.toFixed(4)}  n=${pts.length}`)
+  return out.join('\n')
+}
+
+// --- terminal pieces ---------------------------------------------------------
+const cmd = c => `<span class="p">$</span> ${esc(c)}`
+const term = (title, body) =>
+  `<div class="term"><div class="bar"><i></i><i></i><i></i><span>${title}</span></div><pre>${body}</pre></div>`
+
+function launchOutput() {
+  return [
+    `Created run ${main.id}`,
+    '[launch] provision: starting',
+    `[launch] provision: done (${demo.took.provision})`,
+    '[launch] upload: 2 source(s)',
+    `[launch] upload: done (${demo.took.upload})`,
+    '[launch] execute: starting',
+    `[launch] execute: done (${demo.took.execute})`,
+    `Run ${main.id} started`,
+    '[launch] spawning poll-daemon',
+    `[launch] detached (poller pid ${demo.pollerPid})`,
+    main.id,
+  ].join('\n')
+}
+
+function launch() {
+  const body = [
+    cmd(`xrun launch ${demo.manifest} --detach --max-cost 5`),
+    launchOutput(),
+    '',
+    cmd(`xrun events ${short} --follow`),
+    events(demo.events),
+    '<span class="cursor"></span>',
+  ].join('\n')
+  return `<div class="scene launch">${term('~/ml/cifar', body)}</div>`
+}
+
+function yaml() {
+  return `<span class="k">name</span>: <span class="s">${main.name}</span>
+<span class="k">vendor</span>: <span class="s">vast</span>   <span class="c"># kaggle | lightning | colab | ssh | local</span>
+
+<span class="k">vast</span>:
+  <span class="k">image</span>: <span class="s">pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime</span>
+  <span class="k">gpu</span>: { <span class="k">type</span>: <span class="s">"RTX 4090"</span>, <span class="k">count</span>: <span class="n">1</span> }
+  <span class="k">disk_gb</span>: <span class="n">40</span>
+  <span class="k">price</span>: { <span class="k">max_per_hour</span>: <span class="n">0.45</span> }
+
+<span class="k">data</span>:
+  - <span class="k">src</span>: <span class="s">data/cifar100.tar</span>
+    <span class="k">dst</span>: <span class="s">/workspace/data/cifar100.tar</span>
+    <span class="k">unpack</span>: { <span class="k">format</span>: <span class="s">tar</span>, <span class="k">into</span>: <span class="s">/workspace/data</span> }
+  - <span class="k">src</span>: <span class="s">./src</span>
+    <span class="k">dst</span>: <span class="s">/workspace/code</span>
+    <span class="k">mode</span>: <span class="s">rsync</span>
+
+<span class="k">run</span>:
+  <span class="k">workdir</span>: <span class="s">/workspace/code</span>
+  <span class="k">cmd</span>: <span class="s">python train.py</span>
+  <span class="k">args</span>:
+    <span class="k">--epochs</span>: <span class="n">8</span>
+    <span class="k">--lr</span>: <span class="n">3e-4</span>
+
+<span class="k">artifacts</span>:
+  <span class="k">patterns</span>: [<span class="s">"checkpoints/best*.pt"</span>]
+
+<span class="k">policy</span>:
+  <span class="k">early_stop</span>: { <span class="k">metric</span>: <span class="s">val_f1</span>, <span class="k">patience</span>: <span class="n">3</span> }`
+}
+
+function result() {
+  const runs = demo.runs.map((r, i) => i === 0 ? { ...r, status: 'done' } : r)
+  const body = [
+    cmd('xrun ls'),
+    ls(runs),
+    '',
+    cmd(`xrun metrics ${short} --key train_loss --ascii`),
+    asciiChart('train_loss', loss),
+    '',
+    cmd(`xrun pull ${short} --ckpt best --into models/`),
+    'pulled 1 file(s) to models/',
+    'matching --ckpt best:',
+    `  ${demo.best}`,
+  ].join('\n')
+  return `<div class="scene result">${term(demo.manifest, yaml())}${term('~/ml/cifar', body)}</div>`
+}
+
+function social() {
+  const chart = term('~/ml/cifar', [cmd(`xrun metrics ${short} --key train_loss --ascii`), asciiChart('train_loss', loss)].join('\n'))
+  const chips = ['vast.ai · Kaggle · Lightning · Colab · SSH · local', 'one YAML manifest per run',
+                 'destroys the GPU when done or over budget', 'skill for Claude Code']
+  return `<div style="width:1280px;height:640px;display:flex;align-items:center;gap:44px;padding:0 56px;overflow:hidden;
+      background:radial-gradient(circle at 18% 28%, rgba(122,162,247,.20) 0%, rgba(187,154,247,.07) 38%, var(--bg) 68%)">
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;gap:18px">
+        <img src="../brand/mark.png" width="72" height="72" alt="">
+        <div style="font:600 68px/1 var(--display);letter-spacing:-1px">xrun</div>
+      </div>
+      <div style="font:500 29px/1.3 var(--display);color:#D5DCF8;margin-top:24px">One YAML manifest — from a rented GPU to the best checkpoint.</div>
+      <div style="display:flex;gap:10px;margin-top:30px;flex-wrap:wrap;font:600 17px/1.2 'Segoe UI',system-ui,sans-serif">
+        ${chips.map(t => `<span style="background:var(--surface);border:1px solid rgba(192,202,245,.14);border-radius:999px;padding:8px 15px">${t}</span>`).join('')}
+      </div>
+      <div style="font:500 19px var(--mono);color:var(--blue);margin-top:34px">github.com/Gerrux/xrun</div>
+      <div style="font:400 16px 'Segoe UI',system-ui,sans-serif;color:var(--muted);margin-top:8px">Windows · macOS · Linux · MIT</div>
+    </div>
+    <div style="flex:none;box-shadow:0 20px 60px rgba(0,0,0,.55);border-radius:12px">${chart}</div>
+  </div>`
+}
+
+const scenes = { launch, result, social }
+const scene = new URLSearchParams(location.search).get('scene') || 'launch'
+document.getElementById('root').innerHTML = (scenes[scene] || launch)()
+</script>
+</body>
+</html>
